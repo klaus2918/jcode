@@ -18,6 +18,22 @@ use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::antigravity::AntigravityProvider;
 use crate::provider_catalog::{OpenAiCompatibleProfile, ResolvedOpenAiCompatibleProfile};
 
+/// Resolve the per-request timeout for an OpenAI-compatible smoke probe.
+///
+/// Defaults to `default_secs` (the historical hard-coded values), but callers can
+/// raise it via `JCODE_LIVE_SMOKE_TIMEOUT_SECS` for slow reasoning models (e.g.
+/// NVIDIA's 550B Nemotron Ultra, which emits long hidden reasoning and can take
+/// well over a minute to return a single completion). The override applies a floor
+/// so it can only extend, never shorten, the built-in deadline.
+fn smoke_timeout(default_secs: u64) -> std::time::Duration {
+    let secs = std::env::var("JCODE_LIVE_SMOKE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(|override_secs| override_secs.max(default_secs))
+        .unwrap_or(default_secs);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Apply the right auth headers for a resolved OpenAI-compatible profile.
 ///
 /// Most providers use `Authorization: Bearer <key>`. Anthropic's
@@ -164,7 +180,7 @@ pub async fn run_live_openai_compatible_smoke(
     });
     let request = crate::provider::shared_http_client().post(&url).json(&body);
     let request = apply_provider_auth(request, &resolved, api_key);
-    let response = tokio::time::timeout(std::time::Duration::from_secs(30), request.send())
+    let response = tokio::time::timeout(smoke_timeout(30), request.send())
         .await
         .context("timed out running live smoke completion")?
         .with_context(|| format!("run live {} smoke completion", resolved.display_name))?;
@@ -265,7 +281,7 @@ pub async fn run_live_openai_compatible_stream_smoke(
     });
     let request = crate::provider::shared_http_client().post(&url).json(&body);
     let request = apply_provider_auth(request, &resolved, api_key);
-    let response = tokio::time::timeout(std::time::Duration::from_secs(45), request.send())
+    let response = tokio::time::timeout(smoke_timeout(45), request.send())
         .await
         .context("timed out running live stream smoke completion")?
         .with_context(|| format!("run live {} stream smoke completion", resolved.display_name))?;
@@ -376,7 +392,7 @@ pub async fn run_live_openai_compatible_tool_smoke(
     }
     let request = crate::provider::shared_http_client().post(&url).json(&body);
     let request = apply_provider_auth(request, &resolved, api_key);
-    let response = tokio::time::timeout(std::time::Duration::from_secs(45), request.send())
+    let response = tokio::time::timeout(smoke_timeout(45), request.send())
         .await
         .context("timed out running live tool-call smoke completion")?
         .with_context(|| format!("run live {} tool-call smoke", resolved.display_name))?;
