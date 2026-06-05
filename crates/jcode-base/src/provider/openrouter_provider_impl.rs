@@ -14,6 +14,15 @@ impl Provider for OpenRouterProvider {
         let model = self.model.read().await.clone();
         let reasoning_effort = self.reasoning_effort();
         let thinking_override = Self::thinking_override();
+        // Moonshot's dedicated Kimi coding endpoint enables thinking server-side
+        // by default and rejects any assistant tool-call message that lacks
+        // `reasoning_content`, even though its model id (`kimi-for-coding`) is
+        // not a moonshotai/kimi-k2 model and the profile runs without OpenRouter
+        // provider features (issue #322). We must attach `reasoning_content` to
+        // those messages, but must NOT add the OpenRouter-specific top-level
+        // `thinking` field (the endpoint already manages thinking itself), so
+        // this is kept separate from `thinking_enabled`.
+        let kimi_coding_endpoint = self.is_kimi_coding_endpoint(&model);
         let thinking_enabled = thinking_override.or_else(|| {
             if Self::is_kimi_model(&model) {
                 Some(true)
@@ -21,9 +30,11 @@ impl Provider for OpenRouterProvider {
                 None
             }
         });
-        let allow_reasoning = self.supports_provider_features && thinking_enabled != Some(false);
-        let include_reasoning_content =
-            thinking_enabled == Some(true) || (allow_reasoning && Self::is_kimi_model(&model));
+        let allow_reasoning = (self.supports_provider_features || kimi_coding_endpoint)
+            && thinking_enabled != Some(false);
+        let include_reasoning_content = thinking_enabled == Some(true)
+            || (allow_reasoning && Self::is_kimi_model(&model))
+            || kimi_coding_endpoint;
 
         // Some OpenAI-compatible providers (e.g. Mistral) strictly enforce the
         // OpenAI schema and reject the non-standard `reasoning_content` message
