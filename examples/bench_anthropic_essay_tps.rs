@@ -109,6 +109,15 @@ async fn main() -> Result<()> {
         .nth(1)
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(3000);
+
+    // Force the direct Anthropic API-key path when requested (or when an API
+    // key is present and OAuth is not), so fast mode is exercised on the
+    // Console API rather than the subscription OAuth route. Fast mode / priority
+    // tier is gated by usage credits on the API account.
+    let force_api_key = std::env::var("BENCH_ANTHROPIC_API_KEY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     println!(
         "tier,first_ms,last_text_ms,total_ms,generation_ms,chars,input_tokens,output_tokens,cache_read,cache_write,gen_output_tok_s,total_output_tok_s"
     );
@@ -118,6 +127,14 @@ async fn main() -> Result<()> {
     let fast = AnthropicProvider::new();
     fast.set_model("claude-opus-4-8")?;
     fast.set_service_tier("priority")?;
+
+    if force_api_key {
+        // false = API key (not OAuth)
+        standard.pin_credential_mode_for_doctor(false)?;
+        fast.pin_credential_mode_for_doctor(false)?;
+        eprintln!("[bench] forcing direct Anthropic API-key credential mode");
+    }
+
     run_one_with_retry(&standard, "standard_only", words, 4).await?;
     // Cool-down gap to avoid back-to-back rate limiting between the two runs.
     tokio::time::sleep(std::time::Duration::from_secs(20)).await;
