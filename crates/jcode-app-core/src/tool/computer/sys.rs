@@ -67,7 +67,11 @@ pub fn notify(text: &str, title: Option<&str>) -> Result<ToolOutput> {
 /// Poll an app's AX tree until a substring appears (element_appears) or a
 /// timeout elapses. Cheap structural wait instead of fixed sleeps.
 pub fn wait_for(app: &str, contains: &str, timeout_ms: u64) -> Result<ToolOutput> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(60_000));
+    let total = Duration::from_millis(timeout_ms.min(60_000));
+    let deadline = Instant::now() + total;
+    // Keep each poll shallow so it returns quickly even on big apps; a deep
+    // (depth-10) dump of a large tree can itself take many seconds, which would
+    // blow past `timeout_ms`. Depth 6 captures visible labels/values cheaply.
     let script = format!(
         r#"
 using terms from application "System Events"
@@ -91,7 +95,7 @@ end using terms from
 tell application "System Events"
     set frontApp to first application process whose name is {app}
     try
-        return my dumpEl(front window of frontApp, 0, 10)
+        return my dumpEl(front window of frontApp, 0, 6)
     on error
         return ""
     end try
@@ -100,14 +104,21 @@ end tell
         app = osa::as_quote(app)
     );
     loop {
-        let tree = osa::run_applescript(&script).unwrap_or_default();
+        // Bound each poll by the time left so the whole call honors timeout_ms,
+        // and never let a single poll exceed ~3s.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!("wait_for timed out after {timeout_ms}ms (no '{contains}' in {app})");
+        }
+        let poll_budget = remaining.min(Duration::from_secs(3));
+        let tree = osa::run_applescript_timeout(&script, poll_budget).unwrap_or_default();
         if tree.contains(contains) {
             return Ok(ToolOutput::new(format!("matched '{contains}' in {app}")));
         }
         if Instant::now() >= deadline {
             bail!("wait_for timed out after {timeout_ms}ms (no '{contains}' in {app})");
         }
-        sleep(Duration::from_millis(250));
+        sleep(Duration::from_millis(200));
     }
 }
 
