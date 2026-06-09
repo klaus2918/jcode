@@ -80,8 +80,49 @@ impl KeyChord {
         parts.join("+")
     }
 
+    /// Parse a jcode-style binding string such as `ctrl+k`, `alt+right`, or
+    /// `cmd+shift+[` into a chord. Mirrors jcode's own keybinding grammar so the
+    /// conflict detector compares like with like. Returns `None` for empty or
+    /// explicitly-disabled bindings (`none`/`off`/`disabled`).
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        if matches!(
+            raw.to_ascii_lowercase().as_str(),
+            "none" | "off" | "disabled"
+        ) {
+            return None;
+        }
+
+        let mut cmd = false;
+        let mut ctrl = false;
+        let mut alt = false;
+        let mut shift = false;
+        let mut key: Option<String> = None;
+
+        for part in raw.split('+').map(str::trim).filter(|s| !s.is_empty()) {
+            match part.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => ctrl = true,
+                // jcode treats alt/option/meta as Alt.
+                "alt" | "option" | "meta" => alt = true,
+                "cmd" | "command" | "super" | "win" | "windows" => cmd = true,
+                "shift" => shift = true,
+                // "backtab" / "shift-tab" imply Shift+Tab.
+                "backtab" | "shift-tab" => {
+                    shift = true;
+                    key = Some("tab".to_string());
+                }
+                other => key = Some(other.to_string()),
+            }
+        }
+
+        let key = key?;
+        Some(Self::new(cmd, ctrl, alt, shift, &key))
+    }
+
     /// Normalize a raw key token (from any source) into a canonical token.
-    ///
     /// Handles the differing spellings used by terminals (`arrow_left`,
     /// `page_up`, `digit_1`) and macOS virtual keycodes, collapsing them onto a
     /// single vocabulary shared with jcode's own keybinding parser.
@@ -191,5 +232,38 @@ mod tests {
         let b = KeyChord::new(true, false, false, false, "K");
         assert_eq!(a, b);
         assert_eq!(a.canonical(), b.canonical());
+    }
+
+    #[test]
+    fn parses_jcode_binding_strings() {
+        assert_eq!(KeyChord::parse("ctrl+k").unwrap().canonical(), "ctrl+k");
+        assert_eq!(KeyChord::parse("alt+right").unwrap().canonical(), "alt+right");
+        assert_eq!(
+            KeyChord::parse("ctrl+shift+tab").unwrap().canonical(),
+            "ctrl+shift+tab"
+        );
+        // Command/super alias both map to cmd.
+        assert_eq!(KeyChord::parse("cmd+j").unwrap().canonical(), "cmd+j");
+        assert_eq!(KeyChord::parse("super+j").unwrap().canonical(), "cmd+j");
+        // backtab implies shift+tab.
+        assert_eq!(KeyChord::parse("backtab").unwrap().canonical(), "shift+tab");
+    }
+
+    #[test]
+    fn parse_rejects_disabled_and_empty() {
+        assert!(KeyChord::parse("").is_none());
+        assert!(KeyChord::parse("  ").is_none());
+        assert!(KeyChord::parse("none").is_none());
+        assert!(KeyChord::parse("OFF").is_none());
+        assert!(KeyChord::parse("disabled").is_none());
+    }
+
+    #[test]
+    fn parse_matches_discovered_chord() {
+        // A jcode binding and a terminal binding for the same physical keys must
+        // compare equal so the conflict detector can pair them.
+        let jcode = KeyChord::parse("cmd+k").unwrap();
+        let terminal = KeyChord::new(true, false, false, false, "k");
+        assert_eq!(jcode, terminal);
     }
 }

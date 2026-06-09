@@ -12,6 +12,7 @@ path = "src/lib.rs"
 anyhow = "1"
 dirs = "5"
 jcode-build-meta = { path = "../jcode-build-meta" }
+jcode-config-types = { path = "../jcode-config-types" }
 jcode-logging = { path = "../jcode-logging" }
 jcode-storage = { path = "../jcode-storage" }
 serde = { version = "1", features = ["derive"] }

@@ -11,11 +11,15 @@
 //! later layer.
 
 pub mod chord;
+pub mod conflicts;
 pub mod macos_hotkeys;
+pub mod report;
 pub mod source;
 pub mod terminal;
 
 pub use chord::KeyChord;
+pub use conflicts::{Conflict, JcodeBinding, detect_conflicts, jcode_bindings};
+pub use report::{render_report, render_status_line};
 pub use source::{DiscoveredBinding, KeySource};
 
 use serde::{Deserialize, Serialize};
@@ -125,6 +129,35 @@ pub fn refresh_and_save() -> KeymapSnapshot {
 pub fn load_snapshot() -> Option<KeymapSnapshot> {
     let path = snapshot_path().ok()?;
     jcode_storage::read_json(&path).ok()
+}
+
+/// Maximum age (seconds) before a cached snapshot is considered stale and
+/// refreshed. One day balances freshness against the cost of shelling out.
+const SNAPSHOT_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+
+/// Return a usable snapshot, refreshing from the machine only when there is no
+/// cached snapshot or the cached one is older than [`SNAPSHOT_MAX_AGE_SECS`].
+/// This is the entry point intended for startup: cheap on the common path,
+/// self-healing when stale.
+pub fn snapshot_cached_or_refresh() -> KeymapSnapshot {
+    if let Some(existing) = load_snapshot() {
+        if existing.version == SNAPSHOT_VERSION && !snapshot_is_stale(&existing) {
+            return existing;
+        }
+    }
+    refresh_and_save()
+}
+
+fn snapshot_is_stale(snapshot: &KeymapSnapshot) -> bool {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let Ok(captured) = snapshot.captured_at.parse::<u64>() else {
+        return true;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    now.saturating_sub(captured) > SNAPSHOT_MAX_AGE_SECS
 }
 
 #[cfg(test)]
