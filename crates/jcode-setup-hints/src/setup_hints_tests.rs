@@ -241,3 +241,54 @@ fn conflict_hint_decision_warns_only_when_conflicts_change() {
         ConflictHintDecision::Warn
     );
 }
+
+#[test]
+fn keymap_conflict_hint_full_path_debounces_and_persists_signature() {
+    use crate::keymap::source::{DiscoveredBinding, KeySource};
+    use crate::keymap::{KeyChord, KeymapSnapshot};
+    use jcode_config_types::KeybindingsConfig;
+
+    fn snapshot(bindings: Vec<DiscoveredBinding>) -> KeymapSnapshot {
+        KeymapSnapshot {
+            version: 1,
+            captured_at: "0".to_string(),
+            os: "macos".to_string(),
+            terminal: "Ghostty".to_string(),
+            terminal_version: "1.3.1".to_string(),
+            bindings,
+        }
+    }
+    fn term(keys: &str, action: &str) -> DiscoveredBinding {
+        DiscoveredBinding {
+            chord: KeyChord::parse(keys).unwrap(),
+            source: KeySource::Terminal,
+            action: action.to_string(),
+            raw: format!("{keys}={action}"),
+        }
+    }
+
+    let cfg = KeybindingsConfig::default();
+    let mut state = SetupHintsState::default();
+
+    // 1) First time with a real conflict: warn + state changes.
+    let conflicting = snapshot(vec![term("ctrl+tab", "next_tab")]);
+    let (hint, changed) = keymap_conflict_hint_for(&cfg, &conflicting, &mut state);
+    assert!(hint.is_some(), "should warn on first conflict");
+    assert!(changed, "state signature should be recorded");
+    let (title, body) = hint.unwrap().display_message.unwrap();
+    assert_eq!(title, "Keybindings");
+    assert!(body.contains("keybindings.model_switch_next"));
+    assert!(!state.keymap_conflict_signature.is_empty());
+
+    // 2) Same conflict again: debounced, no state change.
+    let (hint2, changed2) = keymap_conflict_hint_for(&cfg, &conflicting, &mut state);
+    assert!(hint2.is_none(), "same conflict set must not re-warn");
+    assert!(!changed2, "no state change when nothing changed");
+
+    // 3) Conflict resolved (clean snapshot): silent, but signature cleared.
+    let clean = snapshot(vec![term("cmd+t", "new_tab")]);
+    let (hint3, changed3) = keymap_conflict_hint_for(&cfg, &clean, &mut state);
+    assert!(hint3.is_none(), "resolved conflicts show nothing");
+    assert!(changed3, "signature should be cleared");
+    assert!(state.keymap_conflict_signature.is_empty());
+}

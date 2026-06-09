@@ -760,29 +760,40 @@ pub fn maybe_show_keymap_conflict_hint(
     }
 
     let snapshot = keymap::snapshot_cached_or_refresh();
-    let conflicts = keymap::detect_conflicts(keybindings, &snapshot);
+    let mut state = SetupHintsState::load();
+    let (hint, changed) = keymap_conflict_hint_for(keybindings, &snapshot, &mut state);
+    if changed {
+        let _ = state.save();
+    }
+    hint
+}
+
+/// Core of [`maybe_show_keymap_conflict_hint`], separated from TTY detection and
+/// disk I/O so the full decision + state-update path is unit-testable.
+///
+/// Returns the optional notice and whether `state` was mutated (and therefore
+/// should be persisted by the caller).
+pub(crate) fn keymap_conflict_hint_for(
+    keybindings: &jcode_config_types::KeybindingsConfig,
+    snapshot: &keymap::KeymapSnapshot,
+    state: &mut SetupHintsState,
+) -> (Option<StartupHints>, bool) {
+    let conflicts = keymap::detect_conflicts(keybindings, snapshot);
     let signature = keymap::conflict_signature(&conflicts);
 
-    let mut state = SetupHintsState::load();
-    let decision = conflict_hint_decision(&signature, &state.keymap_conflict_signature);
-
-    match decision {
-        ConflictHintDecision::Unchanged => None,
+    match conflict_hint_decision(&signature, &state.keymap_conflict_signature) {
+        ConflictHintDecision::Unchanged => (None, false),
         ConflictHintDecision::ResolvedSilently => {
             state.keymap_conflict_signature = signature;
-            let _ = state.save();
-            None
+            (None, true)
         }
         ConflictHintDecision::Warn => {
             state.keymap_conflict_signature = signature;
-            let _ = state.save();
-            let status = keymap::render_status_line(keybindings, &snapshot)?;
-            let display = keymap::render_report(keybindings, &snapshot);
-            Some(StartupHints::with_status_and_display(
-                status,
-                "Keybindings",
-                display,
-            ))
+            let hint = keymap::render_status_line(keybindings, snapshot).map(|status| {
+                let display = keymap::render_report(keybindings, snapshot);
+                StartupHints::with_status_and_display(status, "Keybindings", display)
+            });
+            (hint, true)
         }
     }
 }
