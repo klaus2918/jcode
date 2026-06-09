@@ -213,3 +213,31 @@ fn nudge_budget_caps_at_max_and_persists() {
     assert_eq!(state.terminal_nudge_count, MAX_TERMINAL_NUDGES);
     assert!(!state.nudge_budget_remaining());
 }
+
+#[test]
+fn conflict_hint_decision_warns_only_when_conflicts_change() {
+    // No conflicts ever: empty == empty => stay silent.
+    assert_eq!(conflict_hint_decision("", ""), ConflictHintDecision::Unchanged);
+
+    // New conflicts where there were none: warn.
+    assert_eq!(
+        conflict_hint_decision("keybindings.model_switch_next|ctrl+tab|ctrl+tab", ""),
+        ConflictHintDecision::Warn
+    );
+
+    // Same conflicts as last time: stay silent.
+    let sig = "keybindings.model_switch_next|ctrl+tab|ctrl+tab";
+    assert_eq!(conflict_hint_decision(sig, sig), ConflictHintDecision::Unchanged);
+
+    // Conflicts resolved since last time (had some, now none): update silently.
+    assert_eq!(
+        conflict_hint_decision("", sig),
+        ConflictHintDecision::ResolvedSilently
+    );
+
+    // Conflict set changed (different conflicts): warn again.
+    assert_eq!(
+        conflict_hint_decision("keybindings.scroll_up|ctrl+k|ctrl+k", sig),
+        ConflictHintDecision::Warn
+    );
+}

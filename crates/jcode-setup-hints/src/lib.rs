@@ -713,6 +713,33 @@ pub fn maybe_show_setup_hints() -> Option<StartupHints> {
     }
 }
 
+/// Pure debounce decision for the keybinding-conflict notice.
+///
+/// Given the freshly-computed conflict `signature` and the `previous` signature
+/// we last stored, decide what to do. Separated from I/O so the
+/// warn-once-per-change policy can be unit-tested without touching the machine
+/// or the filesystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConflictHintDecision {
+    /// Nothing changed since last time; stay silent and leave state untouched.
+    Unchanged,
+    /// The conflict set changed but is now empty (resolved); update the stored
+    /// signature but show nothing.
+    ResolvedSilently,
+    /// New or changed conflicts; update the stored signature and show a notice.
+    Warn,
+}
+
+pub(crate) fn conflict_hint_decision(signature: &str, previous: &str) -> ConflictHintDecision {
+    if signature == previous {
+        ConflictHintDecision::Unchanged
+    } else if signature.is_empty() {
+        ConflictHintDecision::ResolvedSilently
+    } else {
+        ConflictHintDecision::Warn
+    }
+}
+
 /// Check whether jcode's keybindings conflict with shortcuts owned by the
 /// terminal or the OS, and return a one-time startup notice when the set of
 /// conflicts has changed since we last warned.
@@ -737,29 +764,27 @@ pub fn maybe_show_keymap_conflict_hint(
     let signature = keymap::conflict_signature(&conflicts);
 
     let mut state = SetupHintsState::load();
-    if signature == state.keymap_conflict_signature {
-        // Either no conflicts (empty signature already stored) or the same
-        // conflicts we already told them about. Stay quiet.
-        return None;
+    let decision = conflict_hint_decision(&signature, &state.keymap_conflict_signature);
+
+    match decision {
+        ConflictHintDecision::Unchanged => None,
+        ConflictHintDecision::ResolvedSilently => {
+            state.keymap_conflict_signature = signature;
+            let _ = state.save();
+            None
+        }
+        ConflictHintDecision::Warn => {
+            state.keymap_conflict_signature = signature;
+            let _ = state.save();
+            let status = keymap::render_status_line(keybindings, &snapshot)?;
+            let display = keymap::render_report(keybindings, &snapshot);
+            Some(StartupHints::with_status_and_display(
+                status,
+                "Keybindings",
+                display,
+            ))
+        }
     }
-
-    // Record the new signature regardless, so we only warn once per change.
-    state.keymap_conflict_signature = signature.clone();
-    let _ = state.save();
-
-    if conflicts.is_empty() {
-        // Conflicts were resolved since last time: update the stored signature
-        // (done above) but do not show a notice.
-        return None;
-    }
-
-    let status = keymap::render_status_line(keybindings, &snapshot)?;
-    let display = keymap::render_report(keybindings, &snapshot);
-    Some(StartupHints::with_status_and_display(
-        status,
-        "Keybindings",
-        display,
-    ))
 }
 
 /// Manual `jcode setup-launcher` command.
