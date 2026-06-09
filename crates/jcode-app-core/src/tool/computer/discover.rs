@@ -113,9 +113,13 @@ pub fn discover(category: Option<&str>) -> Result<ToolOutput> {
     };
     Ok(ToolOutput::new(format!(
         "macos_computer_use actions — category '{cat}'. All actions are fields on the same `macos_computer_use` tool.\n\n{body}\n\n\
-         Default policy: prefer background AX/scripting actions over visible coordinate input when \
-         the target element is resolvable; only fall back to click/type (which move your cursor) \
-         when AX can't reach it."
+         Default policy: this is the user's own live machine, so stay out of their way. \
+         Prefer background AX/scripting actions over visible coordinate input when the target \
+         element is resolvable; only fall back to click/type (which move your cursor and steal \
+         focus) when AX can't reach it. Do not move the cursor, change the frontmost app, or \
+         move/resize/activate windows unless the user asked or the task strictly requires it. \
+         Act only on the task you were given — never take proactive control of the desktop \
+         upfront. When a visible action is unavoidable, do the minimum and restore focus."
     ))
     .with_title("discover"))
 }

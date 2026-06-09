@@ -12,7 +12,11 @@
 //!   **scripting** (`run_applescript`) act on apps *by reference*, so they can
 //!   work in the **background** without moving the cursor.
 //!
-//! By default the tool prefers non-disruptive mechanisms (see `DisruptPolicy`).
+//! By default the tool prefers non-disruptive mechanisms and restraint: because
+//! this runs on the user's own live machine, the agent should act only on the
+//! requested task, prefer background AX/scripting over moving the cursor or
+//! stealing focus, and never take proactive control of the desktop. This policy
+//! is conveyed to the model via the tool description and the `discover` output.
 //!
 //! ## Progressive disclosure
 //!
@@ -181,9 +185,11 @@ impl Tool for ComputerTool {
         "Control the macOS desktop: see the screen (screenshot/ocr/ui tree), click and type \
          (visible coordinate input), act on UI elements in the BACKGROUND via Accessibility \
          (press/set_value, no cursor movement), manage apps and windows, use the clipboard, and \
-         run AppleScript. Coordinates are in points (top-left origin). Prefer background AX actions \
-         over blind coordinate clicks when the target is resolvable. Call action='discover' with a \
-         category to load the full action set. Run action='setup' first if permissions are missing."
+         run AppleScript. Coordinates are in points (top-left origin). This is the user's live \
+         machine: act only on the requested task (not proactively) and prefer BACKGROUND \
+         AX/scripting over moving the cursor or stealing focus; click/type only when AX can't \
+         reach the target. Call action='discover' with a category for the full action set. Run \
+         action='setup' first if permissions are missing."
     }
 
     fn parameters_schema(&self) -> Value {

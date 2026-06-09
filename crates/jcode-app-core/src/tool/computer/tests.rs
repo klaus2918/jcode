@@ -104,9 +104,12 @@ fn schema_is_compact() {
     let tool = ComputerTool::new();
     let schema = serde_json::to_string(&tool.parameters_schema()).unwrap();
     let total = tool.description().len() + schema.len();
-    // ~4 chars/token; keep always-on cost roughly under ~700 tokens.
+    // ~4 chars/token; keep always-on cost roughly under ~750 tokens. The bound
+    // leaves room for the short safety/restraint guidance in the description
+    // (act only on the requested task; prefer background mechanisms) while still
+    // flagging any real ballooning.
     assert!(
-        total < 2800,
+        total < 3000,
         "macos_computer_use tool always-on size grew to {total} chars (~{} tokens)",
         total / 4
     );
