@@ -1,4 +1,4 @@
-//! Tests for the computer tool. Pure-logic tests run anywhere on macOS; live
+//! Tests for the macos_computer_use tool. Pure-logic tests run anywhere on macOS; live
 //! tests that synthesize events / capture the screen are `#[ignore]`d.
 
 use super::*;
@@ -27,7 +27,7 @@ async fn rejects_bad_action() {
     let err = run_action(json!({ "action": "frobnicate" }))
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("Unknown computer action"));
+    assert!(err.to_string().contains("Unknown macos_computer_use action"));
 }
 
 #[tokio::test]
@@ -107,7 +107,7 @@ fn schema_is_compact() {
     // ~4 chars/token; keep always-on cost roughly under ~700 tokens.
     assert!(
         total < 2800,
-        "computer tool always-on size grew to {total} chars (~{} tokens)",
+        "macos_computer_use tool always-on size grew to {total} chars (~{} tokens)",
         total / 4
     );
 }

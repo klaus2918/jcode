@@ -1,4 +1,4 @@
-//! Centralized `osascript` / JXA execution for the `computer` tool.
+//! Centralized `osascript` / JXA execution for the `macos_computer_use` tool.
 //!
 //! Many macOS capabilities (Accessibility actions, window/app management, system
 //! state) are reachable through AppleScript / JavaScript-for-Automation without

@@ -174,7 +174,7 @@ fn is_mutating(action: &str) -> bool {
 #[async_trait]
 impl Tool for ComputerTool {
     fn name(&self) -> &str {
-        "computer"
+        "macos_computer_use"
     }
 
     fn description(&self) -> &str {
@@ -233,16 +233,16 @@ impl Tool for ComputerTool {
 
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
         let parsed: ComputerInput =
-            serde_json::from_value(input).context("invalid `computer` tool input")?;
+            serde_json::from_value(input).context("invalid `macos_computer_use` tool input")?;
         tokio::task::spawn_blocking(move || run(parsed))
             .await
-            .context("computer tool task panicked")?
+            .context("macos_computer_use tool task panicked")?
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 fn run(_input: ComputerInput) -> Result<ToolOutput> {
-    bail!("The `computer` tool is only supported on macOS.")
+    bail!("The `macos_computer_use` tool is only supported on macOS.")
 }
 
 #[cfg(target_os = "macos")]
@@ -432,7 +432,7 @@ fn dispatch(action: &str, input: &ComputerInput) -> Result<ToolOutput> {
         }
 
         other => bail!(
-            "Unknown computer action: {other}. Call action='discover' (category='all') to list every action."
+            "Unknown macos_computer_use action: {other}. Call action='discover' (category='all') to list every action."
         ),
     }
 }

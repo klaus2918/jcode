@@ -112,7 +112,7 @@ pub fn discover(category: Option<&str>) -> Result<ToolOutput> {
         )
     };
     Ok(ToolOutput::new(format!(
-        "computer actions — category '{cat}'. All actions are fields on the same `computer` tool.\n\n{body}\n\n\
+        "macos_computer_use actions — category '{cat}'. All actions are fields on the same `macos_computer_use` tool.\n\n{body}\n\n\
          Default policy: prefer background AX/scripting actions over visible coordinate input when \
          the target element is resolvable; only fall back to click/type (which move your cursor) \
          when AX can't reach it."
