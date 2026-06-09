@@ -18,7 +18,7 @@ pub mod source;
 pub mod terminal;
 
 pub use chord::KeyChord;
-pub use conflicts::{Conflict, JcodeBinding, detect_conflicts, jcode_bindings};
+pub use conflicts::{Conflict, JcodeBinding, conflict_signature, detect_conflicts, jcode_bindings};
 pub use report::{render_report, render_status_line};
 pub use source::{DiscoveredBinding, KeySource};
 

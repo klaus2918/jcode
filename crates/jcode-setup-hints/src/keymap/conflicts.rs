@@ -237,6 +237,27 @@ pub fn detect_conflicts(cfg: &KeybindingsConfig, snapshot: &KeymapSnapshot) -> V
     conflicts
 }
 
+/// A stable signature for a set of conflicts, used to decide whether to re-warn
+/// the user. Two runs that find the same conflicts (regardless of order)
+/// produce the same signature; any change (new conflict, resolved conflict,
+/// rebind) produces a different one.
+pub fn conflict_signature(conflicts: &[Conflict]) -> String {
+    let mut parts: Vec<String> = conflicts
+        .iter()
+        .map(|c| {
+            format!(
+                "{}|{}|{}",
+                c.jcode.field,
+                c.jcode.chord.canonical(),
+                c.interceptor.chord.canonical()
+            )
+        })
+        .collect();
+    parts.sort();
+    parts.dedup();
+    parts.join(";")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +348,30 @@ mod tests {
                 .iter()
                 .any(|c| c.jcode.field == "keybindings.model_switch_next")
         );
+    }
+
+    #[test]
+    fn signature_is_order_independent_and_changes_on_diff() {
+        let cfg = KeybindingsConfig::default();
+        let snap_a = snapshot_with(vec![
+            term_binding("ctrl+tab", "next_tab"),
+            term_binding("ctrl+shift+tab", "previous_tab"),
+        ]);
+        // Same conflicts, reversed discovery order.
+        let snap_b = snapshot_with(vec![
+            term_binding("ctrl+shift+tab", "previous_tab"),
+            term_binding("ctrl+tab", "next_tab"),
+        ]);
+        let sig_a = conflict_signature(&detect_conflicts(&cfg, &snap_a));
+        let sig_b = conflict_signature(&detect_conflicts(&cfg, &snap_b));
+        assert_eq!(sig_a, sig_b, "signature must be order-independent");
+
+        let snap_c = snapshot_with(vec![term_binding("ctrl+tab", "next_tab")]);
+        let sig_c = conflict_signature(&detect_conflicts(&cfg, &snap_c));
+        assert_ne!(sig_a, sig_c, "different conflict set => different signature");
+
+        // No conflicts => empty signature.
+        let clean = snapshot_with(vec![term_binding("cmd+t", "new_tab")]);
+        assert_eq!(conflict_signature(&detect_conflicts(&cfg, &clean)), "");
     }
 }
