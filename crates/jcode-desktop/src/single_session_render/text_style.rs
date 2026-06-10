@@ -1080,3 +1080,75 @@ pub(super) fn single_session_line_rgba(style: SingleSessionLineStyle) -> [f32; 4
         SingleSessionLineStyle::OverlaySelection => OVERLAY_SELECTION_TEXT_COLOR,
     }
 }
+
+#[cfg(test)]
+mod tail_fade_tests {
+    use super::*;
+
+    fn attrs_with_alpha(alpha: u8) -> Attrs<'static> {
+        Attrs::new().color(TextColor::rgba(10, 20, 30, alpha))
+    }
+
+    fn segment_alpha(attrs: &Attrs<'static>) -> u8 {
+        attrs.color_opt.map(|color| color.as_rgba_tuple().3).unwrap_or(255)
+    }
+
+    #[test]
+    fn zero_window_passes_segments_through() {
+        let segments = vec![("hello world", attrs_with_alpha(255))];
+        let faded = apply_streaming_tail_fade(segments.clone(), 0.0);
+        assert_eq!(faded.len(), 1);
+        assert_eq!(faded[0].0, "hello world");
+        assert_eq!(segment_alpha(&faded[0].1), 255);
+    }
+
+    #[test]
+    fn tail_chars_ramp_toward_transparent_end() {
+        let segments = vec![("abcdef", attrs_with_alpha(200))];
+        let faded = apply_streaming_tail_fade(segments, 4.0);
+        // "ab" untouched, then c..f split per char with decreasing alpha.
+        let text: String = faded.iter().map(|(text, _)| *text).collect();
+        assert_eq!(text, "abcdef");
+        let alphas: Vec<u8> = faded.iter().map(|(_, attrs)| segment_alpha(attrs)).collect();
+        // Last char must be the faintest, monotonically increasing backward.
+        for window in alphas.windows(2) {
+            assert!(window[0] >= window[1], "alphas must not rise toward the end: {alphas:?}");
+        }
+        assert!(*alphas.last().unwrap() < 200);
+        assert_eq!(alphas[0], 200);
+    }
+
+    #[test]
+    fn window_larger_than_text_fades_everything() {
+        let segments = vec![("hi", attrs_with_alpha(255))];
+        let faded = apply_streaming_tail_fade(segments, 50.0);
+        assert_eq!(faded.len(), 2);
+        assert!(faded.iter().all(|(_, attrs)| segment_alpha(attrs) < 255));
+    }
+
+    #[test]
+    fn multibyte_chars_split_on_boundaries() {
+        let segments = vec![("héllo wörld", attrs_with_alpha(255))];
+        let faded = apply_streaming_tail_fade(segments, 6.0);
+        let text: String = faded.iter().map(|(text, _)| *text).collect();
+        assert_eq!(text, "héllo wörld");
+    }
+
+    #[test]
+    fn fade_spans_multiple_segments() {
+        let segments = vec![
+            ("first ", attrs_with_alpha(255)),
+            ("second", attrs_with_alpha(255)),
+        ];
+        let faded = apply_streaming_tail_fade(segments, 8.0);
+        let text: String = faded.iter().map(|(text, _)| *text).collect();
+        assert_eq!(text, "first second");
+        // The first segment's leading chars stay untouched.
+        assert_eq!(faded[0].0, "f");
+        assert_eq!(segment_alpha(&faded[0].1), 255);
+        // The final character is the faintest in the ramp.
+        let last = faded.last().unwrap();
+        assert_eq!(last.0, "d");
+        assert!(segment_alpha(&last.1) < 255);
+    }
+}
