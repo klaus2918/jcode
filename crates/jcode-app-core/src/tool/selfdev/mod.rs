@@ -278,13 +278,35 @@ impl BuildRequest {
         self.save()
     }
 
+    /// Freshly enqueued requests are saved *before* their background task id
+    /// and status file exist (the handler saves once, spawns the task, then
+    /// saves again with the task metadata). The spawned task itself - or any
+    /// concurrent `selfdev status` / queue poll - can reconcile in that window
+    /// and must not prune the request as stale, or the build dies instantly
+    /// with "Queued build request disappeared".
+    fn within_bootstrap_grace(&self) -> bool {
+        const BOOTSTRAP_GRACE_SECS: i64 = 30;
+        chrono::DateTime::parse_from_rfc3339(&self.requested_at)
+            .map(|requested| {
+                Utc::now().signed_duration_since(requested.with_timezone(&Utc))
+                    < chrono::Duration::seconds(BOOTSTRAP_GRACE_SECS)
+            })
+            .unwrap_or(false)
+    }
+
     fn reconcile_pending_state(&mut self) -> Result<bool> {
         let Some(task_id) = self.background_task_id.as_deref() else {
+            if self.within_bootstrap_grace() {
+                return Ok(true);
+            }
             self.mark_stale("Self-dev build request is missing its background task id.")?;
             return Ok(false);
         };
 
         let Some(status_path) = self.status_path() else {
+            if self.within_bootstrap_grace() {
+                return Ok(true);
+            }
             self.mark_stale("Self-dev build request is missing its task status path.")?;
             return Ok(false);
         };
@@ -294,6 +316,9 @@ impl BuildRequest {
         } else {
             None
         }) else {
+            if self.within_bootstrap_grace() {
+                return Ok(true);
+            }
             self.mark_stale(
                 "Background task status file is missing; pruning stale self-dev build request.",
             )?;

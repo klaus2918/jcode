@@ -877,7 +877,10 @@ fn status_output_prunes_stale_pending_requests() {
         repo_scope: source.repo_scope.clone(),
         worktree_scope: source.worktree_scope.clone(),
         command: "scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode".to_string(),
-        requested_at: Utc::now().to_rfc3339(),
+        // Outside the bootstrap grace window: a request with a missing status
+        // file is only pruned once it is old enough that the queue handler
+        // cannot still be mid-spawn.
+        requested_at: (Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
         started_at: Some(Utc::now().to_rfc3339()),
         completed_at: None,
         state: BuildRequestState::Building,
@@ -913,6 +916,68 @@ fn status_output_prunes_stale_pending_requests() {
             .contains("pruning stale self-dev build request"),
         "stale request should record why it was pruned"
     );
+}
+
+#[test]
+fn freshly_queued_request_survives_reconcile_before_task_metadata_exists() {
+    // Regression: the queue handler saves the request *before* spawning its
+    // background task, so for a moment it has no task id / status file. A
+    // concurrent reconcile (status output, another agent's queue poll, or the
+    // task's own first wait_for_turn iteration) used to prune it as stale,
+    // killing the build instantly with "Queued build request disappeared".
+    let _storage_guard = crate::storage::lock_test_env();
+    let _lock = lock_env();
+    let temp_home = tempfile::TempDir::new().expect("temp home");
+    let _home_guard = EnvVarGuard::set("JCODE_HOME", temp_home.path());
+
+    let mut session = session::Session::create(None, Some("Fresh Build".to_string()));
+    session.save().expect("save session");
+
+    let source = test_source_state(std::path::Path::new("/tmp/jcode"));
+    let request = BuildRequest {
+        request_id: "fresh-request".to_string(),
+        // No background task metadata yet: mid-bootstrap.
+        background_task_id: None,
+        session_id: session.id.clone(),
+        session_short_name: session.short_name.clone(),
+        session_title: Some("Fresh Build".to_string()),
+        reason: "fresh reason".to_string(),
+        repo_dir: "/tmp/jcode".to_string(),
+        repo_scope: source.repo_scope.clone(),
+        worktree_scope: source.worktree_scope.clone(),
+        command: "scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode".to_string(),
+        requested_at: Utc::now().to_rfc3339(),
+        started_at: None,
+        completed_at: None,
+        state: BuildRequestState::Queued,
+        version: Some("fresh-build".to_string()),
+        dedupe_key: Some("fresh-dedupe".to_string()),
+        requested_source: Some(source.clone()),
+        built_source: None,
+        published_version: None,
+        last_progress: Some("queued".to_string()),
+        validated: false,
+        error: None,
+        output_file: None,
+        status_file: None,
+        attached_to_request_id: None,
+    };
+    request.save().expect("save fresh request");
+
+    let pending = BuildRequest::pending_requests_for_scope(&source.worktree_scope)
+        .expect("pending requests");
+    assert!(
+        pending
+            .iter()
+            .any(|request| request.request_id == "fresh-request"),
+        "freshly queued request must stay pending during the bootstrap grace window"
+    );
+
+    let reloaded = BuildRequest::load("fresh-request")
+        .expect("load fresh request")
+        .expect("fresh request exists");
+    assert_eq!(reloaded.state, BuildRequestState::Queued);
+    assert!(reloaded.error.is_none());
 }
 
 #[tokio::test]
