@@ -1,3 +1,4 @@
+use super::widget_render::set_cell_if_visible;
 use super::*;
 
 fn load_source_image(hash: u64, path: &Path) -> Option<Arc<DynamicImage>> {
@@ -626,6 +627,52 @@ static KITTY_DIACRITICS: [char; 297] = [
     '\u{1D244}',
 ];
 
+/// Cheap cache probe for the inline fit state: returns the placement triple
+/// when the transmitted pixels already match `(target_cols, target_rows)` at
+/// this font size, without touching the source image at all. Keeps steady-state
+/// frames free of source-cache locks and (worst case) re-decodes.
+fn probe_kitty_fit_state(
+    hash: u64,
+    source_path: &Path,
+    target_cols: u16,
+    target_rows: u16,
+    font_size: (u16, u16),
+) -> Option<(u32, u16, u16)> {
+    let mut cache = KITTY_VIEWPORT_STATE.lock().ok()?;
+    let state = cache.get_mut(hash)?;
+    (state.source_path == source_path
+        && state.font_size == font_size
+        && state.fit_target == Some((target_cols, target_rows)))
+    .then(|| (state.unique_id, state.full_cols, state.full_rows))
+}
+
+/// Draw a rounded left border that hugs the image's real extent: `╭` on the
+/// image's first row, `╰` on its last, `│` between. Rows of the placeholder
+/// below the image (when the estimate was taller than the fitted image) get no
+/// border at all, so the line never extends past the picture.
+fn draw_fitted_left_border(buf: &mut Buffer, area: Rect, skip_rows: u16, full_rows: u16) {
+    let clamped = area.intersection(*buf.area());
+    if clamped.width == 0 || clamped.height == 0 || full_rows == 0 {
+        return;
+    }
+    let visible = clamped.height.min(full_rows.saturating_sub(skip_rows));
+    let border_style = Style::default().fg(rgb(100, 100, 100)); // DIM_COLOR
+    for row in 0..visible {
+        let global_row = skip_rows.saturating_add(row);
+        let ch = match (global_row == 0, global_row + 1 >= full_rows) {
+            (true, true) => '╶',
+            (true, false) => '╭',
+            (false, true) => '╰',
+            (false, false) => '│',
+        };
+        let y = clamped.y + row;
+        set_cell_if_visible(buf, clamped.x, y, ch, Some(border_style));
+        if clamped.width > 1 {
+            set_cell_if_visible(buf, clamped.x.saturating_add(1), y, ' ', None);
+        }
+    }
+}
+
 /// Render an inline raster image scaled-to-fit a fixed placeholder box, with
 /// stable pixels while scrolling.
 ///
@@ -673,21 +720,25 @@ pub fn render_image_widget_fit_stable(
         Some(cached) => cached,
         None => return false,
     };
-    let source_path = cached.path.clone();
-    let source = match load_source_image(hash, &source_path) {
-        Some(img) => img,
-        None => return false,
-    };
-
+    let source_path = cached.path;
     let font_size = picker.font_size();
-    let Some((_, full_cols, full_rows)) = ensure_kitty_fit_state(
-        hash,
-        &source_path,
-        source.as_ref(),
-        target_cols.saturating_sub(border_width),
-        target_rows,
-        font_size,
-    ) else {
+    let fit_cols = target_cols.saturating_sub(border_width);
+
+    // Hot path: steady-state frames hit the already-transmitted state without
+    // ever touching (or re-decoding) the source image.
+    let placement = probe_kitty_fit_state(hash, &source_path, fit_cols, target_rows, font_size)
+        .or_else(|| {
+            let source = load_source_image(hash, &source_path)?;
+            ensure_kitty_fit_state(
+                hash,
+                &source_path,
+                source.as_ref(),
+                fit_cols,
+                target_rows,
+                font_size,
+            )
+        });
+    let Some((_, full_cols, full_rows)) = placement else {
         return false;
     };
 
@@ -695,15 +746,17 @@ pub fn render_image_widget_fit_stable(
         return false;
     }
 
-    if draw_border {
-        draw_left_border(buf, area);
-    }
     let mut image_area = Rect {
         x: area.x + border_width,
         y: area.y,
         width: area.width - border_width,
         height: area.height,
     };
+    if draw_border {
+        // Border hugs the fitted image: rounded ends, and no line beyond the
+        // image's last row even when the placeholder estimate ran taller.
+        draw_fitted_left_border(buf, area, skip_rows, full_rows);
+    }
     if image_area.width == 0 || image_area.height == 0 {
         return true;
     }
