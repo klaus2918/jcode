@@ -139,8 +139,9 @@ fn fit_rows(width: u32, height: u32, chat_width: u16, viewport_height: u16) -> u
     let cell_w = cell_w.max(1) as u32;
     let cell_h = cell_h.max(1) as u32;
 
-    // Available width in pixels (leave 1 cell for the left border bar).
-    let avail_cells = chat_width.saturating_sub(1).max(1) as u32;
+    // Available width in pixels (border bar + padding take 2 cells, matching
+    // the renderer's BORDER_WIDTH).
+    let avail_cells = chat_width.saturating_sub(2).max(1) as u32;
     let avail_px = avail_cells * cell_w;
 
     // Native pixel height, unless the image is wider than the pane, in which
