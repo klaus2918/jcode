@@ -149,6 +149,7 @@ pub(crate) struct AnchoredInlineImages {
 }
 
 impl AnchoredInlineImages {
+    #[cfg(test)]
     pub(crate) fn has_anchored(&self) -> bool {
         !self.by_tool.is_empty() || !self.by_prompt.is_empty()
     }
