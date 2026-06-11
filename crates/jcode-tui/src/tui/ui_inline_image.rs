@@ -324,30 +324,54 @@ fn fit_rows(width: u32, height: u32, chat_width: u16, viewport_height: u16) -> u
 }
 
 /// Build the dim label line shown above an inline image, e.g.
-/// `  🖼 screenshot.png  1920×1080`.
-pub(crate) fn image_label_line(item: &InlineImageItem) -> Line<'static> {
+/// `  🖼 screenshot.png  1920×1080`, with a trailing show/hide badge
+/// (`[Alt] [⇧] [I] hide` / `[Alt] [⇧] [I] show image`) so the toggle is
+/// discoverable right where the image renders.
+pub(crate) fn image_label_line(item: &InlineImageItem, images_visible: bool) -> Line<'static> {
     let dims = format!("{}×{}", item.width, item.height);
     let label = if item.label.is_empty() {
         dims
     } else {
         format!("{}  {}", item.label, dims)
     };
-    Line::from(vec![
-        Span::styled("  🖼 ", Style::default().add_modifier(Modifier::DIM)),
-        Span::styled(label, Style::default().add_modifier(Modifier::DIM)),
-    ])
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let mut spans = vec![
+        Span::styled("  🖼 ", dim),
+        Span::styled(label, dim),
+        Span::raw("  "),
+        Span::styled(super::viewport::copy_badge_alt_badge(), dim),
+        Span::styled(" [⇧] [I] ", dim),
+    ];
+    if images_visible {
+        spans.push(Span::styled("hide", dim));
+    } else {
+        spans.push(Span::styled(
+            "show image",
+            Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Lines for images anchored at a transcript message: per image, a leading
 /// blank, a dim label, a geometry-encoding marker line plus blank placeholder
-/// rows (recognized by the image-region scan), and a trailing blank.
-pub(crate) fn anchored_image_lines(items: &[InlineImageItem], width: u16) -> Vec<Line<'static>> {
+/// rows (recognized by the image-region scan), and a trailing blank. When
+/// `images_visible` is false the image collapses to just its label stub (with
+/// a `show image` badge) and no placeholder rows are emitted, so nothing is
+/// painted.
+pub(crate) fn anchored_image_lines(
+    items: &[InlineImageItem],
+    width: u16,
+    images_visible: bool,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for item in items {
         lines.push(Line::from(""));
-        lines.push(image_label_line(item));
-        let (rows, cols) = fit_geometry_anchored(item.width, item.height, width);
-        lines.extend(mermaid::inline_image_placeholder_lines(item.id, rows, cols));
+        lines.push(image_label_line(item, images_visible));
+        if images_visible {
+            let (rows, cols) = fit_geometry_anchored(item.width, item.height, width);
+            lines.extend(mermaid::inline_image_placeholder_lines(item.id, rows, cols));
+        }
         lines.push(Line::from(""));
     }
     lines
@@ -355,12 +379,14 @@ pub(crate) fn anchored_image_lines(items: &[InlineImageItem], width: u16) -> Vec
 
 /// Build the inline-images prepared section: a heading + correctly-sized
 /// placeholder per image, with explicit `image_regions` (render = Fit) that the
-/// viewport draws lazily.
+/// viewport draws lazily. When `images_visible` is false each image collapses
+/// to its label stub and no regions are emitted.
 pub(crate) fn build_section(
     items: &[InlineImageItem],
     width: u16,
     viewport_height: u16,
     prefix_blank: bool,
+    images_visible: bool,
 ) -> PreparedMessages {
     use std::sync::Arc;
 
@@ -376,21 +402,23 @@ pub(crate) fn build_section(
     }
 
     for item in items {
-        lines.push(image_label_line(item));
+        lines.push(image_label_line(item, images_visible));
 
-        let (rows, cols) = fit_geometry(item.width, item.height, width, viewport_height);
-        let region_start = lines.len();
-        for _ in 0..rows {
-            lines.push(Line::from(""));
+        if images_visible {
+            let (rows, cols) = fit_geometry(item.width, item.height, width, viewport_height);
+            let region_start = lines.len();
+            for _ in 0..rows {
+                lines.push(Line::from(""));
+            }
+            image_regions.push(ImageRegion {
+                abs_line_idx: region_start,
+                end_line: region_start + rows as usize,
+                hash: item.id,
+                height: rows,
+                width: cols,
+                render: ImageRegionRender::Fit,
+            });
         }
-        image_regions.push(ImageRegion {
-            abs_line_idx: region_start,
-            end_line: region_start + rows as usize,
-            hash: item.id,
-            height: rows,
-            width: cols,
-            render: ImageRegionRender::Fit,
-        });
         // Trailing spacer between images.
         lines.push(Line::from(""));
     }
@@ -499,7 +527,7 @@ mod tests {
     #[test]
     fn build_section_records_region_width() {
         let items = vec![item(600, 400)];
-        let section = build_section(&items, 80, 40, false);
+        let section = build_section(&items, 80, 40, false, true);
         let region = &section.image_regions[0];
         assert!(
             region.width > 2,
@@ -512,7 +540,7 @@ mod tests {
     #[test]
     fn build_section_emits_one_fit_region_per_image_with_label() {
         let items = vec![item(600, 400), item(800, 600)];
-        let section = build_section(&items, 80, 40, true);
+        let section = build_section(&items, 80, 40, true, true);
         assert_eq!(section.image_regions.len(), 2);
         for region in &section.image_regions {
             assert_eq!(region.render, ImageRegionRender::Fit);
@@ -539,9 +567,58 @@ mod tests {
 
     #[test]
     fn build_section_is_empty_for_no_items() {
-        let section = build_section(&[], 80, 40, false);
+        let section = build_section(&[], 80, 40, false, true);
         assert!(section.wrapped_lines.is_empty());
         assert!(section.image_regions.is_empty());
+    }
+
+    #[test]
+    fn build_section_hidden_collapses_to_label_stub_with_show_badge() {
+        let items = vec![item(600, 400)];
+        let section = build_section(&items, 80, 40, false, false);
+        assert!(
+            section.image_regions.is_empty(),
+            "hidden images must not emit drawable regions"
+        );
+        let text: String = section
+            .wrapped_lines
+            .iter()
+            .map(jcode_tui_render::line_plain_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("test.png"), "label should remain: {text:?}");
+        assert!(
+            text.contains("show image"),
+            "show badge should render: {text:?}"
+        );
+    }
+
+    #[test]
+    fn visible_label_line_advertises_hide_badge() {
+        let line = image_label_line(&item(600, 400), true);
+        let text = jcode_tui_render::line_plain_text(&line);
+        assert!(text.contains("[⇧] [I]"), "badge keys missing: {text:?}");
+        assert!(text.contains("hide"), "hide hint missing: {text:?}");
+    }
+
+    #[test]
+    fn anchored_image_lines_hidden_emit_no_placeholder_markers() {
+        let items = vec![item(600, 400)];
+        let lines = anchored_image_lines(&items, 80, false);
+        assert!(
+            lines
+                .iter()
+                .filter_map(mermaid::parse_inline_image_placeholder)
+                .next()
+                .is_none(),
+            "hidden images must not emit geometry markers"
+        );
+        let text: String = lines
+            .iter()
+            .map(jcode_tui_render::line_plain_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("show image"), "show badge missing: {text:?}");
     }
 
     #[test]
@@ -628,7 +705,7 @@ mod tests {
     #[test]
     fn anchored_image_lines_round_trip_through_region_scan() {
         let items = vec![item(600, 400)];
-        let lines = anchored_image_lines(&items, 80);
+        let lines = anchored_image_lines(&items, 80, true);
         // Find the marker line and verify its geometry parse.
         let parsed: Vec<(u64, u16, u16)> = lines
             .iter()
