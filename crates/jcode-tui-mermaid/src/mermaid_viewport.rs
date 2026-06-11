@@ -686,8 +686,14 @@ pub fn inline_fit_readiness(
     };
     let border_width = if draw_border { BORDER_WIDTH } else { 0 };
     let fit_cols = target_cols.saturating_sub(border_width);
-    if probe_kitty_fit_state(hash, &cached.path, fit_cols, target_rows, picker.font_size())
-        .is_some()
+    if probe_kitty_fit_state(
+        hash,
+        &cached.path,
+        fit_cols,
+        target_rows,
+        picker.font_size(),
+    )
+    .is_some()
     {
         InlineFitReadiness::Ready
     } else {

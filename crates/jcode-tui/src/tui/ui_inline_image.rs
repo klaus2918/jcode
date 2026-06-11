@@ -587,6 +587,37 @@ mod tests {
         }
     }
 
+    /// 1x1 transparent PNG used by the materialize tests below.
+    const MATERIALIZE_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn materialize_visible_probe_is_cheap_after_first_call() {
+        let id = mermaid::inline_image_id("image/png", MATERIALIZE_PNG_B64);
+        register_payload(id, "image/png", MATERIALIZE_PNG_B64);
+        assert!(materialize_visible(id), "first call decodes and caches");
+        // Steady state: the in-memory probe alone must report ready, without
+        // needing the payload registry at all.
+        assert!(
+            mermaid::inline_image_is_materialized(id),
+            "presence probe should hit after materialization"
+        );
+        assert!(materialize_visible(id), "repeat call stays true");
+    }
+
+    #[test]
+    fn ensure_drawable_true_for_materialized_image_without_kitty() {
+        // In tests no picker is initialized, so the stable-fit path reports
+        // Unsupported; a materialized image must still be drawable so the
+        // fallback renderers can run.
+        let id = mermaid::inline_image_id("image/png", MATERIALIZE_PNG_B64);
+        register_payload(id, "image/png", MATERIALIZE_PNG_B64);
+        assert!(materialize_visible(id));
+        assert!(
+            ensure_drawable(id, 80, 10),
+            "materialized image must be drawable on non-Kitty protocols"
+        );
+    }
+
     #[test]
     fn fit_rows_caps_tall_image_to_viewport_fraction() {
         // A very tall image must be capped so it cannot bury the transcript.
