@@ -20,8 +20,8 @@ use crate::tui::mermaid;
 use jcode_tui_messages::{ImageRegion, ImageRegionRender, PreparedMessages};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex, OnceLock, mpsc};
 
 #[inline]
 fn div_ceil_u32(value: u32, divisor: u32) -> u32 {
@@ -99,12 +99,122 @@ pub(crate) fn register_payload(id: u64, media_type: &str, data_b64: &str) {
 }
 
 /// Ensure the image with `id` is materialized (decoded + cached) so it can be
-/// drawn. Returns true on success. Cheap and idempotent on repeat.
+/// drawn. Returns true on success.
+///
+/// Steady-state frames hit a cheap in-memory presence probe (no payload clone,
+/// no payload hash); only the first visible frame for an image pays the decode
+/// + cache cost.
 pub(crate) fn materialize_visible(id: u64) -> bool {
+    if mermaid::inline_image_is_materialized(id) {
+        return true;
+    }
     if let Some((media_type, data_b64)) = PAYLOAD_REGISTRY.lock().ok().and_then(|reg| reg.get(id)) {
-        return mermaid::materialize_inline_image(&media_type, &data_b64).is_some();
+        return mermaid::materialize_inline_image_by_id(id, &media_type, &data_b64).is_some();
     }
     false
+}
+
+/// One pending prewarm request: build everything needed to draw image `id`
+/// at the given placeholder geometry (decode payload, write cache file, scale
+/// to the target box, escape-encode for Kitty).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PrewarmRequest {
+    id: u64,
+    target_cols: u16,
+    target_rows: u16,
+}
+
+static PREWARM_TX: OnceLock<mpsc::Sender<PrewarmRequest>> = OnceLock::new();
+/// Requests queued or in flight, so a 60fps scroll doesn't enqueue the same
+/// image dozens of times before the worker finishes it.
+static PREWARM_INFLIGHT: LazyLock<Mutex<HashSet<PrewarmRequest>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn prewarm_sender() -> &'static mpsc::Sender<PrewarmRequest> {
+    PREWARM_TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<PrewarmRequest>();
+        if let Err(err) = std::thread::Builder::new()
+            .name("jcode-inline-image-prewarm".to_string())
+            .spawn(move || prewarm_worker(rx))
+        {
+            crate::logging::warn(&format!(
+                "Failed to spawn inline-image prewarm worker; first view will decode on the UI thread: {}",
+                err
+            ));
+        }
+        tx
+    })
+}
+
+fn prewarm_worker(rx: mpsc::Receiver<PrewarmRequest>) {
+    for req in rx {
+        materialize_visible(req.id);
+        mermaid::prewarm_inline_fit_state(req.id, req.target_cols, req.target_rows, true);
+        if let Ok(mut inflight) = PREWARM_INFLIGHT.lock() {
+            inflight.remove(&req);
+        }
+        // Nudge the UI exactly like a finished deferred Mermaid render so the
+        // placeholder fills in on the next frame without user input. The
+        // prepared placeholder geometry is unchanged, so no prepare-cache
+        // invalidation is needed - just a repaint.
+        crate::bus::Bus::global().publish(crate::bus::BusEvent::MermaidRenderCompleted);
+    }
+}
+
+/// Make sure image `id` can be drawn cheaply this frame.
+///
+/// Returns true when the draw path can run now without heavy work (image
+/// decoded and, on Kitty, scale+transmit state matches the placeholder
+/// geometry). Returns false after scheduling background preparation; the
+/// caller should skip drawing this frame and rely on the completion nudge to
+/// repaint.
+pub(crate) fn ensure_drawable(id: u64, target_cols: u16, target_rows: u16) -> bool {
+    let materialized = mermaid::inline_image_is_materialized(id);
+    let readiness = if materialized {
+        mermaid::inline_fit_readiness(id, target_cols, target_rows, true)
+    } else {
+        // Not decoded yet. On any protocol the first draw would block on a
+        // full decode, so prewarm regardless of protocol support.
+        mermaid::InlineFitReadiness::NeedsPrewarm
+    };
+
+    match readiness {
+        mermaid::InlineFitReadiness::Ready => true,
+        mermaid::InlineFitReadiness::Unsupported => {
+            // Non-Kitty fallback renderers manage their own protocol state;
+            // just make sure the bytes are decoded, off-thread if possible.
+            if materialized {
+                true
+            } else {
+                schedule_prewarm(id, target_cols, target_rows);
+                false
+            }
+        }
+        mermaid::InlineFitReadiness::NeedsPrewarm => {
+            schedule_prewarm(id, target_cols, target_rows);
+            false
+        }
+    }
+}
+
+fn schedule_prewarm(id: u64, target_cols: u16, target_rows: u16) {
+    let req = PrewarmRequest {
+        id,
+        target_cols,
+        target_rows,
+    };
+    if let Ok(mut inflight) = PREWARM_INFLIGHT.lock() {
+        if !inflight.insert(req) {
+            return;
+        }
+    }
+    if prewarm_sender().send(req).is_err() {
+        // Worker unavailable: fall back to synchronous work on next frame.
+        if let Ok(mut inflight) = PREWARM_INFLIGHT.lock() {
+            inflight.remove(&req);
+        }
+        materialize_visible(id);
+    }
 }
 
 /// Resolve the app's rendered images into lazily-sized inline items. Performs
