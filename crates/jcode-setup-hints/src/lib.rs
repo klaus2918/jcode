@@ -231,6 +231,33 @@ fn mac_hotkey_launch_agent_plist(
     )
 }
 
+/// Launch a new jcode window in the user's preferred macOS terminal, passing
+/// `extra_args` (e.g. `["--resume", "<session-id>"]`) to the jcode invocation.
+///
+/// This reuses the same terminal detection and launch plumbing as the global
+/// Cmd+; hotkey, so windows opened from the menu bar behave identically to
+/// hotkey-launched ones.
+#[cfg(target_os = "macos")]
+pub fn launch_jcode_in_macos_terminal(extra_args: &[String]) -> Result<()> {
+    let terminal = effective_macos_terminal();
+    let exe = std::env::current_exe()?;
+    let exe_path = exe.to_string_lossy().into_owned();
+    let shell_command = macos_terminal::paused_jcode_shell_command_with_args(&exe_path, extra_args);
+    let command = launch_command_for_macos_terminal(terminal, &shell_command);
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .status()
+        .context("failed to launch terminal for jcode")?;
+    if !status.success() {
+        anyhow::bail!(
+            "terminal launch command exited with status {:?}",
+            status.code()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn install_macos_hotkey_listener(
     preferred_terminal: Option<MacTerminalKind>,

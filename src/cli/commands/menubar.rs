@@ -53,6 +53,19 @@ pub(crate) fn format_menubar_summary(counts: SessionCounts) -> String {
     )
 }
 
+/// Title for one session row in the dropdown menu: the session's animal emoji
+/// and short name, plus a streaming marker while a response is generating.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn format_session_menu_item_title(session_id: &str, streaming: bool) -> String {
+    let display = crate::id::extract_session_name(session_id).unwrap_or(session_id);
+    let icon = crate::id::session_icon(display);
+    if streaming {
+        format!("{icon} {display} · streaming")
+    } else {
+        format!("{icon} {display}")
+    }
+}
+
 pub fn run_menubar_command(once: bool, json: bool) -> Result<()> {
     if json {
         let report = CountsReport::from(session::session_counts());
@@ -143,21 +156,79 @@ pub fn ensure_menubar_helper_running() {}
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{format_menubar_summary, format_menubar_title};
-    use crate::session;
+    use super::{format_menubar_summary, format_menubar_title, format_session_menu_item_title};
+    use crate::session::{self, SessionCounts, SessionPresence};
 
-    use objc2::MainThreadMarker;
-    use objc2::MainThreadOnly;
+    use std::cell::RefCell;
+    use std::cmp::Reverse;
+
     use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
     use objc2_app_kit::{
         NSApplication, NSApplicationActivationPolicy, NSCellImagePosition, NSFont,
         NSFontWeightRegular, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
         NSVariableStatusItemLength,
     };
-    use objc2_foundation::{NSString, ns_string};
+    use objc2_foundation::{NSObject, NSString, ns_string};
 
     /// Poll interval for refreshing the counts (milliseconds).
     const REFRESH_INTERVAL_MS: u64 = 1000;
+
+    /// Number of fixed items at the end of the menu (separator, New Window,
+    /// separator, Quit). Session rows are inserted between the summary header
+    /// and this tail.
+    const MENU_TAIL_ITEMS: isize = 4;
+
+    define_class!(
+           // SAFETY: NSObject has no subclassing requirements and MenuHandler
+           // does not implement Drop.
+           #[unsafe(super(NSObject))]
+           #[thread_kind = MainThreadOnly]
+           #[name = "JcodeMenubarHandler"]
+           struct MenuHandler;
+
+           impl MenuHandler {
+               /// Open the clicked session (stored in the item's representedObject)
+               /// in a new terminal window via `jcode --resume <id>`.
+               #[unsafe(method(openSession:))]
+               fn open_session(&self, sender: &NSMenuItem)
+    {
+                   let Some(object) = sender.representedObject() else {
+                       return;
+                   };
+                   let Ok(session_id) = object.downcast::<NSString>() else {
+                       return;
+                   };
+                   launch_jcode_window(vec!["--resume".to_string(), session_id.to_string()]);
+               }
+
+               /// Launch a brand-new jcode session in a new terminal window.
+               #[unsafe(method(newWindow:))]
+               fn new_window(&self, _sender: &NSMenuItem) {
+                   launch_jcode_window(Vec::new());
+               }
+           }
+       );
+
+    impl MenuHandler {
+        fn new(mtm: MainThreadMarker) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(());
+            unsafe { msg_send![super(this), init] }
+        }
+    }
+
+    /// Launch a jcode window off the main thread so slow terminal startup
+    /// (osascript / `open`) never blocks the menu bar UI.
+    fn launch_jcode_window(args: Vec<String>) {
+        std::thread::spawn(move || {
+            if let Err(err) = crate::setup_hints::launch_jcode_in_macos_terminal(&args) {
+                crate::logging::warn(&format!(
+                    "menubar: failed to launch jcode window ({args:?}): {err}"
+                ));
+            }
+        });
+    }
 
     pub(super) fn run_status_item_app() {
         let mtm = MainThreadMarker::new()
@@ -195,11 +266,28 @@ mod macos {
             button.setFont(Some(&font));
         }
 
-        // Build the dropdown menu (header summary + quit).
+        // The target of menu item actions. NSMenuItem holds its target weakly,
+        // so keep a strong reference alive in the refresh closure below.
+        let handler = MenuHandler::new(mtm);
+
+        // Build the dropdown menu: summary header, dynamic session rows, then
+        // a fixed tail (New Window / Quit).
         let menu = NSMenu::new(mtm);
         let summary_item = NSMenuItem::new(mtm);
         summary_item.setEnabled(false);
         menu.addItem(&summary_item);
+
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        let new_window_item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                ns_string!("New jcode Window"),
+                Some(sel!(newWindow:)),
+                ns_string!("n"),
+            )
+        };
+        unsafe { new_window_item.setTarget(Some(&handler)) };
+        menu.addItem(&new_window_item);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         let quit_item = unsafe {
@@ -213,14 +301,26 @@ mod macos {
         menu.addItem(&quit_item);
         status_item.setMenu(Some(&menu));
 
+        let last_sessions: RefCell<Vec<SessionPresence>> = RefCell::new(Vec::new());
         let refresh = move || {
-            let counts = session::session_counts();
-            let title = format_menubar_title(counts);
-            let summary = format_menubar_summary(counts);
+            let mut sessions = session::session_presence();
+            sessions.sort_by_key(|s| (Reverse(s.streaming), s.session_id.clone()));
+
+            let counts = SessionCounts {
+                total: sessions.len(),
+                streaming: sessions.iter().filter(|s| s.streaming).count(),
+            };
             if let Some(button) = status_item.button(mtm) {
-                button.setTitle(&NSString::from_str(&title));
+                button.setTitle(&NSString::from_str(&format_menubar_title(counts)));
             }
-            summary_item.setTitle(&NSString::from_str(&summary));
+            summary_item.setTitle(&NSString::from_str(&format_menubar_summary(counts)));
+
+            // Only touch the menu structure when the session set changed, so
+            // an open menu is not visually disturbed every second.
+            if *last_sessions.borrow() != sessions {
+                rebuild_session_items(&menu, &handler, mtm, &sessions);
+                *last_sessions.borrow_mut() = sessions;
+            }
         };
 
         // Initial render before the run loop starts spinning.
@@ -232,6 +332,47 @@ mod macos {
         app.run();
     }
 
+    /// Replace the dynamic session rows between the summary header (index 0)
+    /// and the fixed tail with one clickable row per running session.
+    fn rebuild_session_items(
+        menu: &NSMenu,
+        handler: &MenuHandler,
+        mtm: MainThreadMarker,
+        sessions: &[SessionPresence],
+    ) {
+        while menu.numberOfItems() > 1 + MENU_TAIL_ITEMS {
+            menu.removeItemAtIndex(1);
+        }
+
+        let mut index = 1;
+        if !sessions.is_empty() {
+            menu.insertItem_atIndex(&NSMenuItem::separatorItem(mtm), index);
+            index += 1;
+        }
+        for presence in sessions {
+            let title = format_session_menu_item_title(&presence.session_id, presence.streaming);
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &NSString::from_str(&title),
+                    Some(sel!(openSession:)),
+                    ns_string!(""),
+                )
+            };
+            let target: &AnyObject = handler;
+            unsafe {
+                item.setTarget(Some(target));
+                item.setRepresentedObject(Some(&NSString::from_str(&presence.session_id)));
+            }
+            item.setToolTip(Some(&NSString::from_str(&format!(
+                "Open {} in a new terminal window",
+                presence.session_id
+            ))));
+            menu.insertItem_atIndex(&item, index);
+            index += 1;
+        }
+    }
+
     /// Schedule a repeating timer on the main run loop that re-renders the item.
     fn spawn_refresh_timer<F>(refresh: F)
     where
@@ -239,7 +380,7 @@ mod macos {
     {
         use std::ptr::NonNull;
 
-        use objc2_foundation::{NSDefaultRunLoopMode, NSRunLoop, NSTimer};
+        use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes, NSTimer};
 
         let interval = REFRESH_INTERVAL_MS as f64 / 1000.0;
         let block = block2::RcBlock::new(move |_timer: NonNull<NSTimer>| {
@@ -249,7 +390,10 @@ mod macos {
         unsafe {
             let timer = NSTimer::timerWithTimeInterval_repeats_block(interval, true, &block);
             let run_loop = NSRunLoop::currentRunLoop();
-            run_loop.addTimer_forMode(&timer, NSDefaultRunLoopMode);
+            // Common modes (not just the default mode) so the counts and the
+            // session list keep updating while the dropdown menu is open
+            // (menu tracking runs the loop in NSEventTrackingRunLoopMode).
+            run_loop.addTimer_forMode(&timer, NSRunLoopCommonModes);
             // The run loop retains the timer; keep our reference alive too so the
             // owned closure (and its captured `status_item`) lives for the whole
             // process lifetime.
@@ -305,6 +449,23 @@ mod tests {
                 streaming: 1,
             }),
             "1 streaming · 3 sessions running"
+        );
+    }
+
+    #[test]
+    fn session_menu_item_title_shows_icon_name_and_streaming() {
+        assert_eq!(
+            format_session_menu_item_title("session_buffalo_1781229104969_6d487ff77287de4f", false),
+            "🐃 buffalo"
+        );
+        assert_eq!(
+            format_session_menu_item_title("session_buffalo_1781229104969_6d487ff77287de4f", true),
+            "🐃 buffalo · streaming"
+        );
+        // Unparseable IDs fall back to the raw ID with the generic icon.
+        assert_eq!(
+            format_session_menu_item_title("weird-id", false),
+            "💫 weird-id"
         );
     }
 

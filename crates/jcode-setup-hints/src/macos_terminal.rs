@@ -141,10 +141,23 @@ pub(super) fn escape_applescript_text(input: &str) -> String {
 }
 
 pub(super) fn paused_jcode_shell_command(exe_path: &str) -> String {
+    paused_jcode_shell_command_with_args(exe_path, &[])
+}
+
+/// Like [`paused_jcode_shell_command`] but passes extra CLI args (each
+/// single-quoted) to the jcode invocation, e.g. `--resume <session-id>`.
+pub(super) fn paused_jcode_shell_command_with_args(exe_path: &str, args: &[String]) -> String {
     let escaped_exe = escape_shell_single_quotes(exe_path);
+    let mut arg_str = String::new();
+    for arg in args {
+        arg_str.push_str(" '");
+        arg_str.push_str(&escape_shell_single_quotes(arg));
+        arg_str.push('\'');
+    }
     format!(
-        r#"if [ ! -x '{exe}' ]; then printf 'jcode executable not found.\n'; exit 127; fi; '{exe}'; status=$?; if [ "$status" -ne 0 ]; then printf '\nJcode exited with status %s.\n' "$status"; printf 'Press Enter to close... '; read -r _; fi; exit "$status""#,
+        r#"if [ ! -x '{exe}' ]; then printf 'jcode executable not found.\n'; exit 127; fi; '{exe}'{args}; status=$?; if [ "$status" -ne 0 ]; then printf '\nJcode exited with status %s.\n' "$status"; printf 'Press Enter to close... '; read -r _; fi; exit "$status""#,
         exe = escaped_exe,
+        args = arg_str,
     )
 }
 
@@ -223,6 +236,28 @@ mod tests {
                 "start --always-new-process -- /bin/bash -lc",
                 shell_command,
             )
+        );
+    }
+
+    #[test]
+    fn paused_shell_command_quotes_extra_args() {
+        let cmd = super::paused_jcode_shell_command_with_args(
+            "/usr/local/bin/jcode",
+            &["--resume".to_string(), "session_fox_123_abc".to_string()],
+        );
+        assert!(cmd.contains("'/usr/local/bin/jcode' '--resume' 'session_fox_123_abc';"));
+
+        // Single quotes in args must be escaped, not break out of quoting.
+        let cmd = super::paused_jcode_shell_command_with_args(
+            "/usr/local/bin/jcode",
+            &["it's".to_string()],
+        );
+        assert!(cmd.contains(r#"'it'\''s'"#));
+
+        // No args matches the plain command.
+        assert_eq!(
+            super::paused_jcode_shell_command_with_args("/usr/local/bin/jcode", &[]),
+            super::paused_jcode_shell_command("/usr/local/bin/jcode"),
         );
     }
 
