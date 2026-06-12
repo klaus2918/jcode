@@ -9399,9 +9399,15 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
         inline_area.top,
         version_area.bounds.bottom
     );
+    // The welcome hero/version chrome is shifted up by the welcome timeline
+    // offset while an inline widget is open, so the unshifted
+    // handwritten_welcome_bounds cannot be compared against the inline area
+    // directly. The version label renders below the hero with the same
+    // offset applied, so staying below its bounds keeps the picker clear of
+    // the hero as well (asserted above against version_area).
     assert!(
-        inline_area.top > handwritten_welcome_bounds(size).1[1],
-        "fresh inline picker must not overlap the handwritten welcome hero"
+        inline_area.top >= version_area.bounds.bottom as f32,
+        "fresh inline picker must stay below the offset welcome chrome"
     );
     assert!(
         inline_area.bounds.bottom > inline_area.bounds.top,
@@ -9409,7 +9415,8 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     );
 
     let vertices = build_single_session_vertices(&app, size, 0.0, 0);
-    let inline_card_vertices = positions_for_color(&vertices, [0.982, 0.990, 1.000, 0.82]);
+    let inline_card_vertices =
+        positions_for_color(&vertices, MODEL_PICKER_CARD_BACKGROUND_COLOR);
     assert!(
         !inline_card_vertices.is_empty(),
         "inline picker should draw a rounded card background"
@@ -10300,3 +10307,4 @@ fn desktop_preferences_save_is_queued_off_ui_thread() {
     assert_eq!(rx.try_recv().ok(), Some(expected));
     assert!(rx.try_recv().is_err());
 }
+

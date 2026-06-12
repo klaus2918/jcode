@@ -478,9 +478,11 @@ fn inline_widget_command_palettes_draw_structured_cards_not_text_boxes() {
         vertex_count_for_color(&model_vertices, INLINE_COMMAND_ROW_BACKGROUND_COLOR) > 0,
         "unselected model row should be a rendered rounded card"
     );
+    // Left accent rails were intentionally removed from the model picker
+    // (commit b8672145); selection is conveyed by the filled row card alone.
     assert!(
-        vertex_count_for_color(&model_vertices, MODEL_PICKER_ROW_ACCENT_COLOR) > 0,
-        "selected model row should use a rendered accent rail instead of selector text"
+        vertex_count_for_color(&model_vertices, MODEL_PICKER_ROW_ACCENT_COLOR) == 0,
+        "model rows should not render the removed accent rail"
     );
 
     let session_lines = vec![

@@ -2311,6 +2311,7 @@ const DESKTOP_HELP_LINES: &[&str] = &[
     "  --capture-hero-animation DIR Write deterministic hero animation PNG frames and exit",
     "  --capture-gallery-screens DIR Render gallery fixture states to PNGs headlessly and exit",
     "  --capture-keys KEYS          With --capture-gallery-screens: comma-separated keys to replay first",
+    "  --capture-size WxH           With --capture-gallery-screens: render size in pixels",
     "  --resize-render-benchmark[N]  Print CPU resize/render benchmark JSON and exit",
     "  --scroll-render-benchmark[N]  Print CPU scroll/render benchmark JSON and exit",
     "  --real-transcript-scroll-benchmark[N]  Profile scrolling against your real on-disk transcripts and exit",
@@ -2350,6 +2351,7 @@ struct GalleryScreenshotCaptureRequest {
     output_dir: PathBuf,
     state: Option<String>,
     keys: Vec<String>,
+    size: Option<PhysicalSize<u32>>,
 }
 
 fn gallery_screenshot_capture_request(args: &[String]) -> Option<GalleryScreenshotCaptureRequest> {
@@ -2382,10 +2384,30 @@ fn gallery_screenshot_capture_request(args: &[String]) -> Option<GalleryScreensh
                 .collect()
         })
         .unwrap_or_default();
+    let size = args
+        .iter()
+        .enumerate()
+        .find_map(|(index, arg)| {
+            arg.strip_prefix("--capture-size=")
+                .map(str::to_string)
+                .or_else(|| {
+                    (arg == "--capture-size")
+                        .then(|| args.get(index + 1).cloned())
+                        .flatten()
+                })
+        })
+        .and_then(|spec| {
+            let (width, height) = spec.split_once('x')?;
+            Some(PhysicalSize::new(
+                width.trim().parse().ok()?,
+                height.trim().parse().ok()?,
+            ))
+        });
     Some(GalleryScreenshotCaptureRequest {
         output_dir,
         state: desktop_gallery::state_from_args(args),
         keys,
+        size,
     })
 }
 
@@ -2437,7 +2459,9 @@ async fn run_gallery_screenshot_capture(request: &GalleryScreenshotCaptureReques
             capture_key_input(name).with_context(|| format!("unknown capture key name {name:?}"))
         })
         .collect::<Result<Vec<_>>>()?;
-    let size = PhysicalSize::new(DEFAULT_WINDOW_WIDTH as u32, DEFAULT_WINDOW_HEIGHT as u32);
+    let size = request.size.unwrap_or_else(|| {
+        PhysicalSize::new(DEFAULT_WINDOW_WIDTH as u32, DEFAULT_WINDOW_HEIGHT as u32)
+    });
     let mut manifest = Vec::new();
     for state in &states {
         let mut app = desktop_gallery::temporary_app(state);
