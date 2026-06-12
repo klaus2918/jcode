@@ -309,7 +309,25 @@ async fn exchange_code(
     Ok(tokens)
 }
 
+/// Refresh Google OAuth tokens, serialized via the refresh coordinator so
+/// concurrent callers do not race the token endpoint and the stored file.
 pub async fn refresh_tokens(tokens: &GoogleTokens) -> Result<GoogleTokens> {
+    crate::auth::refresh_coordinator::single_flight(
+        "google".to_string(),
+        || load_tokens().ok(),
+        |stored: &GoogleTokens| !stored.is_expired(),
+        {
+            let observed = tokens.clone();
+            move |stored: Option<GoogleTokens>| async move {
+                let source = stored.unwrap_or(observed);
+                refresh_tokens_uncoordinated(&source).await
+            }
+        },
+    )
+    .await
+}
+
+async fn refresh_tokens_uncoordinated(tokens: &GoogleTokens) -> Result<GoogleTokens> {
     let result: Result<GoogleTokens> = async {
         let creds = load_credentials()?;
         let client = crate::provider::shared_http_client();
