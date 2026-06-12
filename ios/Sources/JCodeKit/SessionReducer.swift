@@ -170,9 +170,6 @@ public enum SessionReducer {
     private static func reduceEvent(_ state: SessionState, _ event: ServerEvent) -> SessionState {
         var state = state
         switch event {
-        case .ack:
-            state.isProcessing = true
-
         case .textDelta(let text):
             withStreamingAssistant(&state) { $0.text += text }
 
@@ -289,7 +286,7 @@ public enum SessionReducer {
             let prefix = fromName.map { "\($0): " } ?? ""
             state.notices.append(prefix + message)
 
-        case .pong, .unknown:
+        case .ack, .pong, .unknown:
             break
         }
         return state

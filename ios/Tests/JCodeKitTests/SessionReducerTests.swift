@@ -15,6 +15,11 @@ private func event(_ line: String) -> ConnectionOutput {
 
 // MARK: - Streaming text
 
+@Test func ackDoesNotMarkProcessing() {
+    let state = run([event(#"{"type":"ack","id":1}"#)])
+    #expect(state.isProcessing == false)
+}
+
 @Test func streamsAssistantText() {
     let state = run([
         .phase(.connected),

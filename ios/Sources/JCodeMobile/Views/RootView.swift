@@ -4,6 +4,7 @@ import SwiftUI
 /// Top-level router: pairing when no server, chat otherwise.
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @State private var deepLinkError: String?
 
     var body: some View {
         ZStack {
@@ -13,6 +14,34 @@ struct RootView: View {
             } else {
                 ChatView()
             }
+        }
+        .task {
+            // Auto-connect to the most recent server on launch.
+            if let server = model.activeServer, !model.isConnected {
+                model.connect(to: server)
+            }
+        }
+        .onOpenURL { url in
+            guard let payload = PairURI.parse(url.absoluteString) else { return }
+            Task {
+                do {
+                    try await model.pair(
+                        gateway: payload.gateway,
+                        code: payload.code,
+                        deviceName: UIDevice.current.name
+                    )
+                } catch {
+                    deepLinkError = "Pairing failed: \(error.localizedDescription)"
+                }
+            }
+        }
+        .alert("Pairing", isPresented: .init(
+            get: { deepLinkError != nil },
+            set: { if !$0 { deepLinkError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deepLinkError ?? "")
         }
     }
 }

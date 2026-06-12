@@ -42,6 +42,10 @@ public protocol CredentialStore: Sendable {
 /// Keychain-backed store used on device. All credentials live under one
 /// keychain item as a JSON array; the auth token is the only secret and the
 /// set is expected to stay tiny.
+///
+/// Falls back to a JSON file in Application Support when the keychain is
+/// unavailable (e.g. unsigned simulator builds returning
+/// `errSecMissingEntitlement`). Real signed builds use the keychain.
 public struct KeychainCredentialStore: CredentialStore {
     private static let service = "com.jcode.mobile.servers"
     private static let account = "paired-servers"
@@ -54,8 +58,16 @@ public struct KeychainCredentialStore: CredentialStore {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return [] }
-        return (try? JSONDecoder().decode([ServerCredential].self, from: data)) ?? []
+        if status == errSecSuccess, let data = result as? Data {
+            return (try? JSONDecoder().decode([ServerCredential].self, from: data)) ?? []
+        }
+        if status != errSecItemNotFound {
+            NSLog("JCodeKit: keychain read failed (%d), trying file fallback", status)
+        }
+        if let data = try? Data(contentsOf: Self.fallbackURL) {
+            return (try? JSONDecoder().decode([ServerCredential].self, from: data)) ?? []
+        }
+        return []
     }
 
     public func save(_ credential: ServerCredential) {
@@ -72,12 +84,36 @@ public struct KeychainCredentialStore: CredentialStore {
         guard let data = try? JSONEncoder().encode(credentials) else { return }
         var query = baseQuery()
         let attributes: [String: Any] = [kSecValueData as String: data]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             query[kSecValueData as String] = data
             query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(query as CFDictionary, nil)
+            status = SecItemAdd(query as CFDictionary, nil)
         }
+        if status != errSecSuccess {
+            NSLog("JCodeKit: keychain write failed (%d), using file fallback", status)
+            persistToFile(data)
+        }
+    }
+
+    private func persistToFile(_ data: Data) {
+        let url = Self.fallbackURL
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+        } catch {
+            NSLog("JCodeKit: file fallback write failed: %@", error.localizedDescription)
+        }
+    }
+
+    private static var fallbackURL: URL {
+        let base =
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("jcode-servers.json")
     }
 
     private func baseQuery() -> [String: Any] {
