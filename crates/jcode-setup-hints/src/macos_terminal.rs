@@ -211,6 +211,36 @@ pub(super) fn launch_script_for_macos_terminal(
     )
 }
 
+/// How to launch a shell command in a new terminal window without Apple
+/// Events automation. Background helpers (the menu bar app, launchd agents)
+/// cannot reliably get the "control Terminal" TCC permission that the
+/// AppleScript launch path needs, so they use this strategy instead.
+pub(super) enum NoAutomationLaunch {
+    /// Run this shell command directly (terminals launchable via
+    /// `open -na <App> --args ...`).
+    Shell(String),
+    /// Write the shell command to an executable `.command` file and open it
+    /// with the named app (`None` = system default handler, Terminal.app).
+    CommandFile { app: Option<&'static str> },
+}
+
+pub(super) fn no_automation_launch(
+    terminal: MacTerminalKind,
+    shell_command: &str,
+) -> NoAutomationLaunch {
+    if let Some((app_name, app_args)) = terminal.open_command_app_and_args() {
+        return NoAutomationLaunch::Shell(open_command_for_terminal(
+            app_name,
+            app_args,
+            shell_command,
+        ));
+    }
+    match terminal {
+        MacTerminalKind::Iterm2 => NoAutomationLaunch::CommandFile { app: Some("iTerm") },
+        _ => NoAutomationLaunch::CommandFile { app: None },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -234,16 +234,44 @@ fn mac_hotkey_launch_agent_plist(
 /// Launch a new jcode window in the user's preferred macOS terminal, passing
 /// `extra_args` (e.g. `["--resume", "<session-id>"]`) to the jcode invocation.
 ///
-/// This reuses the same terminal detection and launch plumbing as the global
-/// Cmd+; hotkey, so windows opened from the menu bar behave identically to
-/// hotkey-launched ones.
+/// This reuses the same terminal detection as the global Cmd+; hotkey, but
+/// deliberately avoids AppleScript automation: callers like the menu bar
+/// helper run as background processes that cannot present the "control
+/// Terminal" TCC prompt, so `osascript` would fail. Terminals that support
+/// `open -na <App> --args ...` are launched directly; for the rest we write
+/// the launch command to an executable `.command` file and `open` it, which
+/// Terminal/iTerm run in a new window without any automation permission.
 #[cfg(target_os = "macos")]
 pub fn launch_jcode_in_macos_terminal(extra_args: &[String]) -> Result<()> {
     let terminal = effective_macos_terminal();
     let exe = std::env::current_exe()?;
     let exe_path = exe.to_string_lossy().into_owned();
     let shell_command = macos_terminal::paused_jcode_shell_command_with_args(&exe_path, extra_args);
-    let command = launch_command_for_macos_terminal(terminal, &shell_command);
+
+    let command = match macos_terminal::no_automation_launch(terminal, &shell_command) {
+        macos_terminal::NoAutomationLaunch::Shell(command) => command,
+        macos_terminal::NoAutomationLaunch::CommandFile { app } => {
+            let dir = storage::jcode_dir()?.join("launcher");
+            std::fs::create_dir_all(&dir)?;
+            let script_path = dir.join("open_session.command");
+            std::fs::write(
+                &script_path,
+                format!("#!/bin/bash\nclear\n{shell_command}\n"),
+            )?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+            }
+            let target =
+                macos_terminal::escape_shell_single_quotes(script_path.to_string_lossy().as_ref());
+            match app {
+                Some(app) => format!("/usr/bin/open -a {app} '{target}'"),
+                None => format!("/usr/bin/open '{target}'"),
+            }
+        }
+    };
+
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(&command)

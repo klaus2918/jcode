@@ -170,10 +170,13 @@ mod macos {
         NSFontWeightRegular, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
         NSVariableStatusItemLength,
     };
-    use objc2_foundation::{NSObject, NSString, ns_string};
+    use objc2_foundation::{NSObject, NSString, NSUserDefaults, ns_string};
 
     /// Poll interval for refreshing the counts (milliseconds).
     const REFRESH_INTERVAL_MS: u64 = 1000;
+
+    /// Autosave name under which macOS persists the status item's position.
+    const STATUS_ITEM_AUTOSAVE: &str = "jcode-menubar";
 
     /// Number of fixed items at the end of the menu (separator, New Window,
     /// separator, Quit). Session rows are inserted between the summary header
@@ -241,6 +244,26 @@ mod macos {
         let status_bar = NSStatusBar::systemStatusBar();
         let status_item: Retained<NSStatusItem> =
             status_bar.statusItemWithLength(NSVariableStatusItemLength);
+
+        // Give the item a persistent identity and seed a sane preferred
+        // position the first time. Without this, macOS appends brand-new
+        // status items at the far left of the status area; if another app owns
+        // an oversized status item (or the menu bar is crowded), a freshly
+        // created item can be pushed completely off-screen and the user never
+        // sees it. Seeding "NSStatusItem Preferred Position <name>" (distance
+        // in points from the right screen edge) before the item is realized
+        // places it among the system icons; afterwards macOS keeps tracking
+        // the user's chosen position under the same key.
+        unsafe {
+            let defaults = NSUserDefaults::standardUserDefaults();
+            let pos_key = NSString::from_str(&format!(
+                "NSStatusItem Preferred Position {STATUS_ITEM_AUTOSAVE}"
+            ));
+            if defaults.objectForKey(&pos_key).is_none() {
+                defaults.setInteger_forKey(550, &pos_key);
+            }
+            status_item.setAutosaveName(Some(&NSString::from_str(STATUS_ITEM_AUTOSAVE)));
+        }
 
         // Style the button like a native menu bar extra: a template SF Symbol
         // (auto-adapts to light/dark menu bars and tinting) plus a compact
