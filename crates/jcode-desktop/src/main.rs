@@ -20,6 +20,9 @@ mod session_data;
 mod session_launch;
 mod single_session;
 mod single_session_render;
+#[cfg(test)]
+#[path = "state_space_tests.rs"]
+mod state_space_tests;
 mod workspace;
 
 use ab_glyph::{Font, FontArc, Glyph as AbGlyph, PxScale, ScaleFont, point};
