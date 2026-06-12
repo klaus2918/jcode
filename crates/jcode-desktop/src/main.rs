@@ -2245,23 +2245,24 @@ fn start_pending_transcript_hydration(
         return false;
     };
     let job_session_id = session_id.clone();
-    let spawned = spawn_bounded_desktop_async_job("jcode-desktop-transcript-hydration", move || {
-        let started = Instant::now();
-        let result = session_data::load_session_transcript_by_id(&job_session_id)
-            .map_err(|error| format!("{error:#}"));
-        if event_loop_proxy
-            .send_event(DesktopUserEvent::TranscriptHydrated {
-                session_id: job_session_id,
-                result,
-                loaded_in: started.elapsed(),
-            })
-            .is_err()
-        {
-            desktop_log::warn(format_args!(
-                "jcode-desktop: failed to deliver hydrated transcript"
-            ));
-        }
-    });
+    let spawned =
+        spawn_bounded_desktop_async_job("jcode-desktop-transcript-hydration", move || {
+            let started = Instant::now();
+            let result = session_data::load_session_transcript_by_id(&job_session_id)
+                .map_err(|error| format!("{error:#}"));
+            if event_loop_proxy
+                .send_event(DesktopUserEvent::TranscriptHydrated {
+                    session_id: job_session_id,
+                    result,
+                    loaded_in: started.elapsed(),
+                })
+                .is_err()
+            {
+                desktop_log::warn(format_args!(
+                    "jcode-desktop: failed to deliver hydrated transcript"
+                ));
+            }
+        });
     if let Err(error) = spawned {
         desktop_log::warn(format_args!(
             "jcode-desktop: transcript hydration fell back to blocking load: {error:#}"
@@ -2527,9 +2528,11 @@ async fn run_gallery_screenshot_capture(request: &GalleryScreenshotCaptureReques
         for key in &keys {
             app.handle_key(key.clone());
         }
-        let DesktopApp::SingleSession(single) = &app else {
+        let DesktopApp::SingleSession(single) = &mut app else {
             anyhow::bail!("gallery screenshot capture only supports single-session states");
         };
+        single.settle_animations_for_capture();
+        let single = &*single;
         let (image, vertices) = render_hero_frame_to_image(single, size, 4, 1.0, false).await?;
         let filename = if request.keys.is_empty() {
             format!("gallery-{state}.png")

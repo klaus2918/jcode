@@ -56,9 +56,10 @@ fn walk_budget() -> WalkBudget {
     WalkBudget {
         max_depth: env_usize("JCODE_WALK_DEPTH", MAX_DEPTH),
         max_unique_states: env_usize("JCODE_WALK_STATES", MAX_UNIQUE_STATES_PER_SEED),
-        seed_time_budget: Duration::from_secs(
-            env_usize("JCODE_WALK_SECONDS", SEED_TIME_BUDGET.as_secs() as usize) as u64,
-        ),
+        seed_time_budget: Duration::from_secs(env_usize(
+            "JCODE_WALK_SECONDS",
+            SEED_TIME_BUDGET.as_secs() as usize,
+        ) as u64),
     }
 }
 const ESCAPE_RECOVERY_PRESSES: usize = 8;

@@ -7674,11 +7674,7 @@ fn switcher_resume_defers_transcript_hydration_off_key_path() {
         app.handle_key(KeyInput::OpenSessionSwitcher),
         KeyOutcome::LoadSessionSwitcher
     );
-    app.apply_session_switcher_cards(vec![test_session_card(
-        "session_alpha",
-        "alpha",
-        "active",
-    )]);
+    app.apply_session_switcher_cards(vec![test_session_card("session_alpha", "alpha", "active")]);
 
     assert_eq!(app.handle_key(KeyInput::SubmitDraft), KeyOutcome::Redraw);
     assert_eq!(app.live_session_id.as_deref(), Some("session_alpha"));
@@ -9461,8 +9457,7 @@ fn fresh_welcome_model_picker_only_reserves_inline_lane() {
     );
 
     let vertices = build_single_session_vertices(&app, size, 0.0, 0);
-    let inline_card_vertices =
-        positions_for_color(&vertices, MODEL_PICKER_CARD_BACKGROUND_COLOR);
+    let inline_card_vertices = positions_for_color(&vertices, MODEL_PICKER_CARD_BACKGROUND_COLOR);
     assert!(
         !inline_card_vertices.is_empty(),
         "inline picker should draw a rounded card background"
@@ -10353,4 +10348,3 @@ fn desktop_preferences_save_is_queued_off_ui_thread() {
     assert_eq!(rx.try_recv().ok(), Some(expected));
     assert!(rx.try_recv().is_err());
 }
-

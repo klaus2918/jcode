@@ -2574,6 +2574,18 @@ impl SingleSessionApp {
         }
     }
 
+    /// Fast-forward entry/exit animations so captures render the settled
+    /// frame instead of a mid-reveal state. Used by the headless gallery
+    /// screenshot tool.
+    pub(crate) fn settle_animations_for_capture(&mut self) {
+        if let Some(opened_at) = &mut self.view.inline_widget_opened_at {
+            *opened_at = Instant::now() - INLINE_WIDGET_REVEAL_DURATION * 2;
+        }
+        if let Some(closing) = &mut self.view.closing_inline_widget {
+            closing.started_at = Instant::now() - INLINE_WIDGET_EXIT_DURATION * 2;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn activity_indicator_active(&self) -> bool {
         self.has_activity_indicator()
