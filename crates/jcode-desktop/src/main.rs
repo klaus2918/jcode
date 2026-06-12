@@ -2533,6 +2533,19 @@ async fn run_gallery_screenshot_capture(request: &GalleryScreenshotCaptureReques
         };
         single.settle_animations_for_capture();
         let single = &*single;
+        let rendered_lines = single_session_rendered_body_lines_for_tick(single, size, 4);
+        let widget_geometry =
+            inline_widget_capture_geometry(single, size, rendered_lines.len()).map(
+                |(card, text_top, line_height, visible_text_bottom, visible_text_right)| {
+                    serde_json::json!({
+                        "card": { "x": card.x, "y": card.y, "width": card.width, "height": card.height },
+                        "text_top": text_top,
+                        "line_height": line_height,
+                        "visible_text_bottom": visible_text_bottom,
+                        "visible_text_right": visible_text_right,
+                    })
+                },
+            );
         let (image, vertices) = render_hero_frame_to_image(single, size, 4, 1.0, false).await?;
         let filename = if request.keys.is_empty() {
             format!("gallery-{state}.png")
@@ -2560,6 +2573,7 @@ async fn run_gallery_screenshot_capture(request: &GalleryScreenshotCaptureReques
             "file": filename,
             "keys": request.keys,
             "vertices": vertices,
+            "inline_widget": widget_geometry,
             "snapshot": serde_json::to_value(app.snapshot())?,
         }));
     }

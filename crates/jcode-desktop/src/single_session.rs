@@ -1004,7 +1004,9 @@ impl InlineWidgetKind {
     pub(crate) fn visible_line_limit(self) -> usize {
         match self {
             Self::HotkeyHelp => 18,
-            Self::SessionInfo => 10,
+            // Compact type fits the whole panel including the closing rail
+            // corner; truncating mid-panel leaves the box-drawing rail open.
+            Self::SessionInfo => 18,
             Self::ModelPicker => usize::MAX,
             Self::SessionSwitcher => 24,
             Self::SlashSuggestions => DESKTOP_SLASH_SUGGESTION_ROW_LIMIT + 1,
@@ -6948,12 +6950,12 @@ fn session_info_inline_styled_lines(app: &SingleSessionApp) -> Vec<SingleSession
             SingleSessionLineStyle::Overlay,
         ),
         styled_line(
-            format!("│ status       {}", compact_tool_text(status, 92)),
+            format!(
+                "│ status       {} · model {}",
+                compact_tool_text(status, 46),
+                compact_tool_text(&model, 40)
+            ),
             SingleSessionLineStyle::Status,
-        ),
-        styled_line(
-            format!("│ model        {}", compact_tool_text(&model, 92)),
-            SingleSessionLineStyle::Overlay,
         ),
         styled_line(
             format!(
@@ -7006,10 +7008,6 @@ fn session_info_inline_styled_lines(app: &SingleSessionApp) -> Vec<SingleSession
             ),
             SingleSessionLineStyle::Overlay,
         ),
-        styled_line(
-            "│ tokens       not yet emitted by desktop stream; showing local transcript stats instead",
-            SingleSessionLineStyle::Meta,
-        ),
     ];
 
     if let Some(session) = &app.session {
@@ -7045,7 +7043,7 @@ fn session_info_inline_styled_lines(app: &SingleSessionApp) -> Vec<SingleSession
 }
 
 fn session_info_inline_line_count(app: &SingleSessionApp) -> usize {
-    12 + usize::from(
+    10 + usize::from(
         app.session
             .as_ref()
             .is_some_and(|session| !session.subtitle.trim().is_empty()),

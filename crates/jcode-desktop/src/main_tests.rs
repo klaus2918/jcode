@@ -3337,7 +3337,8 @@ fn single_session_status_slash_opens_inline_session_info() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(info.contains("fresh / not started"));
-    assert!(info.contains("tokens"));
+    assert!(info.contains("status"));
+    assert!(info.contains("model"));
 }
 
 #[test]

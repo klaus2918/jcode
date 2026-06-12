@@ -1966,8 +1966,10 @@ fn session_switcher_text_buffer_shapes_loaded_session_rows() {
         .collect::<Vec<_>>()
         .join("\n");
 
+    // The rail ellipsis-truncates long rows to its column budget; the row
+    // label must still be shaped, while the full title lives in the preview.
     assert!(
-        rendered_inline_text.contains("visible resume row"),
+        rendered_inline_text.contains("active session"),
         "desktop text buffer should shape session rows, got:\n{rendered_inline_text}"
     );
 
