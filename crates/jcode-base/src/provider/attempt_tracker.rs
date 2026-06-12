@@ -17,8 +17,8 @@
 
 use crate::message::StreamEvent;
 use anyhow::Result;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -159,9 +159,11 @@ mod tests {
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
         }));
-        assert!(!stream_event_is_replay_visible(&StreamEvent::StatusDetail {
-            detail: "https".into(),
-        }));
+        assert!(!stream_event_is_replay_visible(
+            &StreamEvent::StatusDetail {
+                detail: "https".into(),
+            }
+        ));
         assert!(!stream_event_is_replay_visible(
             &StreamEvent::RetryRollback { attempt: 1, max: 3 }
         ));

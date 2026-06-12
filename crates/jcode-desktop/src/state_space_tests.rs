@@ -15,14 +15,14 @@
 //! Run with:
 //!   cargo test -p jcode-desktop state_space -- --nocapture
 
+use super::DesktopApp;
 use super::desktop_app_driver::{DesktopAppDriver, DesktopSurfaceSnapshot};
 use super::desktop_gallery;
 use super::single_session::SingleSessionApp;
 use super::single_session_render::build_single_session_vertices;
 use super::workspace::{self, KeyInput, PanelSizePreset, Workspace};
-use super::DesktopApp;
 use std::collections::{HashSet, VecDeque};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 use winit::dpi::PhysicalSize;
 
@@ -362,9 +362,7 @@ fn walk_seed(name: &str, seed: DesktopApp, alphabet: &[KeyInput], report: &mut W
             break;
         }
         for key in alphabet {
-            if visited.len() >= MAX_UNIQUE_STATES_PER_SEED
-                || started.elapsed() > SEED_TIME_BUDGET
-            {
+            if visited.len() >= MAX_UNIQUE_STATES_PER_SEED || started.elapsed() > SEED_TIME_BUDGET {
                 break;
             }
             let mut next = clone_app(&state);
@@ -376,9 +374,9 @@ fn walk_seed(name: &str, seed: DesktopApp, alphabet: &[KeyInput], report: &mut W
             report.max_transition = report.max_transition.max(elapsed);
             let step_path = format!("{path} -> {}", key_label(key));
             if elapsed > SLOW_TRANSITION_BUDGET {
-                report.slow_transitions.push(format!(
-                    "[{name}] {step_path}: handle_key took {elapsed:?}"
-                ));
+                report
+                    .slow_transitions
+                    .push(format!("[{name}] {step_path}: handle_key took {elapsed:?}"));
             }
             if let Err(payload) = outcome {
                 report.hard_violations.push(format!(

@@ -2416,9 +2416,7 @@ fn capture_key_input(name: &str) -> Option<KeyInput> {
     })
 }
 
-async fn run_gallery_screenshot_capture(
-    request: &GalleryScreenshotCaptureRequest,
-) -> Result<()> {
+async fn run_gallery_screenshot_capture(request: &GalleryScreenshotCaptureRequest) -> Result<()> {
     std::fs::create_dir_all(&request.output_dir).with_context(|| {
         format!(
             "failed to create gallery screenshot directory {}",
@@ -2436,8 +2434,7 @@ async fn run_gallery_screenshot_capture(
         .keys
         .iter()
         .map(|name| {
-            capture_key_input(name)
-                .with_context(|| format!("unknown capture key name {name:?}"))
+            capture_key_input(name).with_context(|| format!("unknown capture key name {name:?}"))
         })
         .collect::<Result<Vec<_>>>()?;
     let size = PhysicalSize::new(DEFAULT_WINDOW_WIDTH as u32, DEFAULT_WINDOW_HEIGHT as u32);
