@@ -203,10 +203,10 @@ fn schedule_prewarm(id: u64, target_cols: u16, target_rows: u16) {
         target_cols,
         target_rows,
     };
-    if let Ok(mut inflight) = PREWARM_INFLIGHT.lock() {
-        if !inflight.insert(req) {
-            return;
-        }
+    if let Ok(mut inflight) = PREWARM_INFLIGHT.lock()
+        && !inflight.insert(req)
+    {
+        return;
     }
     if prewarm_sender().send(req).is_err() {
         // Worker unavailable: fall back to synchronous work on next frame.
@@ -215,20 +215,6 @@ fn schedule_prewarm(id: u64, target_cols: u16, target_rows: u16) {
         }
         materialize_visible(id);
     }
-}
-
-/// Resolve the app's rendered images into lazily-sized inline items. Performs
-/// only header-level work (no full decode) and registers each payload for the
-/// later draw-time materialize.
-#[cfg(test)]
-pub(crate) fn resolve_items(images: &[crate::session::RenderedImage]) -> Vec<InlineImageItem> {
-    let mut items = Vec::new();
-    for image in images {
-        if let Some(item) = resolve_item(image) {
-            items.push(item);
-        }
-    }
-    items
 }
 
 fn resolve_item(image: &crate::session::RenderedImage) -> Option<InlineImageItem> {
@@ -312,7 +298,7 @@ impl AnchoredInlineImages {
 }
 
 /// Resolve rendered images into anchored buckets (tool call / user prompt /
-/// unanchored). Same lazy header-only cost profile as [`resolve_items`].
+/// unanchored). Same lazy header-only cost profile as [`resolve_item`].
 pub(crate) fn resolve_anchored_items(
     images: &[crate::session::RenderedImage],
 ) -> AnchoredInlineImages {
@@ -338,9 +324,8 @@ pub(crate) fn resolve_anchored_items(
 /// signature. Resolving hashes every image payload (for ids), so body
 /// preparation must not redo it per rebuild; the signature is already cached
 /// per transcript version on the app side.
-static ANCHORED_CACHE: LazyLock<
-    Mutex<Option<((usize, u64), std::sync::Arc<AnchoredInlineImages>)>>,
-> = LazyLock::new(|| Mutex::new(None));
+type AnchoredCache = Mutex<Option<((usize, u64), std::sync::Arc<AnchoredInlineImages>)>>;
+static ANCHORED_CACHE: LazyLock<AnchoredCache> = LazyLock::new(|| Mutex::new(None));
 
 /// Resolve the app's images into anchored buckets, cached by the image-set
 /// signature. Returns an empty result without touching payloads when the app
