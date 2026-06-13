@@ -1348,3 +1348,55 @@ fn credential_mode_runtime_provider_identity_round_trips() {
         None => crate::env::remove_var("JCODE_RUNTIME_PROVIDER"),
     }
 }
+
+#[test]
+fn detects_anthropic_model_not_found_errors() {
+    // The real 404 body returned when a model id was retired (e.g. Fable 5).
+    let real = "anthropic api error (404 not found): {\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"claude fable 5 is not available. please use opus 4.8.\"}}";
+    assert!(is_model_not_found_error(real));
+
+    // Structural marker alone (lowercased error chain).
+    assert!(is_model_not_found_error(
+        "model claude-foo not found (not_found_error)"
+    ));
+
+    // Unrelated failures must not trigger the model fallback path.
+    assert!(!is_model_not_found_error(
+        "anthropic api error (401 unauthorized): invalid authentication credentials"
+    ));
+    assert!(!is_model_not_found_error(
+        "anthropic api error (429 too many requests): rate_limit"
+    ));
+    assert!(!is_model_not_found_error(
+        "anthropic api error (404 not found): resource missing"
+    ));
+}
+
+#[test]
+fn anthropic_fallback_skips_tried_models_and_returns_known_id() {
+    let known = crate::provider::known_anthropic_model_ids();
+    assert!(
+        !known.is_empty(),
+        "expected a non-empty Anthropic model catalog"
+    );
+
+    // With nothing tried yet, the first catalog entry is offered.
+    let first = anthropic_fallback_model(&[]).expect("a fallback should exist");
+    assert_eq!(first, known[0]);
+
+    // Once a model is recorded as tried, it must not be offered again
+    // (including its 1M alias / case variants via normalized key matching).
+    let next =
+        anthropic_fallback_model(&[known[0].clone()]).expect("another fallback should exist");
+    assert_ne!(
+        AnthropicProvider::normalized_model_key(&next),
+        AnthropicProvider::normalized_model_key(&known[0]),
+    );
+
+    // Exhausting every known model yields None so the caller surfaces the error.
+    let exhausted = anthropic_fallback_model(&known);
+    assert!(
+        exhausted.is_none(),
+        "no fallback should remain once all known models are tried, got {exhausted:?}"
+    );
+}
