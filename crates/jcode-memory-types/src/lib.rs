@@ -395,6 +395,19 @@ impl MemoryEntry {
         self
     }
 
+    /// Override the generated id (e.g. deterministic ids like `skill:<name>`).
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
+    }
+
+    /// Override created/updated timestamps (e.g. to backdate synthetic entries).
+    pub fn with_timestamps(mut self, created_at: DateTime<Utc>, updated_at: DateTime<Utc>) -> Self {
+        self.created_at = created_at;
+        self.updated_at = updated_at;
+        self
+    }
+
     pub fn touch(&mut self) {
         self.updated_at = Utc::now();
         self.access_count += 1;
