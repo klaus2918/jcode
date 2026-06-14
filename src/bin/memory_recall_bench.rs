@@ -243,6 +243,66 @@ fn memory_prior(m: &CorpusMemory) -> f32 {
     conf * strength * recency
 }
 
+/// Build a focused query from the raw context window: drop system-reminder
+/// blocks and tool-call markers, keep human/assistant prose, and over-weight the
+/// most recent user message (the strongest signal of current intent) by
+/// repeating it. Mirrors what a production recall-3 query builder would do.
+fn focus_query(raw: &str) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    let mut last_user: Option<String> = None;
+    let mut in_reminder = false;
+    let mut current_role = "";
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<system-reminder>") {
+            in_reminder = true;
+            continue;
+        }
+        if trimmed.ends_with("</system-reminder>") {
+            in_reminder = false;
+            continue;
+        }
+        if in_reminder {
+            continue;
+        }
+        if trimmed == "User:" {
+            current_role = "user";
+            continue;
+        }
+        if trimmed == "Assistant:" {
+            current_role = "assistant";
+            continue;
+        }
+        // Drop tool markers and result dumps (noise for intent).
+        if trimmed.starts_with("[Tool:")
+            || trimmed.starts_with("[Tool error:")
+            || trimmed.starts_with("[Result:")
+            || trimmed.starts_with("[Image]")
+        {
+            continue;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        kept.push(trimmed.to_string());
+        if current_role == "user" {
+            last_user = Some(trimmed.to_string());
+        }
+    }
+
+    let mut out = kept.join("\n");
+    // Over-weight the most recent user intent.
+    if let Some(u) = last_user {
+        out = format!("{u}\n{out}");
+    }
+    if out.trim().is_empty() {
+        raw.to_string()
+    } else {
+        out
+    }
+}
+
 /// Reciprocal Rank Fusion of multiple ranked lists.
 fn rrf(lists: &[Vec<(String, f32)>], k: f32, limit: usize) -> Vec<(String, f32)> {
     let mut fused: HashMap<String, f32> = HashMap::new();
@@ -651,6 +711,8 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         }
         judged += 1;
         let q_emb = embedding::embed(&q.query)?;
+        let focused = focus_query(&q.query);
+        let q_emb_focused = embedding::embed(&focused)?;
         let origin: HashSet<&String> = q.origin_memory_ids.iter().collect();
 
         let ranked: Vec<String> = match config.as_str() {
@@ -696,6 +758,11 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                     .collect();
                 adj.sort_by(|a, b| b.1.total_cmp(&a.1));
                 adj.into_iter().take(EMBEDDING_MAX_HITS).map(|(id, _)| id).collect()
+            }
+            "hybrid_focused" => {
+                let dense = dense_retrieve(&q_emb_focused, &corpus, 0.0, 50, false);
+                let lex = bm25.search(&focused, 50);
+                rrf(&[dense, lex], 60.0, EMBEDDING_MAX_HITS).into_iter().map(|(id, _)| id).collect()
             }
             other => anyhow::bail!("unknown config: {other}"),
         };
