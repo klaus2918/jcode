@@ -90,6 +90,14 @@ impl Embedder {
         Ok(Self { inner })
     }
 
+    /// Load a model from an explicit directory (must contain `model.onnx` and
+    /// `tokenizer.json`). Used for A/B evaluating alternative embedding models
+    /// without touching the process-wide cached embedder.
+    pub fn load_from_dir(model_dir: &std::path::Path) -> Result<Self> {
+        let inner = backend::Embedder::load_from_dir(model_dir)?;
+        Ok(Self { inner })
+    }
+
     /// Generate embedding for a single text
     pub fn embed(&self, text: &str) -> Result<EmbeddingVec> {
         self.inner.embed(text)

@@ -745,6 +745,24 @@ struct GoldRecord {
     relevant_ids: Vec<String>,
 }
 
+/// Dense ranking over a precomputed alt-embedding corpus.
+fn alt_dense_rank(
+    query_emb: &[f32],
+    corpus_emb: &[(String, Vec<f32>)],
+    limit: usize,
+) -> Vec<(String, f32)> {
+    let refs: Vec<&[f32]> = corpus_emb.iter().map(|(_, v)| v.as_slice()).collect();
+    let scores = embedding::batch_cosine_similarity(query_emb, &refs);
+    let mut scored: Vec<(String, f32)> = corpus_emb
+        .iter()
+        .zip(scores)
+        .map(|((id, _), s)| (id.clone(), s))
+        .collect();
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    scored.truncate(limit);
+    scored
+}
+
 fn cmd_metrics(args: &[String]) -> Result<()> {
     let opts = parse_kv(args);
     let graph_file = opts
@@ -774,6 +792,35 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         None
     };
 
+    // Optional alternative embedder for A/B (e.g. bge-small). When set, we
+    // re-embed the corpus with this model and embed queries with the query
+    // prefix. Used by the *_alt configs.
+    let alt_embedder = opts
+        .get("embedder")
+        .map(|dir| {
+            eprintln!("Loading alt embedder from {dir}");
+            jcode::embedding::Embedder::load_from_dir(Path::new(dir)).expect("load alt embedder")
+        });
+    let query_prefix = opts.get("query_prefix").cloned().unwrap_or_default();
+    let passage_prefix = opts.get("passage_prefix").cloned().unwrap_or_default();
+    // Precompute alt corpus embeddings (active memories only) once.
+    let alt_corpus_emb: Vec<(String, Vec<f32>)> = match alt_embedder.as_ref() {
+        Some(emb) => {
+            eprintln!(
+                "Re-embedding {} active memories with alt model...",
+                corpus.active().count()
+            );
+            corpus
+                .active()
+                .map(|m| {
+                    let text = format!("{passage_prefix}{}", m.content);
+                    (m.id.clone(), emb.embed(&text).unwrap_or_default())
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
+
     let mut recall5 = 0.0;
     let mut recall10 = 0.0;
     let mut precision5 = 0.0;
@@ -791,6 +838,9 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         let q_emb = embedding::embed(&q.query)?;
         let focused = focus_query(&q.query);
         let q_emb_focused = embedding::embed(&focused)?;
+        let q_emb_alt = alt_embedder
+            .as_ref()
+            .map(|emb| emb.embed(&format!("{query_prefix}{}", q.query)).unwrap_or_default());
         let origin: HashSet<&String> = q.origin_memory_ids.iter().collect();
 
         let ranked: Vec<String> = match config.as_str() {
@@ -864,6 +914,22 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 let mut v: Vec<(String, f32)> = scored.into_iter().collect();
                 v.sort_by(|a, b| b.1.total_cmp(&a.1));
                 v.into_iter().take(EMBEDDING_MAX_HITS).map(|(id, _)| id).collect()
+            }
+            "bge_dense" => {
+                let qe = q_emb_alt.as_ref().expect("--embedder required for bge_dense");
+                alt_dense_rank(qe, &alt_corpus_emb, EMBEDDING_MAX_HITS)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect()
+            }
+            "bge_hybrid" => {
+                let qe = q_emb_alt.as_ref().expect("--embedder required for bge_hybrid");
+                let dense = alt_dense_rank(qe, &alt_corpus_emb, 50);
+                let lex = bm25.search(&q.query, 50);
+                rrf(&[dense, lex], 60.0, EMBEDDING_MAX_HITS)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect()
             }
             "prod_hybrid" => {
                 // Validate the ACTUAL shipped production method end-to-end.
