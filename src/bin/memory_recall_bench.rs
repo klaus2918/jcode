@@ -598,6 +598,19 @@ fn cmd_judge(args: &[String]) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
     let concurrency: usize = opts.get("concurrency").and_then(|s| s.parse().ok()).unwrap_or(8);
+    // Backend: explicit --backend, else infer from model name.
+    let backend = opts
+        .get("backend")
+        .cloned()
+        .unwrap_or_else(|| {
+            if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
+                "openai".to_string()
+            } else {
+                "claude".to_string()
+            }
+        });
+    // Reasoning effort override (OpenAI only); default "none" for no-thinking.
+    let reasoning = opts.get("reasoning").cloned().unwrap_or_else(|| "none".to_string());
 
     let input_path = bench_root().join("labels/judge_ready.jsonl");
     let text = std::fs::read_to_string(&input_path)
@@ -606,7 +619,13 @@ fn cmd_judge(args: &[String]) -> Result<()> {
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
-    eprintln!("Judging {} queries with model {} (concurrency {})", inputs.len(), model, concurrency);
+    eprintln!(
+        "Judging {} queries with model {} backend={} (concurrency {})",
+        inputs.len(),
+        model,
+        backend,
+        concurrency
+    );
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -617,8 +636,15 @@ fn cmd_judge(args: &[String]) -> Result<()> {
         stream::iter(inputs.into_iter())
             .map(|input| {
                 let model = model.clone();
+                let backend = backend.clone();
+                let reasoning = reasoning.clone();
                 async move {
-                    let sidecar = jcode::sidecar::Sidecar::with_claude_model(&model);
+                    let sidecar = if backend == "openai" {
+                        let eff = if reasoning == "default" { None } else { Some(reasoning) };
+                        jcode::sidecar::Sidecar::with_openai_model(&model, eff)
+                    } else {
+                        jcode::sidecar::Sidecar::with_claude_model(&model)
+                    };
                     let prompt = build_judge_prompt(&input);
                     let n = input.candidates.len();
                     let mut relevant_ids = Vec::new();
@@ -716,6 +742,8 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
 
     let mut recall5 = 0.0;
     let mut recall10 = 0.0;
+    let mut precision5 = 0.0;
+    let mut precision10 = 0.0;
     let mut mrr = 0.0;
     let mut ndcg = 0.0;
     let mut judged = 0usize;
@@ -797,6 +825,8 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
 
         recall5 += recall_at(&ranked, &rel_set, 5);
         recall10 += recall_at(&ranked, &rel_set, 10);
+        precision5 += precision_at(&ranked, &rel_set, 5);
+        precision10 += precision_at(&ranked, &rel_set, 10);
         mrr += reciprocal_rank(&ranked, &rel_set);
         ndcg += ndcg_at(&ranked, &rel_set, 10);
     }
@@ -808,6 +838,8 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         "queries_judged": judged,
         "recall@5": recall5 / n,
         "recall@10": recall10 / n,
+        "precision@5": precision5 / n,
+        "precision@10": precision10 / n,
         "mrr": mrr / n,
         "ndcg@10": ndcg / n,
     });
@@ -824,6 +856,18 @@ fn recall_at(ranked: &[String], rel: &HashSet<&String>, k: usize) -> f32 {
     }
     let hit = ranked.iter().take(k).filter(|id| rel.contains(id)).count();
     hit as f32 / rel.len() as f32
+}
+
+/// Precision@k = fraction of the top-k SURFACED items that are relevant.
+/// Denominator is min(k, results) so a config that returns fewer than k items is
+/// not unfairly penalized for empty slots.
+fn precision_at(ranked: &[String], rel: &HashSet<&String>, k: usize) -> f32 {
+    let denom = ranked.len().min(k);
+    if denom == 0 {
+        return 0.0;
+    }
+    let hit = ranked.iter().take(k).filter(|id| rel.contains(id)).count();
+    hit as f32 / denom as f32
 }
 
 fn reciprocal_rank(ranked: &[String], rel: &HashSet<&String>) -> f32 {

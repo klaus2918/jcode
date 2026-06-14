@@ -56,6 +56,11 @@ pub struct Sidecar {
     model: String,
     max_tokens: u32,
     backend: SidecarBackend,
+    /// Optional explicit reasoning effort override (OpenAI Responses API).
+    /// When `Some`, this effort is always sent; when `None`, the default
+    /// per-model behavior applies. Used by the memory benchmark to pin
+    /// GPT-5.5 with no thinking.
+    reasoning_override: Option<String>,
 }
 
 impl Sidecar {
@@ -97,6 +102,7 @@ impl Sidecar {
             model,
             max_tokens: DEFAULT_MAX_TOKENS,
             backend,
+            reasoning_override: None,
         }
     }
 
@@ -114,6 +120,23 @@ impl Sidecar {
             model: model.into(),
             max_tokens: DEFAULT_MAX_TOKENS,
             backend: SidecarBackend::Claude,
+            reasoning_override: None,
+        }
+    }
+
+    /// Construct a sidecar pinned to a specific OpenAI model via Codex/OpenAI
+    /// OAuth, with an optional explicit reasoning effort (e.g. "none"/"minimal"
+    /// for no-thinking). Used by the memory recall benchmark judge.
+    pub fn with_openai_model(
+        model: impl Into<String>,
+        reasoning_effort: Option<String>,
+    ) -> Self {
+        Self {
+            client: crate::provider::shared_http_client(),
+            model: model.into(),
+            max_tokens: DEFAULT_MAX_TOKENS,
+            backend: SidecarBackend::OpenAI,
+            reasoning_override: reasoning_effort,
         }
     }
 
@@ -152,8 +175,14 @@ impl Sidecar {
         };
         let url = format!("{}/{}", base.trim_end_matches('/'), OPENAI_RESPONSES_PATH);
 
-        let (primary_model, primary_reasoning) =
+        let (primary_model, resolved_reasoning) =
             resolve_openai_request_model(&self.model, is_chatgpt_mode);
+        // An explicit reasoning override (e.g. benchmark judge pinning GPT-5.5
+        // to no-thinking) always wins over the per-model default.
+        let primary_reasoning: Option<&str> = self
+            .reasoning_override
+            .as_deref()
+            .or(resolved_reasoning);
 
         match self
             .complete_openai_with_model(
