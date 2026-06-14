@@ -869,6 +869,20 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 let lex = bm25.search(&q.query, 50);
                 rrf(&[dense, lex], 60.0, EMBEDDING_MAX_HITS).into_iter().map(|(id, _)| id).collect()
             }
+            "oracle_rerank" => {
+                // CEILING: take the hybrid top-N candidate POOL, then perfectly
+                // reorder it using gold (oracle). Measures the maximum precision/
+                // recall a reranker could capture from hybrid's candidate set at
+                // depth N. The gap vs `hybrid` is the rerank headroom.
+                let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
+                let lex = bm25.search(&q.query, 50);
+                let pool = rrf(&[dense, lex], 60.0, 50);
+                let rel_set: HashSet<&String> = rel.iter().collect();
+                let mut ids: Vec<String> = pool.into_iter().map(|(id, _)| id).collect();
+                // Stable sort: relevant candidates first, original order otherwise.
+                ids.sort_by_key(|id| !rel_set.contains(id));
+                ids.into_iter().take(EMBEDDING_MAX_HITS).collect()
+            }
             "hybrid_priors" => {
                 let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
                 let lex = bm25.search(&q.query, 50);
