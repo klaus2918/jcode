@@ -25,6 +25,10 @@ static EMBEDDER_CACHE: OnceLock<Mutex<EmbedderCache>> = OnceLock::new();
 /// Embedding vector type
 pub type EmbeddingVec = backend::EmbeddingVec;
 
+/// Cross-encoder reranker (re-exported from the embedding backend). Scores a
+/// (query, passage) pair jointly for second-stage reranking.
+pub use backend::CrossEncoder;
+
 /// The embedder handles model loading and inference.
 pub struct Embedder {
     inner: backend::Embedder,

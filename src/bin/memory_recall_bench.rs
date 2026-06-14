@@ -824,6 +824,17 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         None => Vec::new(),
     };
 
+    // Optional cross-encoder reranker for ce_rerank config.
+    let ce_reranker = opts.get("reranker").map(|dir| {
+        eprintln!("Loading cross-encoder reranker from {dir}");
+        jcode::embedding::CrossEncoder::load_from_dir(Path::new(dir)).expect("load reranker")
+    });
+    let rerank_pool: usize = opts.get("rerank_pool").and_then(|s| s.parse().ok()).unwrap_or(50);
+    let content_by_id: HashMap<String, String> = corpus
+        .active()
+        .map(|m| (m.id.clone(), m.content.clone()))
+        .collect();
+
     let mut recall5 = 0.0;
     let mut recall10 = 0.0;
     let mut precision5 = 0.0;
@@ -868,6 +879,52 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
                 let lex = bm25.search(&q.query, 50);
                 rrf(&[dense, lex], 60.0, EMBEDDING_MAX_HITS).into_iter().map(|(id, _)| id).collect()
+            }
+            "ce_rerank" => {
+                // recall-5: hybrid top-N candidate pool, reranked by a local
+                // cross-encoder (--reranker=<dir>). The empirical counterpart to
+                // oracle_rerank.
+                let ce = ce_reranker
+                    .as_ref()
+                    .expect("--reranker required for ce_rerank");
+                let dense = dense_retrieve(&q_emb, &corpus, 0.0, rerank_pool, false);
+                let lex = bm25.search(&q.query, rerank_pool);
+                let pool = rrf(&[dense, lex], 60.0, rerank_pool);
+                let cands: Vec<(String, String)> = pool
+                    .into_iter()
+                    .map(|(id, _)| {
+                        let text = content_by_id.get(&id).cloned().unwrap_or_default();
+                        (id, text)
+                    })
+                    .collect();
+                ce.rerank(&q.query, &cands)?
+                    .into_iter()
+                    .take(EMBEDDING_MAX_HITS)
+                    .map(|(id, _)| id)
+                    .collect()
+            }
+            "ce_rerank_focused" => {
+                // Same as ce_rerank but feed the cross-encoder the FOCUSED query
+                // (boilerplate/tool-output stripped, latest user intent) since
+                // cross-encoders are trained on short clean queries.
+                let ce = ce_reranker
+                    .as_ref()
+                    .expect("--reranker required for ce_rerank_focused");
+                let dense = dense_retrieve(&q_emb, &corpus, 0.0, rerank_pool, false);
+                let lex = bm25.search(&q.query, rerank_pool);
+                let pool = rrf(&[dense, lex], 60.0, rerank_pool);
+                let cands: Vec<(String, String)> = pool
+                    .into_iter()
+                    .map(|(id, _)| (id.clone(), content_by_id.get(&id).cloned().unwrap_or_default()))
+                    .collect();
+                // Use just the most recent user line as the rerank query.
+                let rq = focus_query(&q.query);
+                let rq = rq.lines().next().unwrap_or(&rq);
+                ce.rerank(rq, &cands)?
+                    .into_iter()
+                    .take(EMBEDDING_MAX_HITS)
+                    .map(|(id, _)| id)
+                    .collect()
             }
             "oracle_rerank" => {
                 // CEILING: take the hybrid top-N candidate POOL, then perfectly
