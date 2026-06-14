@@ -625,6 +625,59 @@ fn parse_judge_response(resp: &str, n: usize) -> Vec<usize> {
         .collect()
 }
 
+// ---- Listwise LLM reranker (recall-5, Mode-2) ----------------------------
+//
+// Given the focused query + the hybrid top-N candidate pool, ask the model to
+// return a RANKED list of candidate numbers (best first) in a single call. This
+// is the listwise counterpart to the local cross-encoder (ce_rerank), which
+// failed on the noisy domain. The LLM sees all candidates together so it can
+// compare them, and we feed the FOCUSED query (latest user intent) rather than
+// the noisy full window.
+
+const LLM_RERANK_SYSTEM: &str = "You re-rank stored MEMORIES by how useful each would be to surface to an AI coding agent for the CURRENT request. \
+Order them best-first: a memory ranks high if a competent engineer would say knowing it specifically helps respond here (a relevant fact, preference, correction, or procedure). \
+Off-topic, generic, or keyword-only matches rank low. \
+Reply with ONLY a JSON array of candidate numbers, best first, e.g. [3,1,7]. Include only clearly useful candidates; omit ones that are not relevant. No prose.";
+
+fn build_rerank_prompt(query: &str, candidates: &[(String, String)]) -> String {
+    // Query is already focused; keep a tail cap for safety.
+    let q = truncate_for_judge(query, 4000);
+    let mut p = String::new();
+    p.push_str("CURRENT REQUEST:\n");
+    p.push_str(&q);
+    p.push_str("\n\nCANDIDATE MEMORIES:\n");
+    for (i, (_id, content)) in candidates.iter().enumerate() {
+        p.push_str(&format!("{}. {}\n", i + 1, content.replace('\n', " ")));
+    }
+    p.push_str("\nReturn candidate numbers ranked best-first as a JSON array.");
+    p
+}
+
+/// Parse a ranked JSON array of 1-based candidate numbers into 0-based indices,
+/// preserving order and dropping out-of-range / duplicate entries.
+fn parse_rerank_response(resp: &str, n: usize) -> Vec<usize> {
+    let start = resp.find('[');
+    let end = resp.rfind(']');
+    let (Some(s), Some(e)) = (start, end) else {
+        return Vec::new();
+    };
+    if e < s {
+        return Vec::new();
+    }
+    let nums: Vec<i64> = serde_json::from_str(&resp[s..=e]).unwrap_or_default();
+    let mut seen = HashSet::new();
+    nums.into_iter()
+        .filter_map(|x| {
+            let idx = x as usize;
+            if idx >= 1 && idx <= n && seen.insert(idx) {
+                Some(idx - 1)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn cmd_judge(args: &[String]) -> Result<()> {
     let opts = parse_kv(args);
     let model = opts
@@ -835,6 +888,103 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         .map(|m| (m.id.clone(), m.content.clone()))
         .collect();
 
+    // For `llm_rerank`: pre-compute a listwise LLM reranking of the hybrid
+    // top-N pool for every judged query (concurrently), cached qid -> ranked
+    // ids, so the sync scoring loop just looks it up. Reuses the Sidecar judge
+    // plumbing (Claude / OpenAI OAuth) + focused query.
+    let llm_rerank_map: HashMap<String, Vec<String>> = if config == "llm_rerank" {
+        let model = opts
+            .get("model")
+            .cloned()
+            .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+        let backend = opts.get("backend").cloned().unwrap_or_else(|| {
+            if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
+                "openai".to_string()
+            } else {
+                "claude".to_string()
+            }
+        });
+        let reasoning = opts.get("reasoning").cloned().unwrap_or_else(|| "none".to_string());
+        let concurrency: usize =
+            opts.get("concurrency").and_then(|s| s.parse().ok()).unwrap_or(8);
+
+        // Build (qid, focused_query, pool_candidates) for judged queries only.
+        let mut jobs: Vec<(String, String, Vec<(String, String)>)> = Vec::new();
+        for q in &queries {
+            let Some(rel) = gold.get(&q.qid) else { continue };
+            if rel.is_empty() {
+                continue;
+            }
+            let q_emb = embedding::embed(&q.query)?;
+            let dense = dense_retrieve(&q_emb, &corpus, 0.0, rerank_pool, false);
+            let lex = bm25.search(&q.query, rerank_pool);
+            let pool = rrf(&[dense, lex], 60.0, rerank_pool);
+            let cands: Vec<(String, String)> = pool
+                .into_iter()
+                .map(|(id, _)| (id.clone(), content_by_id.get(&id).cloned().unwrap_or_default()))
+                .collect();
+            jobs.push((q.qid.clone(), focus_query(&q.query), cands));
+        }
+        eprintln!(
+            "llm_rerank: reranking {} queries (pool={}) with {} backend={} (concurrency {})",
+            jobs.len(),
+            rerank_pool,
+            model,
+            backend,
+            concurrency
+        );
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let results = rt.block_on(async {
+            use futures::stream::{self, StreamExt};
+            stream::iter(jobs.into_iter())
+                .map(|(qid, query, cands)| {
+                    let model = model.clone();
+                    let backend = backend.clone();
+                    let reasoning = reasoning.clone();
+                    async move {
+                        let sidecar = if backend == "openai" {
+                            let eff = if reasoning == "default" { None } else { Some(reasoning) };
+                            jcode::sidecar::Sidecar::with_openai_model(&model, eff)
+                        } else {
+                            jcode::sidecar::Sidecar::with_claude_model(&model)
+                        };
+                        let prompt = build_rerank_prompt(&query, &cands);
+                        let n = cands.len();
+                        let mut ranked_ids: Vec<String> = Vec::new();
+                        for attempt in 0..2 {
+                            match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
+                                Ok(resp) => {
+                                    ranked_ids = parse_rerank_response(&resp, n)
+                                        .into_iter()
+                                        .map(|i| cands[i].0.clone())
+                                        .collect();
+                                    break;
+                                }
+                                Err(e) => {
+                                    if attempt == 1 {
+                                        eprintln!("llm_rerank failed for {qid}: {e}");
+                                    } else {
+                                        tokio::time::sleep(std::time::Duration::from_millis(500))
+                                            .await;
+                                    }
+                                }
+                            }
+                        }
+                        (qid, ranked_ids)
+                    }
+                })
+                .buffer_unordered(concurrency)
+                .collect::<Vec<_>>()
+                .await
+        });
+        results.into_iter().collect()
+    } else {
+        HashMap::new()
+    };
+
     let mut recall5 = 0.0;
     let mut recall10 = 0.0;
     let mut precision5 = 0.0;
@@ -939,6 +1089,18 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 // Stable sort: relevant candidates first, original order otherwise.
                 ids.sort_by_key(|id| !rel_set.contains(id));
                 ids.into_iter().take(EMBEDDING_MAX_HITS).collect()
+            }
+            "llm_rerank" => {
+                // recall-5 Mode-2: listwise LLM rerank of the hybrid top-N pool,
+                // precomputed into llm_rerank_map above. The empirical counterpart
+                // to oracle_rerank that an LLM can actually achieve.
+                llm_rerank_map
+                    .get(&q.qid)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(EMBEDDING_MAX_HITS)
+                    .collect()
             }
             "hybrid_priors" => {
                 let dense = dense_retrieve(&q_emb, &corpus, 0.0, 50, false);
