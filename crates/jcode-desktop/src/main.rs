@@ -11804,7 +11804,8 @@ impl Canvas {
             let streaming_follow = self.streaming_follow_motion.frame(
                 StreamingFollowInput {
                     total_lines: body_line_count,
-                    anchored_to_bottom: single_session.body_scroll_lines <= SCROLL_FRACTIONAL_EPSILON,
+                    anchored_to_bottom: single_session.body_scroll_lines
+                        <= SCROLL_FRACTIONAL_EPSILON,
                     streaming_active: !single_session.streaming_response.is_empty(),
                 },
                 now,
