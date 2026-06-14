@@ -627,56 +627,10 @@ fn parse_judge_response(resp: &str, n: usize) -> Vec<usize> {
 
 // ---- Listwise LLM reranker (recall-5, Mode-2) ----------------------------
 //
-// Given the focused query + the hybrid top-N candidate pool, ask the model to
-// return a RANKED list of candidate numbers (best first) in a single call. This
-// is the listwise counterpart to the local cross-encoder (ce_rerank), which
-// failed on the noisy domain. The LLM sees all candidates together so it can
-// compare them, and we feed the FOCUSED query (latest user intent) rather than
-// the noisy full window.
-
-const LLM_RERANK_SYSTEM: &str = "You re-rank stored MEMORIES by how useful each would be to surface to an AI coding agent for the CURRENT request. \
-Order them best-first: a memory ranks high if a competent engineer would say knowing it specifically helps respond here (a relevant fact, preference, correction, or procedure). \
-Off-topic, generic, or keyword-only matches rank low. \
-Reply with ONLY a JSON array of candidate numbers, best first, e.g. [3,1,7]. Include only clearly useful candidates; omit ones that are not relevant. No prose.";
-
-fn build_rerank_prompt(query: &str, candidates: &[(String, String)]) -> String {
-    // Query is already focused; keep a tail cap for safety.
-    let q = truncate_for_judge(query, 4000);
-    let mut p = String::new();
-    p.push_str("CURRENT REQUEST:\n");
-    p.push_str(&q);
-    p.push_str("\n\nCANDIDATE MEMORIES:\n");
-    for (i, (_id, content)) in candidates.iter().enumerate() {
-        p.push_str(&format!("{}. {}\n", i + 1, content.replace('\n', " ")));
-    }
-    p.push_str("\nReturn candidate numbers ranked best-first as a JSON array.");
-    p
-}
-
-/// Parse a ranked JSON array of 1-based candidate numbers into 0-based indices,
-/// preserving order and dropping out-of-range / duplicate entries.
-fn parse_rerank_response(resp: &str, n: usize) -> Vec<usize> {
-    let start = resp.find('[');
-    let end = resp.rfind(']');
-    let (Some(s), Some(e)) = (start, end) else {
-        return Vec::new();
-    };
-    if e < s {
-        return Vec::new();
-    }
-    let nums: Vec<i64> = serde_json::from_str(&resp[s..=e]).unwrap_or_default();
-    let mut seen = HashSet::new();
-    nums.into_iter()
-        .filter_map(|x| {
-            let idx = x as usize;
-            if idx >= 1 && idx <= n && seen.insert(idx) {
-                Some(idx - 1)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
+// The prompt/parse/rerank logic lives in the shared `jcode::memory_rerank`
+// module so the benchmark and the live memory agent use ONE implementation
+// (bench == prod). This file only orchestrates running it over the gold set.
+use jcode::memory_rerank::{LLM_RERANK_SYSTEM, build_rerank_prompt, parse_rerank_response};
 
 fn cmd_judge(args: &[String]) -> Result<()> {
     let opts = parse_kv(args);
