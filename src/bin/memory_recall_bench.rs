@@ -868,6 +868,9 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         let reasoning = opts.get("reasoning").cloned().unwrap_or_else(|| "none".to_string());
         let concurrency: usize =
             opts.get("concurrency").and_then(|s| s.parse().ok()).unwrap_or(8);
+        // Query view: "focused" (default, what we ship) or "full" (raw transcript
+        // window, models the fork-the-judge-off-warm-transcript / prefix-cache idea).
+        let query_view = opts.get("query_view").cloned().unwrap_or_else(|| "focused".to_string());
 
         // Build (qid, focused_query, pool_candidates) for judged queries only.
         let mut jobs: Vec<(String, String, Vec<(String, String)>)> = Vec::new();
@@ -884,7 +887,17 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 .into_iter()
                 .map(|(id, _)| (id.clone(), content_by_id.get(&id).cloned().unwrap_or_default()))
                 .collect();
-            jobs.push((q.qid.clone(), focus_query(&q.query), cands));
+            // Query view fed to the reranker:
+            //   focused (default) = noise-stripped latest-user intent (what we ship);
+            //   full = the raw transcript window. `full` models the KV/prefix-cache
+            //   "fork the judge off the warm transcript" idea: if quality holds with
+            //   the full transcript, the cache-friendly structure costs no accuracy.
+            let rq = if query_view == "full" {
+                q.query.clone()
+            } else {
+                focus_query(&q.query)
+            };
+            jobs.push((q.qid.clone(), rq, cands));
         }
         eprintln!(
             "llm_rerank: reranking {} queries (pool={}) with {} backend={} (concurrency {})",
