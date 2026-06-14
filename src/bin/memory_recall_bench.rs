@@ -889,13 +889,22 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 .collect();
             // Query view fed to the reranker:
             //   focused (default) = noise-stripped latest-user intent (what we ship);
-            //   full = the raw transcript window. `full` models the KV/prefix-cache
-            //   "fork the judge off the warm transcript" idea: if quality holds with
-            //   the full transcript, the cache-friendly structure costs no accuracy.
-            let rq = if query_view == "full" {
-                q.query.clone()
-            } else {
-                focus_query(&q.query)
+            //   full = the raw transcript window (models the cache/fork prefix; tests
+            //     whether feeding the noisy window as the query costs accuracy);
+            //   prefix_suffix = full transcript THEN the focused intent appended as a
+            //     suffix - models the cache-friendly fork done right: transcript is the
+            //     shared (cacheable) prefix, but the model is told to focus on the
+            //     latest request at the end. Tests if that recovers quality.
+            let rq = match query_view.as_str() {
+                "full" => q.query.clone(),
+                "prefix_suffix" => {
+                    let focused = focus_query(&q.query);
+                    format!(
+                        "{}\n\n=== LATEST REQUEST (focus your ranking on THIS) ===\n{}",
+                        q.query, focused
+                    )
+                }
+                _ => focus_query(&q.query),
             };
             jobs.push((q.qid.clone(), rq, cands));
         }
