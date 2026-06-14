@@ -200,3 +200,27 @@ Next (high value, larger change):
 - recall-3: focused query construction (window concatenates up to 12 msgs +
   tool output; ~19% carry system-reminder boilerplate).
 - recall-5: rerank stage. graph A-D: graph utilization.
+
+## Update 2026-06-14 (rerank breakthrough, multi-agent)
+
+Benchmark-driven results (Sonnet judge, 28 judged queries, jcode self-dev corpus):
+| Config       | recall@5 | recall@10 | precision@5 | MRR   |
+|--------------|----------|-----------|-------------|-------|
+| baseline (prod dense, 0.5 thr) | 0.000 | 0.000 | 0.000 | 0.000 |
+| hybrid (SHIPPED)               | 0.530 | 0.679 | 0.229 | 0.504 |
+| ce_rerank (local CE, rejected) | 0.325 | 0.420 | 0.129 | 0.322 |
+| llm_rerank (listwise Sonnet)   | 0.754 | 0.832 | 0.346 | 0.762 |
+| oracle ceiling                 | 0.990 | 1.000 | 0.443 | 1.000 |
+
+- Hybrid (dense+BM25+RRF) shipped: 0.0 -> 0.53 recall@5.
+- Local cross-encoder REJECTED (out-of-distribution, 0.325).
+- Listwise LLM reranker over the hybrid top-50 with a FOCUSED query: 0.53 -> 0.75
+  recall@5, captures most of the oracle headroom. This is the Mode-2 path.
+- Embedder upgrade de-prioritized (pool recall already ~99%; bge anisotropic).
+
+Implementation split (turtle + crocodile):
+- Shared: jcode-base/src/memory_rerank.rs (prompt + parse + rerank_candidates),
+  used by both bench and memory_agent (single source of truth).
+- memory_agent process_context: Mode-2 reranks hybrid candidates with the focused
+  query before surfacing; Mode-1 unchanged (no adequate local reranker).
+- Focused query builder (focus_query_text) lands in memory_prompt.rs.
