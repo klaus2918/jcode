@@ -404,6 +404,10 @@ impl MemoryAgent {
         if context.is_empty() {
             return Ok(());
         }
+        // Focused query (latest user intent, boilerplate/tool-noise stripped) used
+        // for listwise LLM reranking. Benchmarking showed the cross-encoder/LLM
+        // reranker only works with this focused query, not the full noisy window.
+        let focused_query = memory::format_focused_query_for_relevance(&messages);
 
         let context_signature = relevance_context_signature(&context);
         {
@@ -574,7 +578,13 @@ impl MemoryAgent {
             return Ok(());
         }
 
-        // Step 3: Use Haiku to decide what's relevant and worth surfacing
+        // Step 3: Decide which candidates to surface.
+        // Mode-2 (sidecar enabled): a single listwise LLM rerank reorders the
+        // hybrid candidates by relevance to the focused query and omits
+        // irrelevant ones; we surface the top MAX_MEMORIES_PER_TURN. This matches
+        // the validated benchmark pipeline (recall@5 0.53 -> 0.75) and uses ONE
+        // LLM call instead of the old per-candidate binary checks.
+        // Mode-1 (no sidecar): fall back to hybrid order via evaluate_candidates.
         memory::set_state(MemoryState::SidecarChecking {
             count: new_candidates.len(),
         });
@@ -582,9 +592,17 @@ impl MemoryAgent {
 
         let candidate_ids: Vec<String> = new_candidates.iter().map(|(e, _)| e.id.clone()).collect();
 
-        let relevant = self
-            .evaluate_candidates(session_id, &context, new_candidates)
-            .await?;
+        let relevant = if memory::memory_sidecar_enabled()
+            && let Some(sidecar) = self.sidecar.as_ref()
+        {
+            let reranked =
+                crate::memory_rerank::rerank_candidates(sidecar, &focused_query, new_candidates)
+                    .await;
+            reranked.into_iter().take(MAX_MEMORIES_PER_TURN).collect()
+        } else {
+            self.evaluate_candidates(session_id, &context, new_candidates)
+                .await?
+        };
 
         let verified_ids: Vec<String> = relevant.iter().map(|e| e.id.clone()).collect();
         let rejected_ids: Vec<String> = candidate_ids
