@@ -224,3 +224,29 @@ Implementation split (turtle + crocodile):
 - memory_agent process_context: Mode-2 reranks hybrid candidates with the focused
   query before surfacing; Mode-1 unchanged (no adequate local reranker).
 - Focused query builder (focus_query_text) lands in memory_prompt.rs.
+
+## Deferred follow-ups (2026-06-14, after the rerank pipeline shipped)
+
+The two-stage pipeline (hybrid retrieve -> focused-query listwise LLM rerank ->
+top-5) is live and committed; production recall@5 went 0.0 -> 0.53 -> ~0.75.
+These remain as future work, each blocked or deliberately deprioritized:
+
+1. **Remote embedding adapter** (low value, measure first). EmbeddingBackend
+   trait + LocalOnnxBackend scaffolding is shipped (embedding_backend.rs). A
+   remote openai/openai-compatible adapter + auto-select-on-embeddings-key +
+   re-embed migration would plug in via `active_backend()`. Deprioritized because
+   the oracle-ceiling analysis showed the embedder is a *capped* lever (the
+   candidate pool already contains ~99% of relevant memories; ranking, not
+   recall of the pool, was the bottleneck). Only revisit if a future change makes
+   the base embedder the bottleneck again, and A/B it in the bench first.
+
+2. **Live reload + Mode-2 verification** (user action). Build+reload onto the new
+   binary and confirm the rerank fires in a real session (memory logs should show
+   the single listwise rerank instead of per-candidate sidecar checks). Pending
+   only because the shared worktree currently has an unrelated agent's
+   uncommitted changes; not a code issue.
+
+3. **GPT-5.5 judge re-run** (blocked ~18 days). Re-run the bench LLM judge with
+   GPT-5.5 (`--backend=openai --reasoning=none`) once the OpenAI account quota
+   resets, and compare judge agreement against the current Claude-Sonnet gold
+   labels. Infrastructure is already in place (Sidecar::with_openai_model).
