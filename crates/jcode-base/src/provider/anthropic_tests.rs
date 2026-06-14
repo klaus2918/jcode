@@ -340,9 +340,60 @@ fn test_anthropic_manual_thinking_budget_for_opus_45() {
 }
 
 #[test]
+fn message_start_warns_when_server_substitutes_a_different_model() {
+    // Anthropic can silently alias an unavailable model id to a different model
+    // (observed: claude-fable-5 -> claude-haiku-4-5). When the served model
+    // differs from the requested base id, we must surface a StatusDetail warning
+    // so the user is not misled about which model answered.
+    let mut state = SseStreamState {
+        requested_model_base: "claude-fable-5".to_string(),
+        ..SseStreamState::default()
+    };
+    let event = SseEvent {
+        event_type: "message_start".to_string(),
+        data: serde_json::json!({
+            "type": "message_start",
+            "message": {"model": "claude-haiku-4-5-20251001", "usage": {"input_tokens": 1}}
+        })
+        .to_string(),
+    };
+    let events = process_sse_event(&event, &mut state, true);
+    let warned = events.iter().any(|e| {
+        matches!(e, StreamEvent::StatusDetail { detail }
+            if detail.contains("claude-haiku-4-5") && detail.contains("claude-fable-5"))
+    });
+    assert!(
+        warned,
+        "expected a substitution StatusDetail, got {events:?}"
+    );
+    assert!(state.warned_model_substitution);
+
+    // A matching served model must NOT warn.
+    let mut state = SseStreamState {
+        requested_model_base: "claude-opus-4-8".to_string(),
+        ..SseStreamState::default()
+    };
+    let event = SseEvent {
+        event_type: "message_start".to_string(),
+        data: serde_json::json!({
+            "type": "message_start",
+            "message": {"model": "claude-opus-4-8", "usage": {"input_tokens": 1}}
+        })
+        .to_string(),
+    };
+    let events = process_sse_event(&event, &mut state, true);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::StatusDetail { .. })),
+        "served model matched request; must not warn"
+    );
+    assert!(!state.warned_model_substitution);
+}
+
+#[test]
 fn test_anthropic_thinking_sse_events() {
     let mut state = SseStreamState::default();
-
     let start = SseEvent {
         event_type: "content_block_start".to_string(),
         data: serde_json::json!({
