@@ -179,3 +179,24 @@ graph LR
   H --> D[D: trim/repurpose maintenance]
   C --> E[E: feedback via edges]
 ```
+
+## Implementation status (2026-06-14)
+
+Benchmark (Mode 1, private ~/jcode-memory-bench, Sonnet judge):
+- DONE: harness `memory_recall_bench` (queries/pool/judge/metrics), committed.
+- Baseline: production dense (0.5 thr) = 0.0 recall@5; hybrid = 0.53.
+
+Shipped to live path:
+- DONE recall-0 + recall-4: memory agent uses `find_similar_hybrid`
+  (dense + BM25 + RRF, no cosine floor). Removed the recall-killing 0.5 threshold
+  and added lexical signal. Unit tests added. Bench: 0.0 -> 0.53 recall@5.
+
+Evaluated, NOT shipped:
+- recall-6 priors: roughly neutral (+1.8pt r@5 / -1.8pt r@10). Held back; bench
+  config `hybrid_priors` retained for re-evaluation after embedder upgrade.
+
+Next (high value, larger change):
+- recall-2: embedder upgrade (dense half is weak at 0.17 unthresholded).
+- recall-3: focused query construction (window concatenates up to 12 msgs +
+  tool output; ~19% carry system-reminder boilerplate).
+- recall-5: rerank stage. graph A-D: graph utilization.
