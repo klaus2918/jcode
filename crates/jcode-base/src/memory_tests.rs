@@ -623,3 +623,64 @@ fn score_and_filter_prioritizes_matching_skill_memories() {
     assert_eq!(ranked[0].0.id, "skill:todo-planning-skill");
     assert!(ranked[0].1 > ranked[1].1);
 }
+
+#[test]
+fn hybrid_fuse_rescues_lexical_match_dense_would_miss() {
+    // A memory that is the obvious lexical answer (shares the rare identifier
+    // `find_similar_hybrid`) but is given a deliberately ORTHOGONAL embedding so
+    // pure dense cosine ranks it last. BM25 must rescue it into the top result.
+    let target = MemoryEntry::new(
+        MemoryCategory::Fact,
+        "The function find_similar_hybrid fuses dense and bm25 with RRF.",
+    )
+    .with_embedding(vec![0.0, 1.0]);
+
+    let distractor_a = MemoryEntry::new(
+        MemoryCategory::Fact,
+        "Unrelated note about coffee brewing temperatures.",
+    )
+    .with_embedding(vec![1.0, 0.0]);
+    let distractor_b = MemoryEntry::new(
+        MemoryCategory::Fact,
+        "Another unrelated note about bicycle maintenance.",
+    )
+    .with_embedding(vec![0.95, 0.05]);
+
+    // Query embedding points along the distractors' axis, so dense alone would
+    // rank the target dead last; the query TEXT contains the rare identifier.
+    let query_text = "how does find_similar_hybrid work";
+    let query_emb = vec![1.0, 0.0];
+
+    let ranked = MemoryManager::hybrid_fuse(
+        vec![target.clone(), distractor_a, distractor_b],
+        query_text,
+        &query_emb,
+        3,
+    );
+
+    assert!(!ranked.is_empty(), "hybrid must return candidates");
+    assert_eq!(
+        ranked[0].0.id, target.id,
+        "BM25 should rescue the exact-identifier memory to the top despite poor dense score"
+    );
+}
+
+#[test]
+fn hybrid_fuse_returns_dense_hits_without_lexical_overlap() {
+    // When the query shares NO tokens with any memory, hybrid must still return
+    // the dense-nearest memory (fusion falls back to the dense ranking).
+    let near = MemoryEntry::new(MemoryCategory::Fact, "alpha bravo charlie")
+        .with_embedding(vec![1.0, 0.0]);
+    let far = MemoryEntry::new(MemoryCategory::Fact, "delta echo foxtrot")
+        .with_embedding(vec![0.0, 1.0]);
+
+    let ranked = MemoryManager::hybrid_fuse(
+        vec![near.clone(), far],
+        "zzz_nonmatching_query_token",
+        &[1.0, 0.0],
+        2,
+    );
+
+    assert!(!ranked.is_empty());
+    assert_eq!(ranked[0].0.id, near.id, "dense-nearest memory should rank first");
+}

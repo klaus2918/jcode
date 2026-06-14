@@ -528,12 +528,12 @@ impl MemoryAgent {
             }
         }
 
-        // Step 2: Find similar memories by embedding
-        let candidates = memory_manager.find_similar_with_embedding(
-            &context_embedding,
-            memory::EMBEDDING_SIMILARITY_THRESHOLD,
-            memory::EMBEDDING_MAX_HITS,
-        )?;
+        // Step 2: Find candidate memories via hybrid retrieval (dense + BM25
+        // fused with RRF). Benchmarking showed the old dense-only path with a
+        // 0.5 cosine floor surfaced essentially nothing on real session windows;
+        // hybrid recovers recall and lets the sidecar/rerank do the filtering.
+        let candidates =
+            memory_manager.find_similar_hybrid(&context, &context_embedding, memory::EMBEDDING_MAX_HITS)?;
 
         let embedding_latency = start.elapsed().as_millis() as u64;
         memory::add_event(MemoryEventKind::EmbeddingComplete {
