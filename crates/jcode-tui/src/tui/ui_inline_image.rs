@@ -691,6 +691,7 @@ pub(crate) fn build_section(
         image_regions,
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
+        message_boundaries: Vec::new(),
     }
 }
 
@@ -709,6 +710,7 @@ fn empty() -> PreparedMessages {
         image_regions: Vec::new(),
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
+        message_boundaries: Vec::new(),
     }
 }
 
