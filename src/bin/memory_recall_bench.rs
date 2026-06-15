@@ -632,6 +632,68 @@ fn parse_judge_response(resp: &str, n: usize) -> Vec<usize> {
 // (bench == prod). This file only orchestrates running it over the gold set.
 use jcode::memory_rerank::{LLM_RERANK_SYSTEM, build_rerank_prompt, parse_rerank_response};
 
+// ---- Synthesis ("fork writes what to inject") experiment -----------------
+//
+// Instead of selecting relevant memories (llm_rerank), the model reads the
+// high-recall pool + focused context and SYNTHESIZES a tight injection note,
+// citing which memory ids it drew from. Faithfulness is constrained: use ONLY
+// the provided memories, invent nothing. We score recall/precision on the cited
+// `used` ids (comparable to llm_rerank) and save the notes for quality review.
+const LLM_SYNTH_SYSTEM: &str = "You prepare a memory context note for an AI coding agent. \
+You are given the CURRENT request and a pool of candidate stored MEMORIES (high recall, mixed relevance). \
+Write a concise note containing ONLY the facts/preferences/corrections from the candidates that are genuinely useful for the current request. \
+STRICT RULES: use ONLY information present in the candidate memories; invent NOTHING; omit anything irrelevant; if nothing is relevant, return an empty note and empty used list. \
+Merge related points and drop irrelevant halves of partially-relevant memories. \
+Reply with ONLY a JSON object: {\"used\":[candidate numbers you drew from],\"note\":\"the synthesized context, or empty string\"}. No prose outside the JSON.";
+
+fn build_synth_prompt(query: &str, candidates: &[(String, String)]) -> String {
+    let q = if query.chars().count() > 4000 {
+        query.chars().skip(query.chars().count() - 4000).collect::<String>()
+    } else {
+        query.to_string()
+    };
+    let mut p = String::new();
+    p.push_str("CURRENT REQUEST:\n");
+    p.push_str(&q);
+    p.push_str("\n\nCANDIDATE MEMORIES:\n");
+    for (i, (_id, content)) in candidates.iter().enumerate() {
+        p.push_str(&format!("{}. {}\n", i + 1, content.replace('\n', " ")));
+    }
+    p.push_str("\nReturn {\"used\":[...],\"note\":\"...\"} drawing ONLY from the candidates above.");
+    p
+}
+
+/// Parse the synth JSON, returning (used 0-based indices, note text). Tolerant of
+/// surrounding prose by extracting the first {..} object.
+fn parse_synth_response(resp: &str, n: usize) -> (Vec<usize>, String) {
+    let (Some(s), Some(e)) = (resp.find('{'), resp.rfind('}')) else {
+        return (Vec::new(), String::new());
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp[s..=e]) else {
+        return (Vec::new(), String::new());
+    };
+    let note = v.get("note").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let mut seen = std::collections::HashSet::new();
+    let used = v
+        .get("used")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_i64())
+                .filter_map(|x| {
+                    let idx = usize::try_from(x).ok()?;
+                    if idx >= 1 && idx <= n && seen.insert(idx) {
+                        Some(idx - 1)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (used, note)
+}
+
 fn cmd_judge(args: &[String]) -> Result<()> {
     let opts = parse_kv(args);
     let model = opts
@@ -848,12 +910,18 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
     // plumbing (Claude / OpenAI OAuth) + focused query.
     let llm_rerank_map: HashMap<String, Vec<String>> = if config == "llm_rerank"
         || config == "llm_rerank_padded"
+        || config == "llm_synth"
     {
         // `llm_rerank` = precision mode (inject only model-kept ids).
         // `llm_rerank_padded` = emulate the OLD buggy prod path: append the
         //   model-omitted candidates in hybrid order then pad to top-k, so we can
         //   quantify the precision the relevant-only fix recovers.
+        // `llm_synth` = the fork SYNTHESIZES an injection note from the pool and
+        //   cites which candidates it used; we score on the cited `used` ids and
+        //   save the notes to results/synth_notes.jsonl for quality/faithfulness
+        //   review.
         let padded = config == "llm_rerank_padded";
+        let synth = config == "llm_synth";
         let model = opts
             .get("model")
             .cloned()
@@ -920,7 +988,7 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let results = rt.block_on(async {
+        let raw: Vec<(String, Vec<String>, String, usize, usize)> = rt.block_on(async {
             use futures::stream::{self, StreamExt};
             stream::iter(jobs.into_iter())
                 .map(|(qid, query, cands)| {
@@ -934,22 +1002,35 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                         } else {
                             jcode::sidecar::Sidecar::with_claude_model(&model)
                         };
-                        let prompt = build_rerank_prompt(&query, &cands);
                         let n = cands.len();
+                        // Prompt + system for cost accounting (char proxy for tokens).
+                        let (system, prompt) = if synth {
+                            (LLM_SYNTH_SYSTEM, build_synth_prompt(&query, &cands))
+                        } else {
+                            (LLM_RERANK_SYSTEM, build_rerank_prompt(&query, &cands))
+                        };
+                        let prompt_chars = system.len() + prompt.len();
                         let mut ranked_ids: Vec<String> = Vec::new();
+                        let mut note = String::new();
                         for attempt in 0..2 {
-                            match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
+                            match sidecar.complete(system, &prompt).await {
                                 Ok(resp) => {
-                                    let kept = parse_rerank_response(&resp, n);
-                                    let kept_set: std::collections::HashSet<usize> =
-                                        kept.iter().copied().collect();
-                                    ranked_ids = kept.iter().map(|&i| cands[i].0.clone()).collect();
-                                    if padded {
-                                        // Emulate old buggy prod: append the model-omitted
-                                        // candidates in hybrid order (then top-k pads to 5).
-                                        for (i, (id, _)) in cands.iter().enumerate() {
-                                            if !kept_set.contains(&i) {
-                                                ranked_ids.push(id.clone());
+                                    if synth {
+                                        let (used, n_text) = parse_synth_response(&resp, n);
+                                        ranked_ids =
+                                            used.iter().map(|&i| cands[i].0.clone()).collect();
+                                        note = n_text;
+                                    } else {
+                                        let kept = parse_rerank_response(&resp, n);
+                                        let kept_set: std::collections::HashSet<usize> =
+                                            kept.iter().copied().collect();
+                                        ranked_ids =
+                                            kept.iter().map(|&i| cands[i].0.clone()).collect();
+                                        if padded {
+                                            for (i, (id, _)) in cands.iter().enumerate() {
+                                                if !kept_set.contains(&i) {
+                                                    ranked_ids.push(id.clone());
+                                                }
                                             }
                                         }
                                     }
@@ -965,14 +1046,51 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                                 }
                             }
                         }
-                        (qid, ranked_ids)
+                        (qid, ranked_ids, note.clone(), prompt_chars, note.len())
                     }
                 })
                 .buffer_unordered(concurrency)
                 .collect::<Vec<_>>()
                 .await
         });
-        results.into_iter().collect()
+
+        // For synth: save the notes + cost proxy for human review, and report
+        // average prompt/output sizes (the real lever is cost/latency, not the
+        // circular recall score).
+        if synth {
+            let notes_path = bench_root().join("results/synth_notes.jsonl");
+            let mut out = String::new();
+            let mut total_prompt = 0usize;
+            let mut total_note = 0usize;
+            for (qid, used, note, pchars, nchars) in &raw {
+                total_prompt += *pchars;
+                total_note += *nchars;
+                out.push_str(
+                    &serde_json::to_string(&serde_json::json!({
+                        "qid": qid,
+                        "used": used,
+                        "note": note,
+                        "prompt_chars": pchars,
+                        "note_chars": nchars,
+                    }))
+                    .unwrap_or_default(),
+                );
+                out.push('\n');
+            }
+            let _ = std::fs::write(&notes_path, out);
+            let nq = raw.len().max(1);
+            eprintln!(
+                "llm_synth: {} notes -> {} | avg prompt ~{} chars (~{} tok), avg note ~{} chars (~{} tok)",
+                raw.len(),
+                notes_path.display(),
+                total_prompt / nq,
+                total_prompt / nq / 4,
+                total_note / nq,
+                total_note / nq / 4,
+            );
+        }
+
+        raw.into_iter().map(|(qid, ids, _, _, _)| (qid, ids)).collect()
     } else {
         HashMap::new()
     };
@@ -1082,7 +1200,7 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
                 ids.sort_by_key(|id| !rel_set.contains(id));
                 ids.into_iter().take(EMBEDDING_MAX_HITS).collect()
             }
-            "llm_rerank" | "llm_rerank_padded" => {
+            "llm_rerank" | "llm_rerank_padded" | "llm_synth" => {
                 // recall-5 Mode-2: listwise LLM rerank of the hybrid top-N pool,
                 // precomputed into llm_rerank_map above. `llm_rerank` is precision
                 // mode (relevant-only); `llm_rerank_padded` emulates the old buggy
@@ -1265,6 +1383,276 @@ fn cmd_probe(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Measure the topic-stability gate: replay real sessions turn-by-turn, embed
+/// each live query window, and decide whether the expensive LLM rerank would
+/// fire. The gate skips the rerank when the current context is highly similar
+/// (cosine >= threshold) to the embedding captured the last time the rerank
+/// actually ran. This quantifies the activation-reduction the gate buys on real
+/// traffic. We sweep several thresholds and report fire-rate per threshold.
+fn cmd_gate(args: &[String]) -> Result<()> {
+    let opts = parse_kv(args);
+    let sessions_dir = opts
+        .get("sessions")
+        .cloned()
+        .unwrap_or_else(|| format!("{}/.jcode/sessions", dirs_home().display()));
+    let max_sessions: usize =
+        opts.get("max_sessions").and_then(|s| s.parse().ok()).unwrap_or(60);
+    let working_dir_filter = opts.get("working_dir").cloned();
+    // Thresholds to sweep. A turn FIRES the rerank when cosine(current, last_fired)
+    // < threshold (topic moved enough) OR it is the first turn of the session.
+    let thresholds: Vec<f32> = opts
+        .get("thresholds")
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![0.80, 0.85, 0.90, 0.93, 0.95]);
+
+    // Candidate-pool stability gate: retrieve the hybrid top-k pool per turn and
+    // skip the rerank when the pool id-set is unchanged (or Jaccard >= pool_thr)
+    // versus the last fired turn. This is the stronger signal: if retrieval
+    // surfaces the same memories, the rerank answer cannot change. Requires
+    // --corpus to load the same graph production retrieves from.
+    let pool_k: usize = opts.get("pool_k").and_then(|s| s.parse().ok()).unwrap_or(10);
+    let pool_thr: f32 = opts.get("pool_thr").and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let corpus_pool = match opts.get("corpus") {
+        Some(p) => {
+            let c = Corpus::load_graph_file(Path::new(p))?;
+            let bm = Bm25::build(&c);
+            Some((c, bm))
+        }
+        None => None,
+    };
+    // Pool-gate tallies.
+    let mut pool_fires = 0usize;
+    let mut pool_total = 0usize;
+    // Novelty-gate tallies: fire only when the top-k hybrid pool contains at
+    // least one memory NOT already surfaced this session (the natural trigger,
+    // since already-injected memories are filtered out before reranking). Also
+    // apply an optional min-cadence (>= cadence turns since last fire).
+    let cadence: usize = opts.get("cadence").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut nov_fires = 0usize;
+    let mut nov_total = 0usize;
+
+    let mut sessions: Vec<(PathBuf, std::time::SystemTime)> = std::fs::read_dir(&sessions_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().and_then(|s| s.to_str()) == Some("json")
+                && p.file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|n| n.starts_with("session_"))
+                    .unwrap_or(false)
+        })
+        .filter_map(|p| {
+            let mtime = std::fs::metadata(&p).ok()?.modified().ok()?;
+            Some((p, mtime))
+        })
+        .collect();
+    sessions.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Per-threshold tallies.
+    let mut fires = vec![0usize; thresholds.len()];
+    let mut total_turns = 0usize;
+    let mut used_sessions = 0usize;
+    // Collect consecutive-turn similarities for a distribution summary.
+    let mut consec_sims: Vec<f32> = Vec::new();
+
+    for (path, _) in sessions {
+        if used_sessions >= max_sessions {
+            break;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let session: Session = match serde_json::from_slice(&bytes) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if let Some(filter) = &working_dir_filter {
+            if session.working_dir.as_deref() != Some(filter.as_str()) {
+                continue;
+            }
+        }
+        let messages: Vec<_> = session.messages.iter().map(|m| m.to_message()).collect();
+        // Every user turn is a relevance-check opportunity (production runs the
+        // check after each user message). Skip the first two bootstrap turns to
+        // match the query-sampling convention.
+        let user_turns: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m.role, jcode::message::Role::User))
+            .map(|(i, _)| i)
+            .skip(2)
+            .collect();
+        if user_turns.len() < 2 {
+            continue;
+        }
+        // Cap turns per session to keep CPU-embedding time bounded; sample evenly.
+        let max_turns: usize = opts
+            .get("max_turns")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20);
+        let user_turns: Vec<usize> = if user_turns.len() > max_turns {
+            let step = user_turns.len() / max_turns;
+            user_turns.into_iter().step_by(step.max(1)).take(max_turns).collect()
+        } else {
+            user_turns
+        };
+
+        // Embed each turn's live window once.
+        let mut embs: Vec<Vec<f32>> = Vec::with_capacity(user_turns.len());
+        for &turn in &user_turns {
+            let window = &messages[..=turn];
+            let query = format_context_for_relevance(window);
+            if query.len() < 30 {
+                embs.push(Vec::new());
+                continue;
+            }
+            embs.push(embedding::embed(&query).unwrap_or_default());
+        }
+
+        // Consecutive similarity distribution.
+        for w in embs.windows(2) {
+            if !w[0].is_empty() && !w[1].is_empty() {
+                consec_sims.push(embedding::cosine_similarity(&w[0], &w[1]));
+            }
+        }
+
+        // Simulate the gate per threshold over this session's turn sequence.
+        for (ti, &thr) in thresholds.iter().enumerate() {
+            let mut last_fired: Option<&Vec<f32>> = None;
+            for emb in &embs {
+                if emb.is_empty() {
+                    continue;
+                }
+                let fire = match last_fired {
+                    None => true, // first real turn always fires
+                    Some(prev) => embedding::cosine_similarity(emb, prev) < thr,
+                };
+                if fire {
+                    fires[ti] += 1;
+                    last_fired = Some(emb);
+                }
+            }
+        }
+        // Total turns counted once (use first threshold's traversal count basis:
+        // every non-empty embedding is one opportunity).
+        total_turns += embs.iter().filter(|e| !e.is_empty()).count();
+
+        // Pool-stability gate: for each turn, retrieve the hybrid top-k pool and
+        // compare its id-set to the last FIRED pool. Fire when Jaccard < pool_thr.
+        if let Some((corpus, bm25)) = corpus_pool.as_ref() {
+            let mut last_pool: Option<std::collections::HashSet<String>> = None;
+            // Novelty state: ids already surfaced this session, and turns since
+            // the last novelty-fire (for the cadence floor).
+            let mut surfaced: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let mut since_fire = usize::MAX;
+            for (idx, &turn) in user_turns.iter().enumerate() {
+                let emb = &embs[idx];
+                if emb.is_empty() {
+                    continue;
+                }
+                let window = &messages[..=turn];
+                let query = format_context_for_relevance(window);
+                let dense = dense_retrieve(emb, corpus, 0.0, pool_k, false);
+                let lex = bm25.search(&query, pool_k);
+                let pool = rrf(&[dense, lex], 60.0, pool_k);
+                let ids: std::collections::HashSet<String> =
+                    pool.into_iter().map(|(id, _)| id).collect();
+                pool_total += 1;
+
+                // Novelty gate: is there any candidate not yet surfaced? Combined
+                // with the cadence floor. Computed before `ids` is moved below.
+                nov_total += 1;
+                let has_new = ids.iter().any(|id| !surfaced.contains(id));
+                let cadence_ok = since_fire == usize::MAX || since_fire >= cadence;
+                if has_new && cadence_ok {
+                    nov_fires += 1;
+                    since_fire = 0;
+                    for id in &ids {
+                        surfaced.insert(id.clone());
+                    }
+                } else if since_fire != usize::MAX {
+                    since_fire += 1;
+                }
+
+                let fire = match &last_pool {
+                    None => true,
+                    Some(prev) => {
+                        let inter = ids.intersection(prev).count() as f32;
+                        let uni = ids.union(prev).count().max(1) as f32;
+                        (inter / uni) < pool_thr
+                    }
+                };
+                if fire {
+                    pool_fires += 1;
+                    last_pool = Some(ids);
+                }
+            }
+        }
+
+        used_sessions += 1;
+        if used_sessions % 5 == 0 {
+            eprintln!("  ...{used_sessions} sessions, {total_turns} turns embedded");
+        }
+    }
+
+    consec_sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let pct = |p: f32| {
+        if consec_sims.is_empty() {
+            return f32::NAN;
+        }
+        let idx = ((consec_sims.len() as f32 - 1.0) * p).round() as usize;
+        consec_sims[idx]
+    };
+    let mean = if consec_sims.is_empty() {
+        f32::NAN
+    } else {
+        consec_sims.iter().sum::<f32>() / consec_sims.len() as f32
+    };
+
+    println!("Gate simulation over {used_sessions} sessions, {total_turns} relevance-check opportunities");
+    println!(
+        "Consecutive-turn cosine: mean={:.3} p10={:.3} p25={:.3} p50={:.3} p75={:.3} p90={:.3}",
+        mean,
+        pct(0.10),
+        pct(0.25),
+        pct(0.50),
+        pct(0.75),
+        pct(0.90),
+    );
+    println!("\nthreshold  fire_rate  fires/total  amortization (1/fire_rate)");
+    for (ti, &thr) in thresholds.iter().enumerate() {
+        let rate = fires[ti] as f32 / total_turns.max(1) as f32;
+        println!(
+            "  {:.2}      {:6.1}%   {:>5}/{:<5}  {:.2}x fewer calls",
+            thr,
+            rate * 100.0,
+            fires[ti],
+            total_turns,
+            if rate > 0.0 { 1.0 / rate } else { 0.0 }
+        );
+    }
+
+    if corpus_pool.is_some() && pool_total > 0 {
+        let rate = pool_fires as f32 / pool_total as f32;
+        println!(
+            "\nPool-stability gate (top-{pool_k}, Jaccard>={pool_thr:.2} -> skip):\n  \
+             fire_rate {:.1}%  {pool_fires}/{pool_total}  {:.2}x fewer calls",
+            rate * 100.0,
+            if rate > 0.0 { 1.0 / rate } else { 0.0 }
+        );
+        let nrate = nov_fires as f32 / nov_total.max(1) as f32;
+        println!(
+            "Novelty gate (fire only if pool has an un-surfaced memory; cadence>={cadence}):\n  \
+             fire_rate {:.1}%  {nov_fires}/{nov_total}  {:.2}x fewer calls",
+            nrate * 100.0,
+            if nrate > 0.0 { 1.0 / nrate } else { 0.0 }
+        );
+    }
+    Ok(())
+}
+
 fn read_queries() -> Result<Vec<QueryRecord>> {
     let path = bench_root().join("labels/queries.jsonl");
     let text = std::fs::read_to_string(&path)
@@ -1307,6 +1695,7 @@ fn main() -> Result<()> {
         "judge" => cmd_judge(rest),
         "metrics" => cmd_metrics(rest),
         "probe" => cmd_probe(rest),
+        "gate" => cmd_gate(rest),
         _ => {
             eprintln!(
                 "usage: memory_recall_bench <queries|pool|metrics> [--key=value ...]\n\
