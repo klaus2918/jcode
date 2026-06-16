@@ -195,7 +195,10 @@ pub async fn rerank_candidates_consensus(
         async move {
             match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
                 Ok(resp) => extract_ranking(&resp, n), // Some([]) = nothing relevant
-                Err(_) => None,                         // transport error = no vote
+                Err(e) => {
+                    crate::logging::info(&format!("Memory consensus judge failed: {e}"));
+                    None // transport error = no vote
+                }
             }
         }
     });
