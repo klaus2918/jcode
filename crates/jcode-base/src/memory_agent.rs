@@ -361,6 +361,12 @@ struct SessionState {
     /// `turn_count` at which the Mode-2 listwise rerank last ran, for the
     /// cadence floor (rerank at most once per `memory_rerank_cadence` turns).
     last_rerank_turn: Option<usize>,
+    /// Memory IDs that the last consensus rerank verified as relevant. On
+    /// cadence-gated turns we re-surface only these (intersected with the
+    /// current candidate set) instead of falling back to the noisy no-LLM
+    /// hybrid order, which would otherwise inject low-similarity bloat and
+    /// destroy the high-precision guarantee.
+    last_verified_ids: Vec<String>,
 }
 
 /// The persistent memory agent state
@@ -689,16 +695,37 @@ impl MemoryAgent {
                 )
                 .await;
                 let turn = self.session_state(session_id).turn_count;
-                self.session_state(session_id).last_rerank_turn = Some(turn);
-                reranked.into_iter().take(MAX_MEMORIES_PER_TURN).collect()
+                let result: Vec<_> =
+                    reranked.into_iter().take(MAX_MEMORIES_PER_TURN).collect();
+                {
+                    let ss = self.session_state(session_id);
+                    ss.last_rerank_turn = Some(turn);
+                    ss.last_verified_ids = result.iter().map(|e| e.id.clone()).collect();
+                }
+                result
             } else {
-                // Cadence-gated turn: fall back to hybrid-ordered surfacing (no
-                // LLM call) so memory still surfaces, just not LLM-reranked.
+                // Cadence-gated turn: re-surface ONLY the memories the last
+                // consensus rerank verified (intersected with the current
+                // candidate set), preserving high precision. Falling back to the
+                // noisy no-LLM hybrid order here would inject low-similarity
+                // bloat (the exact behavior we are trying to avoid).
+                let verified: HashSet<String> = self
+                    .session_state(session_id)
+                    .last_verified_ids
+                    .iter()
+                    .cloned()
+                    .collect();
+                let carried: Vec<_> = new_candidates
+                    .into_iter()
+                    .filter(|(e, _)| verified.contains(&e.id))
+                    .map(|(e, _)| e)
+                    .collect();
                 crate::logging::info(&format!(
-                    "[{}] Memory rerank gated by cadence; using hybrid order this turn",
-                    session_id
+                    "[{}] Memory rerank gated by cadence; re-surfacing {} consensus-verified memories",
+                    session_id,
+                    carried.len()
                 ));
-                self.select_top_candidates_no_sidecar(session_id, new_candidates)
+                carried
             }
         } else {
             self.select_top_candidates_no_sidecar(session_id, new_candidates)
