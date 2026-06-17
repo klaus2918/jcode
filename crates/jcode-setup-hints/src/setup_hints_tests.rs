@@ -305,6 +305,7 @@ fn keymap_conflict_hint_full_path_debounces_and_persists_signature() {
             source: KeySource::Terminal,
             action: action.to_string(),
             raw: format!("{keys}={action}"),
+            tool: String::new(),
         }
     }
 
