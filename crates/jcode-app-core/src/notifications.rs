@@ -281,6 +281,20 @@ async fn send_ntfy(
 /// Linux. The child process is spawned detached and never waited on; failures
 /// are ignored (a missing notifier is not an error).
 pub fn send_desktop_notification(title: &str, body: &str) {
+    send_desktop_notification_rich(title, None, body, None);
+}
+
+/// Send a local desktop notification with optional macOS subtitle and sound.
+///
+/// `subtitle` renders as a second bold line on macOS (ignored elsewhere).
+/// `sound` is a Notification Center sound name such as "Glass" or "Ping"
+/// (macOS only). Both are best-effort; a missing notifier is not an error.
+pub fn send_desktop_notification_rich(
+    title: &str,
+    subtitle: Option<&str>,
+    body: &str,
+    sound: Option<&str>,
+) {
     #[cfg(target_os = "macos")]
     {
         fn applescript_escape(s: &str) -> String {
@@ -296,11 +310,17 @@ pub fn send_desktop_notification(title: &str, body: &str) {
             }
             out
         }
-        let script = format!(
+        let mut script = format!(
             "display notification \"{}\" with title \"{}\"",
             applescript_escape(body),
             applescript_escape(title)
         );
+        if let Some(subtitle) = subtitle.filter(|s| !s.trim().is_empty()) {
+            script.push_str(&format!(" subtitle \"{}\"", applescript_escape(subtitle)));
+        }
+        if let Some(sound) = sound.filter(|s| !s.trim().is_empty()) {
+            script.push_str(&format!(" sound name \"{}\"", applescript_escape(sound)));
+        }
         let _ = std::process::Command::new("osascript")
             .arg("-e")
             .arg(script)
@@ -311,6 +331,7 @@ pub fn send_desktop_notification(title: &str, body: &str) {
     }
     #[cfg(target_os = "linux")]
     {
+        let _ = (subtitle, sound);
         let _ = std::process::Command::new("notify-send")
             .arg("--app-name=jcode")
             .arg(title)
@@ -322,7 +343,7 @@ pub fn send_desktop_notification(title: &str, body: &str) {
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = (title, body);
+        let _ = (title, subtitle, body, sound);
     }
 }
 
