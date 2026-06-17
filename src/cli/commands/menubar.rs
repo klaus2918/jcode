@@ -28,16 +28,12 @@ impl From<SessionCounts> for CountsReport {
 
 /// Format the compact title shown next to the menu bar icon.
 ///
-/// Kept deliberately tiny so macOS never hides the item when the menu bar is
-/// crowded (long status items are the first to be dropped):
-/// - no sessions: "" (icon only)
-/// - idle sessions: "3"
-/// - streaming: "2/7" (streaming/total)
+/// Always shows both the streaming and total counts directly in the menu bar
+/// (e.g. "0/3" idle, "2/7" while streaming) so the live state is visible at a
+/// glance without opening the dropdown. Icon-only when no sessions are running.
 pub(crate) fn format_menubar_title(counts: SessionCounts) -> String {
     if counts.total == 0 {
         String::new()
-    } else if counts.streaming == 0 {
-        format!("{}", counts.total)
     } else {
         format!("{}/{}", counts.streaming, counts.total)
     }
@@ -440,12 +436,12 @@ mod tests {
     }
 
     #[test]
-    fn title_idle_shows_total_only() {
+    fn title_idle_shows_zero_streaming_and_total() {
         let title = format_menubar_title(SessionCounts {
             total: 5,
             streaming: 0,
         });
-        assert_eq!(title, "5");
+        assert_eq!(title, "0/5");
     }
 
     #[test]
