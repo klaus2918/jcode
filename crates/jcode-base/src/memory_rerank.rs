@@ -144,20 +144,24 @@ pub async fn rerank_candidates(
 }
 
 /// Why a consensus rerank produced the result it did. Lets the caller attribute
-/// "no-LLM memory mode" conversions exactly (see `memory_judge_metrics`): a
-/// judged result is the productive path, every other variant is a fallback that
-/// surfaced memory WITHOUT a usable judge verdict.
+/// "no-LLM memory mode" conversions exactly (see `memory_judge_metrics`).
+///
+/// Policy: the judge is the ONLY thing allowed to surface memory. On ANY judge
+/// failure the rerank returns an EMPTY set (never hybrid order); the caller then
+/// carries the previously judge-verified set so what surfaces is always
+/// judge-vetted, never low-precision hybrid bloat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RerankOutcome {
     /// At least one judge produced a usable ballot; result is the judged set.
     Judged,
-    /// Only one candidate after dedup: judge bypassed, hybrid trusted.
-    TrivialSingle,
-    /// Every judge failed (transport/timeout): fell back to hybrid order.
+    /// Every judge failed (transport/timeout): returns EMPTY (caller carries the
+    /// last judge-verified set).
     AllJudgesFailed,
-    /// Single-judge response was unparseable garbage: fell back to hybrid order.
+    /// Single-judge response was unparseable garbage: returns EMPTY (caller
+    /// carries the last judge-verified set).
     Unparseable,
-    /// Single-judge transport error: fell back to hybrid order.
+    /// Single-judge transport error: returns EMPTY (caller carries the last
+    /// judge-verified set).
     TransportError,
 }
 
@@ -171,8 +175,9 @@ pub enum RerankOutcome {
 ///
 /// Robustness: judges that error/timeout simply contribute no votes (a blip
 /// cannot force-inject). If EVERY judge fails to produce a usable response we
-/// fall back to hybrid order (never silently drop all memory on transport loss).
-/// `votes <= 1` degenerates to a single precision rerank.
+/// return EMPTY (the caller carries the last judge-verified set rather than
+/// dropping to unvetted hybrid order). `votes <= 1` degenerates to a single
+/// precision rerank.
 pub async fn rerank_candidates_consensus(
     sidecar: &Sidecar,
     focused_query: &str,
@@ -209,13 +214,8 @@ pub async fn rerank_candidates_consensus_attributed(
         // No candidates at all is not a conversion (there was nothing to judge).
         return (Vec::new(), RerankOutcome::Judged);
     }
-    if candidates.len() == 1 {
-        // A single candidate: trust hybrid (not worth N calls to vet one item).
-        return (
-            candidates.into_iter().map(|(e, _)| e).collect(),
-            RerankOutcome::TrivialSingle,
-        );
-    }
+    // NOTE: a single candidate is still JUDGED (no bypass). The judge is the only
+    // thing allowed to surface memory, so even one item must clear it.
 
     let pairs: Vec<(String, String)> = candidates
         .iter()
@@ -242,14 +242,13 @@ pub async fn rerank_candidates_consensus_attributed(
 
     let usable = ballots.iter().filter(|b| b.is_some()).count();
     if usable == 0 {
-        // Every judge failed (transport). Never drop all memory on a blip.
+        // Every judge failed (transport). Surface NOTHING from this rerank; the
+        // caller carries the last judge-verified set rather than injecting
+        // unvetted hybrid order.
         crate::logging::info(
-            "Memory consensus rerank: all judges failed; falling back to hybrid order",
+            "Memory consensus rerank: all judges failed; surfacing nothing (caller carries verified set)",
         );
-        return (
-            candidates.into_iter().map(|(e, _)| e).collect(),
-            RerankOutcome::AllJudgesFailed,
-        );
+        return (Vec::new(), RerankOutcome::AllJudgesFailed);
     }
 
     let kept = tally_consensus(&ballots, n, min_agree);
@@ -297,10 +296,11 @@ fn tally_consensus(ballots: &[Option<Vec<usize>>], n: usize, min_agree: usize) -
 /// omitted candidates in hybrid order (so a fixed top-k still fills).
 ///
 /// Failure handling (never regress below the hybrid baseline):
-/// - LLM transport error -> hybrid order.
-/// - response with no parseable JSON array (garbage) -> hybrid order.
+/// Failure handling (judge-only: never surface unvetted memory):
+/// - LLM transport error -> EMPTY (caller carries last judge-verified set).
+/// - response with no parseable JSON array (garbage) -> EMPTY (caller carries).
 /// - response with a genuine empty array `[]` (model judged nothing relevant)
-///   -> Precision: empty; Recall: hybrid order.
+///   -> Precision: empty; Recall: hybrid order (a real verdict, not a failure).
 pub async fn rerank_candidates_with_mode(
     sidecar: &Sidecar,
     focused_query: &str,
@@ -324,14 +324,8 @@ pub async fn rerank_candidates_with_mode_attributed(
         // Nothing to judge: not a conversion.
         return (Vec::new(), RerankOutcome::Judged);
     }
-    if candidates.len() == 1 {
-        // A single candidate: trust hybrid (one LLM call to vet one item is not
-        // worth it; the downstream surfacing already gates on hybrid relevance).
-        return (
-            candidates.into_iter().map(|(e, _)| e).collect(),
-            RerankOutcome::TrivialSingle,
-        );
-    }
+    // NOTE: a single candidate is still JUDGED (no bypass) so the judge stays the
+    // only thing that can surface memory.
 
     let pairs: Vec<(String, String)> = candidates
         .iter()
@@ -341,16 +335,13 @@ pub async fn rerank_candidates_with_mode_attributed(
     let n = candidates.len();
 
     let order = match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
-        // Case 1 failure: network/transport error.
-        // Fall back to hybrid order so a transient blip never drops all memory.
+        // Case 1 failure: network/transport error. Surface NOTHING; the caller
+        // carries the last judge-verified set (never unvetted hybrid order).
         Err(e) => {
             crate::logging::info(&format!(
-                "Memory rerank failed ({e}); falling back to hybrid order"
+                "Memory rerank failed ({e}); surfacing nothing (caller carries verified set)"
             ));
-            return (
-                candidates.into_iter().map(|(e, _)| e).collect(),
-                RerankOutcome::TransportError,
-            );
+            return (Vec::new(), RerankOutcome::TransportError);
         }
         Ok(resp) => match extract_ranking(&resp, n) {
             Some(order) => order,
@@ -358,12 +349,9 @@ pub async fn rerank_candidates_with_mode_attributed(
                 // Case 3: model replied but with no usable JSON array (garbage).
                 // Treat as failure, not as "nothing relevant".
                 crate::logging::info(
-                    "Memory rerank: unparseable response; falling back to hybrid order",
+                    "Memory rerank: unparseable response; surfacing nothing (caller carries verified set)",
                 );
-                return (
-                    candidates.into_iter().map(|(e, _)| e).collect(),
-                    RerankOutcome::Unparseable,
-                );
+                return (Vec::new(), RerankOutcome::Unparseable);
             }
         },
     };

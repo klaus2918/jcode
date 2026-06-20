@@ -707,9 +707,10 @@ impl MemoryAgent {
 
         // Cadence gate for the EXPENSIVE Mode-2 rerank: run the listwise LLM
         // rerank at most once per `memory_rerank_cadence` turns. Skipped turns
-        // still surface memories via hybrid order (recall@5 ~0.53 vs ~0.79 on a
-        // reranked turn) - never blind. A topic change or the first rerank of a
-        // session always fires, so genuine topic jumps are never delayed.
+        // re-surface only the last judge-verified set (never unvetted hybrid),
+        // so precision is preserved between reranks. A topic change or the first
+        // rerank of a session always fires, so genuine topic jumps are never
+        // delayed.
         let should_rerank = {
             let cadence = crate::config::config().agents.memory_rerank_cadence;
             let ss = self.session_state(session_id);
@@ -725,29 +726,46 @@ impl MemoryAgent {
                     crate::memory_rerank::rerank_candidates_consensus_attributed(
                         &sidecar,
                         &focused_query,
-                        new_candidates,
+                        new_candidates.clone(),
                         votes,
                         min_agree,
                     )
                     .await;
                 // Attribute exactly why this turn surfaced what it did: a judged
-                // verdict is the productive path; any rerank fallback (transport
-                // error / unparseable / all judges failed / trivial single) is a
-                // no-LLM conversion we want to drive to zero.
+                // verdict is the productive path; any rerank failure (transport
+                // error / unparseable / all judges failed) is a no-LLM
+                // degradation we want to drive to zero.
                 crate::memory_judge_metrics::record(
                     crate::memory_judge_metrics::JudgeDecision::from_rerank_outcome(outcome),
                     session_id,
                     candidate_ids.len(),
                 );
-                let turn = self.session_state(session_id).turn_count;
-                let result: Vec<_> =
-                    reranked.into_iter().take(MAX_MEMORIES_PER_TURN).collect();
-                {
-                    let ss = self.session_state(session_id);
-                    ss.last_rerank_turn = Some(turn);
-                    ss.last_verified_ids = result.iter().map(|e| e.id.clone()).collect();
+                if outcome == crate::memory_rerank::RerankOutcome::Judged {
+                    // Real judge verdict: surface it and remember it as the new
+                    // verified set for future cadence/failure carries.
+                    let turn = self.session_state(session_id).turn_count;
+                    let result: Vec<_> =
+                        reranked.into_iter().take(MAX_MEMORIES_PER_TURN).collect();
+                    {
+                        let ss = self.session_state(session_id);
+                        ss.last_rerank_turn = Some(turn);
+                        ss.last_verified_ids = result.iter().map(|e| e.id.clone()).collect();
+                    }
+                    result
+                } else {
+                    // Judge FAILED this turn (rerank returned empty). Do NOT inject
+                    // unvetted hybrid order; carry the last judge-verified set so
+                    // everything surfaced stays judge-backed. Don't advance
+                    // last_rerank_turn, so the next eligible turn retries the judge.
+                    let carried = self.carry_verified(session_id, new_candidates);
+                    crate::logging::info(&format!(
+                        "[{}] Memory judge failed ({:?}); carrying {} previously verified memories (no hybrid fallback)",
+                        session_id,
+                        outcome,
+                        carried.len()
+                    ));
+                    carried
                 }
-                result
             } else {
                 // Cadence-gated turn: re-surface ONLY the memories the last
                 // consensus rerank verified (intersected with the current
@@ -759,17 +777,7 @@ impl MemoryAgent {
                     session_id,
                     candidate_ids.len(),
                 );
-                let verified: HashSet<String> = self
-                    .session_state(session_id)
-                    .last_verified_ids
-                    .iter()
-                    .cloned()
-                    .collect();
-                let carried: Vec<_> = new_candidates
-                    .into_iter()
-                    .filter(|(e, _)| verified.contains(&e.id))
-                    .map(|(e, _)| e)
-                    .collect();
+                let carried = self.carry_verified(session_id, new_candidates);
                 crate::logging::info(&format!(
                     "[{}] Memory rerank gated by cadence; re-surfacing {} consensus-verified memories",
                     session_id,
@@ -877,6 +885,30 @@ impl MemoryAgent {
             ));
         }
         selected.into_iter().map(|(entry, _)| entry).collect()
+    }
+
+    /// Re-surface ONLY the memories the last consensus rerank verified,
+    /// intersected with the current candidate set. Used both for cadence-gated
+    /// turns and as the fallback when a judge fails this turn: in either case we
+    /// ride the last judge verdict rather than dropping to unvetted hybrid order.
+    /// No prior verdict (or no overlap) -> surface nothing. This keeps the LLM
+    /// judge the ONLY thing that can put a memory in front of the agent.
+    fn carry_verified(
+        &mut self,
+        session_id: &str,
+        candidates: Vec<(MemoryEntry, f32)>,
+    ) -> Vec<MemoryEntry> {
+        let verified: HashSet<String> = self
+            .session_state(session_id)
+            .last_verified_ids
+            .iter()
+            .cloned()
+            .collect();
+        candidates
+            .into_iter()
+            .filter(|(e, _)| verified.contains(&e.id))
+            .map(|(e, _)| e)
+            .collect()
     }
 
     /// Extract memories from a context string

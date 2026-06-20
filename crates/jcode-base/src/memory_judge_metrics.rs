@@ -49,20 +49,20 @@ pub enum JudgeDecision {
     /// fresh rerank this turn. INTENDED (still high precision; rides the last
     /// judged result), so not counted as degradation.
     CadenceCarry,
-    /// Exactly one candidate after dedup, so the rerank bypassed the judge and
-    /// trusted hybrid (one LLM call to vet one item is not worth it). INTENDED.
-    TrivialSingle,
     /// Sidecar mode is on but no LLM backend is reachable (logged out / lost
     /// provider access). Memory went dormant. DEGRADATION.
     NoBackend,
     /// The consensus rerank fired but EVERY judge failed (transport error /
-    /// timeout), so it fell back to hybrid order. DEGRADATION.
+    /// timeout). The rerank surfaced nothing and the caller carried the last
+    /// judge-verified set. DEGRADATION.
     AllJudgesFailed,
     /// The (single-judge) rerank fired but the judge response was unparseable
-    /// garbage, so it fell back to hybrid order. DEGRADATION.
+    /// garbage. The rerank surfaced nothing and the caller carried the last
+    /// judge-verified set. DEGRADATION.
     JudgeUnparseable,
-    /// The (single-judge) rerank fired but the judge transport errored, so it
-    /// fell back to hybrid order. DEGRADATION.
+    /// The (single-judge) rerank fired but the judge transport errored. The
+    /// rerank surfaced nothing and the caller carried the last judge-verified
+    /// set. DEGRADATION.
     JudgeTransportError,
 }
 
@@ -73,7 +73,6 @@ impl JudgeDecision {
             JudgeDecision::JudgeRan => "judge_ran",
             JudgeDecision::OptedOut => "opted_out",
             JudgeDecision::CadenceCarry => "cadence_carry",
-            JudgeDecision::TrivialSingle => "trivial_single",
             JudgeDecision::NoBackend => "no_backend",
             JudgeDecision::AllJudgesFailed => "all_judges_failed",
             JudgeDecision::JudgeUnparseable => "judge_unparseable",
@@ -88,8 +87,8 @@ impl JudgeDecision {
     }
 
     /// Whether this conversion is an UNINTENDED degradation (the kind we drive to
-    /// zero), as opposed to an intended no-LLM outcome (explicit opt-out, cadence
-    /// carry, or a trivial single-candidate bypass).
+    /// zero), as opposed to an intended no-LLM outcome (explicit opt-out or a
+    /// cadence carry that rides a prior judge verdict).
     pub fn is_degradation(self) -> bool {
         matches!(
             self,
@@ -102,11 +101,10 @@ impl JudgeDecision {
 
     /// All variants, for iteration in snapshots/tests. Kept in sync with the
     /// enum by the exhaustiveness test in this module.
-    pub const ALL: [JudgeDecision; 8] = [
+    pub const ALL: [JudgeDecision; 7] = [
         JudgeDecision::JudgeRan,
         JudgeDecision::OptedOut,
         JudgeDecision::CadenceCarry,
-        JudgeDecision::TrivialSingle,
         JudgeDecision::NoBackend,
         JudgeDecision::AllJudgesFailed,
         JudgeDecision::JudgeUnparseable,
@@ -115,12 +113,11 @@ impl JudgeDecision {
 
     /// Map a rerank's self-reported [`RerankOutcome`](crate::memory_rerank::RerankOutcome)
     /// onto the attribution variant. This is the bridge that turns the rerank's
-    /// silent hybrid fallbacks into counted degradations.
+    /// (now non-surfacing) judge failures into counted degradations.
     pub fn from_rerank_outcome(outcome: crate::memory_rerank::RerankOutcome) -> Self {
         use crate::memory_rerank::RerankOutcome;
         match outcome {
             RerankOutcome::Judged => JudgeDecision::JudgeRan,
-            RerankOutcome::TrivialSingle => JudgeDecision::TrivialSingle,
             RerankOutcome::AllJudgesFailed => JudgeDecision::AllJudgesFailed,
             RerankOutcome::Unparseable => JudgeDecision::JudgeUnparseable,
             RerankOutcome::TransportError => JudgeDecision::JudgeTransportError,
@@ -129,8 +126,7 @@ impl JudgeDecision {
 }
 
 // One atomic per variant, indexed by `decision_index`.
-static COUNTS: [AtomicU64; 8] = [
-    AtomicU64::new(0),
+static COUNTS: [AtomicU64; 7] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -145,11 +141,10 @@ fn decision_index(d: JudgeDecision) -> usize {
         JudgeDecision::JudgeRan => 0,
         JudgeDecision::OptedOut => 1,
         JudgeDecision::CadenceCarry => 2,
-        JudgeDecision::TrivialSingle => 3,
-        JudgeDecision::NoBackend => 4,
-        JudgeDecision::AllJudgesFailed => 5,
-        JudgeDecision::JudgeUnparseable => 6,
-        JudgeDecision::JudgeTransportError => 7,
+        JudgeDecision::NoBackend => 3,
+        JudgeDecision::AllJudgesFailed => 4,
+        JudgeDecision::JudgeUnparseable => 5,
+        JudgeDecision::JudgeTransportError => 6,
     }
 }
 
@@ -260,8 +255,8 @@ mod tests {
     #[test]
     fn all_array_matches_enum_and_indices() {
         // ALL is complete and indices are unique + in range.
-        assert_eq!(JudgeDecision::ALL.len(), 8);
-        let mut seen = [false; 8];
+        assert_eq!(JudgeDecision::ALL.len(), 7);
+        let mut seen = [false; 7];
         for d in JudgeDecision::ALL {
             let i = decision_index(d);
             assert!(!seen[i], "duplicate index for {:?}", d);
@@ -283,10 +278,9 @@ mod tests {
                 assert!(d.is_no_llm());
             }
         }
-        // Intended conversions are opt-out, cadence carry, and trivial-single.
+        // Intended conversions are opt-out and cadence carry only.
         assert!(!JudgeDecision::OptedOut.is_degradation());
         assert!(!JudgeDecision::CadenceCarry.is_degradation());
-        assert!(!JudgeDecision::TrivialSingle.is_degradation());
         // The four degradations we drive to zero.
         for d in [
             JudgeDecision::NoBackend,
