@@ -505,6 +505,11 @@ impl MemoryAgent {
                 ],
             );
             memory::set_state(MemoryState::Idle);
+            crate::memory_judge_metrics::record(
+                crate::memory_judge_metrics::JudgeDecision::NoBackend,
+                session_id,
+                0,
+            );
             return Ok(());
         }
         // Focused query (latest user intent, boilerplate/tool-noise stripped) used
@@ -713,14 +718,24 @@ impl MemoryAgent {
                 let agents = &crate::config::config().agents;
                 let votes = agents.memory_rerank_votes.max(1);
                 let min_agree = agents.memory_rerank_min_agree.clamp(1, votes);
-                let reranked = crate::memory_rerank::rerank_candidates_consensus(
-                    &sidecar,
-                    &focused_query,
-                    new_candidates,
-                    votes,
-                    min_agree,
-                )
-                .await;
+                let (reranked, outcome) =
+                    crate::memory_rerank::rerank_candidates_consensus_attributed(
+                        &sidecar,
+                        &focused_query,
+                        new_candidates,
+                        votes,
+                        min_agree,
+                    )
+                    .await;
+                // Attribute exactly why this turn surfaced what it did: a judged
+                // verdict is the productive path; any rerank fallback (transport
+                // error / unparseable / all judges failed / trivial single) is a
+                // no-LLM conversion we want to drive to zero.
+                crate::memory_judge_metrics::record(
+                    crate::memory_judge_metrics::JudgeDecision::from_rerank_outcome(outcome),
+                    session_id,
+                    candidate_ids.len(),
+                );
                 let turn = self.session_state(session_id).turn_count;
                 let result: Vec<_> =
                     reranked.into_iter().take(MAX_MEMORIES_PER_TURN).collect();
@@ -736,6 +751,11 @@ impl MemoryAgent {
                 // candidate set), preserving high precision. Falling back to the
                 // noisy no-LLM hybrid order here would inject low-similarity
                 // bloat (the exact behavior we are trying to avoid).
+                crate::memory_judge_metrics::record(
+                    crate::memory_judge_metrics::JudgeDecision::CadenceCarry,
+                    session_id,
+                    candidate_ids.len(),
+                );
                 let verified: HashSet<String> = self
                     .session_state(session_id)
                     .last_verified_ids
@@ -760,6 +780,11 @@ impl MemoryAgent {
             // mode is on but no LLM backend is reachable, `process_context`
             // returns early before this point (memory goes dormant rather than
             // degrading to the low-precision no-LLM path).
+            crate::memory_judge_metrics::record(
+                crate::memory_judge_metrics::JudgeDecision::OptedOut,
+                session_id,
+                candidate_ids.len(),
+            );
             self.select_top_candidates_no_sidecar(session_id, new_candidates)
         };
 

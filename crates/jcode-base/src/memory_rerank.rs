@@ -143,6 +143,24 @@ pub async fn rerank_candidates(
     rerank_candidates_with_mode(sidecar, focused_query, candidates, RerankMode::Precision).await
 }
 
+/// Why a consensus rerank produced the result it did. Lets the caller attribute
+/// "no-LLM memory mode" conversions exactly (see `memory_judge_metrics`): a
+/// judged result is the productive path, every other variant is a fallback that
+/// surfaced memory WITHOUT a usable judge verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RerankOutcome {
+    /// At least one judge produced a usable ballot; result is the judged set.
+    Judged,
+    /// Only one candidate after dedup: judge bypassed, hybrid trusted.
+    TrivialSingle,
+    /// Every judge failed (transport/timeout): fell back to hybrid order.
+    AllJudgesFailed,
+    /// Single-judge response was unparseable garbage: fell back to hybrid order.
+    Unparseable,
+    /// Single-judge transport error: fell back to hybrid order.
+    TransportError,
+}
+
 /// High-precision CONSENSUS rerank: run `votes` independent precision reranks
 /// concurrently and keep ONLY the memories that at least `min_agree` of them
 /// select. Two independent judges agreeing is what lifts injection precision to
@@ -162,10 +180,24 @@ pub async fn rerank_candidates_consensus(
     votes: usize,
     min_agree: usize,
 ) -> Vec<MemoryEntry> {
+    rerank_candidates_consensus_attributed(sidecar, focused_query, candidates, votes, min_agree)
+        .await
+        .0
+}
+
+/// Like [`rerank_candidates_consensus`] but also returns *why* it produced the
+/// result, so the live memory agent can attribute no-LLM conversions exactly.
+pub async fn rerank_candidates_consensus_attributed(
+    sidecar: &Sidecar,
+    focused_query: &str,
+    candidates: Vec<(MemoryEntry, f32)>,
+    votes: usize,
+    min_agree: usize,
+) -> (Vec<MemoryEntry>, RerankOutcome) {
     let votes = votes.max(1);
     let min_agree = min_agree.clamp(1, votes);
     if votes == 1 {
-        return rerank_candidates_with_mode(
+        return rerank_candidates_with_mode_attributed(
             sidecar,
             focused_query,
             candidates,
@@ -174,11 +206,15 @@ pub async fn rerank_candidates_consensus(
         .await;
     }
     if candidates.is_empty() {
-        return Vec::new();
+        // No candidates at all is not a conversion (there was nothing to judge).
+        return (Vec::new(), RerankOutcome::Judged);
     }
     if candidates.len() == 1 {
         // A single candidate: trust hybrid (not worth N calls to vet one item).
-        return candidates.into_iter().map(|(e, _)| e).collect();
+        return (
+            candidates.into_iter().map(|(e, _)| e).collect(),
+            RerankOutcome::TrivialSingle,
+        );
     }
 
     let pairs: Vec<(String, String)> = candidates
@@ -210,7 +246,10 @@ pub async fn rerank_candidates_consensus(
         crate::logging::info(
             "Memory consensus rerank: all judges failed; falling back to hybrid order",
         );
-        return candidates.into_iter().map(|(e, _)| e).collect();
+        return (
+            candidates.into_iter().map(|(e, _)| e).collect(),
+            RerankOutcome::AllJudgesFailed,
+        );
     }
 
     let kept = tally_consensus(&ballots, n, min_agree);
@@ -220,7 +259,10 @@ pub async fn rerank_candidates_consensus(
         kept.len()
     ));
 
-    compose_reranked(candidates, &kept, RerankMode::Precision)
+    (
+        compose_reranked(candidates, &kept, RerankMode::Precision),
+        RerankOutcome::Judged,
+    )
 }
 
 /// Pure consensus tally: given per-judge ballots (each an optional best-first
@@ -265,13 +307,30 @@ pub async fn rerank_candidates_with_mode(
     candidates: Vec<(MemoryEntry, f32)>,
     mode: RerankMode,
 ) -> Vec<MemoryEntry> {
+    rerank_candidates_with_mode_attributed(sidecar, focused_query, candidates, mode)
+        .await
+        .0
+}
+
+/// Like [`rerank_candidates_with_mode`] but also reports *why* it produced the
+/// result so callers can attribute no-LLM conversions exactly.
+pub async fn rerank_candidates_with_mode_attributed(
+    sidecar: &Sidecar,
+    focused_query: &str,
+    candidates: Vec<(MemoryEntry, f32)>,
+    mode: RerankMode,
+) -> (Vec<MemoryEntry>, RerankOutcome) {
     if candidates.is_empty() {
-        return Vec::new();
+        // Nothing to judge: not a conversion.
+        return (Vec::new(), RerankOutcome::Judged);
     }
     if candidates.len() == 1 {
         // A single candidate: trust hybrid (one LLM call to vet one item is not
         // worth it; the downstream surfacing already gates on hybrid relevance).
-        return candidates.into_iter().map(|(e, _)| e).collect();
+        return (
+            candidates.into_iter().map(|(e, _)| e).collect(),
+            RerankOutcome::TrivialSingle,
+        );
     }
 
     let pairs: Vec<(String, String)> = candidates
@@ -282,13 +341,16 @@ pub async fn rerank_candidates_with_mode(
     let n = candidates.len();
 
     let order = match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
-        // Case 1/3 failure: network error OR a response with no parseable array.
+        // Case 1 failure: network/transport error.
         // Fall back to hybrid order so a transient blip never drops all memory.
         Err(e) => {
             crate::logging::info(&format!(
                 "Memory rerank failed ({e}); falling back to hybrid order"
             ));
-            return candidates.into_iter().map(|(e, _)| e).collect();
+            return (
+                candidates.into_iter().map(|(e, _)| e).collect(),
+                RerankOutcome::TransportError,
+            );
         }
         Ok(resp) => match extract_ranking(&resp, n) {
             Some(order) => order,
@@ -298,7 +360,10 @@ pub async fn rerank_candidates_with_mode(
                 crate::logging::info(
                     "Memory rerank: unparseable response; falling back to hybrid order",
                 );
-                return candidates.into_iter().map(|(e, _)| e).collect();
+                return (
+                    candidates.into_iter().map(|(e, _)| e).collect(),
+                    RerankOutcome::Unparseable,
+                );
             }
         },
     };
@@ -306,14 +371,18 @@ pub async fn rerank_candidates_with_mode(
     if order.is_empty() {
         // Case 2: model returned a genuine empty array -> it judged NOTHING
         // relevant. Precision mode honors that (inject nothing); Recall mode
-        // still surfaces the hybrid set.
+        // still surfaces the hybrid set. This IS a judge verdict (Judged), not a
+        // failure conversion.
         return match mode {
-            RerankMode::Precision => Vec::new(),
-            RerankMode::Recall => candidates.into_iter().map(|(e, _)| e).collect(),
+            RerankMode::Precision => (Vec::new(), RerankOutcome::Judged),
+            RerankMode::Recall => (
+                candidates.into_iter().map(|(e, _)| e).collect(),
+                RerankOutcome::Judged,
+            ),
         };
     }
 
-    compose_reranked(candidates, &order, mode)
+    (compose_reranked(candidates, &order, mode), RerankOutcome::Judged)
 }
 
 /// Pure composition step: given the candidates and the model's ranking
