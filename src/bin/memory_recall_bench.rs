@@ -165,7 +165,7 @@ fn dense_retrieve(
         .collect();
     let emb_refs: Vec<&[f32]> = entries
         .iter()
-        .map(|m| m.embedding.as_deref().unwrap())
+        .filter_map(|m| m.embedding.as_deref())
         .collect();
     let scores = embedding::batch_cosine_similarity(query_emb, &emb_refs);
 
@@ -472,7 +472,9 @@ fn cmd_queries(args: &[String]) -> Result<()> {
     sessions.sort_by(|a, b| b.1.cmp(&a.1));
 
     let out_path = bench_root().join("labels/queries.jsonl");
-    std::fs::create_dir_all(out_path.parent().unwrap())?;
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut out = String::new();
     let mut count = 0usize;
     let mut used_sessions = 0usize;
@@ -585,7 +587,9 @@ fn cmd_pool(args: &[String]) -> Result<()> {
 
     let queries = read_queries()?;
     let out_path = bench_root().join("labels/pool.jsonl");
-    std::fs::create_dir_all(out_path.parent().unwrap())?;
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut out = String::new();
 
     for q in &queries {
@@ -897,7 +901,9 @@ fn cmd_judge(args: &[String]) -> Result<()> {
     });
 
     let out_path = bench_root().join("labels/gold.jsonl");
-    std::fs::create_dir_all(out_path.parent().unwrap())?;
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut out = String::new();
     let mut with_rel = 0usize;
     let mut total = 0usize;
@@ -1314,7 +1320,9 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
     // Persist the freshly-computed map for cheap replay via config=llm_cached.
     if !llm_rerank_map.is_empty() && config != "llm_cached" {
         let path = bench_root().join("results/llm_rerank_map.json");
-        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let _ = std::fs::write(&path, serde_json::to_string(&llm_rerank_map)?);
     }
 
@@ -1852,7 +1860,9 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         "empty_gold_avg_injected": if empty_q > 0 { empty_injected as f32 / empty_q as f32 } else { 0.0 },
     });
     let out_path = bench_root().join(format!("results/{}.json", config));
-    std::fs::create_dir_all(out_path.parent().unwrap())?;
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(&out_path, serde_json::to_string_pretty(&result)?)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
@@ -2186,7 +2196,7 @@ fn cmd_gate(args: &[String]) -> Result<()> {
         }
     }
 
-    consec_sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    consec_sims.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let pct = |p: f32| {
         if consec_sims.is_empty() {
             return f32::NAN;
