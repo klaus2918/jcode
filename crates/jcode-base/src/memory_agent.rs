@@ -541,14 +541,17 @@ impl MemoryAgent {
         memory::set_state(MemoryState::Embedding);
         memory::add_event(MemoryEventKind::EmbeddingStarted);
 
-        // Step 1: Embed current context
+        // Step 1: Embed current context (via the active embedding backend:
+        // local MiniLM by default, or the remote OpenAI backend when configured).
         let start = Instant::now();
         let context_for_embedding = context.clone();
         let context_embedding =
-            match tokio::task::spawn_blocking(move || embedding::embed(&context_for_embedding))
+            match tokio::task::spawn_blocking(move || {
+                crate::embedding_backend::embed_query_active(&context_for_embedding)
+            })
                 .await
             {
-                Ok(Ok(emb)) => emb,
+                Ok(Ok((emb, _model))) => emb,
                 Ok(Err(e)) => {
                     crate::logging::event_rate_limited(
                         crate::logging::LogLevel::Info,

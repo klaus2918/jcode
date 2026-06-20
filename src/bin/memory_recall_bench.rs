@@ -1007,6 +1007,65 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         None => Vec::new(),
     };
 
+    // Optional remote OpenAI embedding backend for A/B (configs openai_dense /
+    // openai_hybrid). Re-embeds the corpus and queries through the REAL shipped
+    // `OpenAiEmbeddingBackend` so the bench measures exactly what production
+    // would use. Requires OPENAI_API_KEY (or --openai_key=...). Model/base via
+    // --openai_model / --openai_base.
+    let openai_backend = if config == "openai_dense" || config == "openai_hybrid" {
+        use jcode::embedding_backend::{OpenAiEmbeddingBackend, DEFAULT_OPENAI_EMBEDDING_MODEL};
+        let model = opts
+            .get("openai_model")
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_OPENAI_EMBEDDING_MODEL.to_string());
+        let key = opts
+            .get("openai_key")
+            .cloned()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .or_else(|| {
+                jcode::provider_catalog::load_api_key_from_env_or_config(
+                    "OPENAI_API_KEY",
+                    "openai.env",
+                )
+            })
+            .expect("openai_dense/openai_hybrid require OPENAI_API_KEY or --openai_key");
+        let base = opts.get("openai_base").cloned();
+        let dim = opts.get("openai_dim").and_then(|s| s.parse().ok());
+        eprintln!("Using OpenAI embedding backend model={model}");
+        Some(OpenAiEmbeddingBackend::new(model, key, base, dim))
+    } else {
+        None
+    };
+
+    // Precompute OpenAI corpus embeddings (active memories only), batched to
+    // amortize HTTP round-trips. id -> vector.
+    let openai_corpus_emb: Vec<(String, Vec<f32>)> = match openai_backend.as_ref() {
+        Some(b) => {
+            use jcode::embedding_backend::EmbeddingBackend;
+            let items: Vec<(String, String)> = corpus
+                .active()
+                .map(|m| (m.id.clone(), m.content.clone()))
+                .collect();
+            eprintln!(
+                "Re-embedding {} active memories with OpenAI backend (batched)...",
+                items.len()
+            );
+            let mut out: Vec<(String, Vec<f32>)> = Vec::with_capacity(items.len());
+            for chunk in items.chunks(128) {
+                let texts: Vec<&str> = chunk.iter().map(|(_, c)| c.as_str()).collect();
+                let vecs = b
+                    .embed_passages(&texts)
+                    .expect("OpenAI corpus embedding batch failed");
+                for ((id, _), v) in chunk.iter().zip(vecs) {
+                    out.push((id.clone(), v));
+                }
+            }
+            out
+        }
+        None => Vec::new(),
+    };
+
+
     // Optional cross-encoder reranker for ce_rerank config.
     let ce_reranker = opts.get("reranker").map(|dir| {
         eprintln!("Loading cross-encoder reranker from {dir}");
@@ -1517,6 +1576,10 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
         let q_emb_alt = alt_embedder
             .as_ref()
             .map(|emb| emb.embed(&format!("{query_prefix}{}", q.query)).unwrap_or_default());
+        let q_emb_openai = openai_backend.as_ref().map(|b| {
+            use jcode::embedding_backend::EmbeddingBackend;
+            b.embed_query(&q.query).expect("OpenAI query embedding failed")
+        });
         let origin: HashSet<&String> = q.origin_memory_ids.iter().collect();
 
         let ranked: Vec<String> = match config.as_str() {
@@ -1714,6 +1777,29 @@ fn cmd_metrics(args: &[String]) -> Result<()> {
             "bge_hybrid" => {
                 let qe = q_emb_alt.as_ref().expect("--embedder required for bge_hybrid");
                 let dense = alt_dense_rank(qe, &alt_corpus_emb, 50);
+                let lex = bm25.search(&q.query, 50);
+                rrf(&[dense, lex], 60.0, EMBEDDING_MAX_HITS)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect()
+            }
+            "openai_dense" => {
+                // Pure dense retrieval using OpenAI embeddings (top-k cosine).
+                let qe = q_emb_openai
+                    .as_ref()
+                    .expect("openai_dense requires the OpenAI backend");
+                alt_dense_rank(qe, &openai_corpus_emb, EMBEDDING_MAX_HITS)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect()
+            }
+            "openai_hybrid" => {
+                // Hybrid: OpenAI dense + BM25 lexical fused with RRF (mirrors the
+                // shipped find_similar_hybrid fusion, just with OpenAI vectors).
+                let qe = q_emb_openai
+                    .as_ref()
+                    .expect("openai_hybrid requires the OpenAI backend");
+                let dense = alt_dense_rank(qe, &openai_corpus_emb, 50);
                 let lex = bm25.search(&q.query, 50);
                 rrf(&[dense, lex], 60.0, EMBEDDING_MAX_HITS)
                     .into_iter()
