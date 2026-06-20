@@ -374,9 +374,6 @@ pub struct MemoryAgent {
     /// Channel to receive messages
     rx: mpsc::Receiver<AgentMessage>,
 
-    /// Optional sidecar for LLM-backed memory decisions.
-    sidecar: Option<Sidecar>,
-
     /// Per-session state keyed by session ID
     sessions: HashMap<String, SessionState>,
 }
@@ -386,9 +383,19 @@ impl MemoryAgent {
     fn new(rx: mpsc::Receiver<AgentMessage>) -> Self {
         Self {
             rx,
-            sidecar: memory::memory_sidecar_enabled().then(Sidecar::new),
             sessions: HashMap::new(),
         }
+    }
+
+    /// Construct a fresh sidecar for an LLM-backed memory operation, but ONLY
+    /// when the LLM precision-judge path is actually usable right now (sidecar
+    /// mode is enabled AND a real LLM backend is reachable).
+    ///
+    /// Built fresh on each call rather than cached at construction so that
+    /// login changes (gaining or losing access to a provider/credentials) are
+    /// reflected immediately without restarting the agent.
+    fn live_sidecar(&self) -> Option<Sidecar> {
+        memory::memory_llm_judge_available().then(Sidecar::new)
     }
 
     /// Reset all agent state
@@ -476,6 +483,28 @@ impl MemoryAgent {
         let memory_manager = self.manager_for_session(session_id);
         let context = memory::format_context_for_relevance(&messages);
         if context.is_empty() {
+            return Ok(());
+        }
+        // Memory is only productive with the LLM precision judge. If sidecar mode
+        // is requested but no LLM backend is reachable (e.g. logged out / lost
+        // provider access), go dormant for this turn instead of silently
+        // degrading to the low-precision no-LLM hybrid path. Re-checked live, so
+        // memory resumes automatically once a login returns.
+        if !memory::memory_runtime_active() {
+            crate::logging::event_rate_limited(
+                crate::logging::LogLevel::Info,
+                "memory_runtime_dormant",
+                std::time::Duration::from_secs(300),
+                "MEMORY_RUNTIME_DORMANT",
+                vec![
+                    ("session_id", session_id.to_string()),
+                    (
+                        "reason",
+                        "sidecar_mode_without_reachable_llm_backend".to_string(),
+                    ),
+                ],
+            );
+            memory::set_state(MemoryState::Idle);
             return Ok(());
         }
         // Focused query (latest user intent, boilerplate/tool-noise stripped) used
@@ -679,15 +708,13 @@ impl MemoryAgent {
             should_run_rerank(ss.turn_count, ss.last_rerank_turn, cadence, topic_changed)
         };
 
-        let relevant = if memory::memory_sidecar_enabled()
-            && let Some(sidecar) = self.sidecar.as_ref()
-        {
+        let relevant = if let Some(sidecar) = self.live_sidecar() {
             if should_rerank {
                 let agents = &crate::config::config().agents;
                 let votes = agents.memory_rerank_votes.max(1);
                 let min_agree = agents.memory_rerank_min_agree.clamp(1, votes);
                 let reranked = crate::memory_rerank::rerank_candidates_consensus(
-                    sidecar,
+                    &sidecar,
                     &focused_query,
                     new_candidates,
                     votes,
@@ -728,6 +755,11 @@ impl MemoryAgent {
                 carried
             }
         } else {
+            // No LLM judge. This is reached only when the user explicitly opted
+            // OUT of the sidecar (`memory_sidecar_enabled = false`); when sidecar
+            // mode is on but no LLM backend is reachable, `process_context`
+            // returns early before this point (memory goes dormant rather than
+            // degrading to the low-precision no-LLM path).
             self.select_top_candidates_no_sidecar(session_id, new_candidates)
         };
 
@@ -824,13 +856,16 @@ impl MemoryAgent {
     /// This is an incremental extraction - we extract from a portion of the
     /// conversation (on topic change or periodically) rather than waiting for session end.
     async fn extract_from_context(&self, session_id: &str, context: &str, reason: &str) {
-        if !memory::memory_sidecar_enabled() {
+        // Memory extraction requires the LLM. Skip when sidecar mode is off OR
+        // (sidecar mode on but) no LLM backend is reachable. Re-checked live so a
+        // login change is reflected without a restart.
+        let Some(sidecar) = self.live_sidecar() else {
             crate::logging::info(&format!(
-                "Incremental extraction skipped for session {}: memory sidecar disabled",
+                "Incremental extraction skipped for session {}: LLM judge unavailable",
                 session_id
             ));
             return;
-        }
+        };
 
         // Don't extract from very short contexts
         if context.len() < 200 {
@@ -845,13 +880,6 @@ impl MemoryAgent {
             reason: reason.to_string(),
         });
 
-        let Some(sidecar) = self.sidecar.clone() else {
-            crate::logging::info(&format!(
-                "Incremental extraction skipped for session {}: sidecar unavailable",
-                session_id
-            ));
-            return;
-        };
         let memory_manager = self.manager_for_session(session_id);
         let context_owned = context.to_string();
 

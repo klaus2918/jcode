@@ -112,8 +112,41 @@ struct LegacyNoteEntry {
 
 pub type MemoryEventSink = Arc<dyn Fn(crate::protocol::ServerEvent) + Send + Sync>;
 
+/// Whether the user opted into the memory sidecar (LLM precision judge) mode.
+///
+/// This is the *configured* intent, not whether an LLM is actually reachable.
+/// It defaults to `true`: the LLM precision-judge path is the only mode that is
+/// reliably productive, so memory uses it unless the user explicitly opts into
+/// the no-LLM hybrid path (`agents.memory_sidecar_enabled = false`).
 pub fn memory_sidecar_enabled() -> bool {
     crate::config::config().agents.memory_sidecar_enabled
+}
+
+/// Whether the LLM precision-judge (sidecar) path can actually run right now:
+/// the user opted into sidecar mode AND a real LLM backend is reachable.
+///
+/// Re-evaluated live so login add/remove is reflected without a restart.
+pub fn memory_llm_judge_available() -> bool {
+    memory_sidecar_enabled() && crate::sidecar::Sidecar::llm_backend_available()
+}
+
+/// Whether memory should do anything at all this moment.
+///
+/// Memory is only worthwhile with the LLM precision judge. So memory is active
+/// when EITHER:
+/// - the LLM judge is available (configured + a backend is reachable), OR
+/// - the user explicitly opted OUT of the sidecar (they deliberately want the
+///   no-LLM hybrid path).
+///
+/// The one case we suppress is "sidecar mode requested but no LLM backend is
+/// reachable" (e.g. logged out / lost access): rather than silently degrading
+/// to the low-precision no-LLM path, memory goes dormant until a login returns.
+pub fn memory_runtime_active() -> bool {
+    if !memory_sidecar_enabled() {
+        // Explicit opt-out: user chose the no-LLM hybrid path on purpose.
+        return true;
+    }
+    crate::sidecar::Sidecar::llm_backend_available()
 }
 
 fn emit_memory_activity(event_tx: Option<&MemoryEventSink>) {
@@ -1059,8 +1092,10 @@ impl MemoryManager {
         transcript: &str,
         session_id: &str,
     ) -> Result<Vec<String>> {
-        if !memory_sidecar_enabled() {
-            crate::logging::info("Memory transcript extraction skipped: memory sidecar disabled");
+        if !memory_llm_judge_available() {
+            crate::logging::info(
+                "Memory transcript extraction skipped: LLM judge unavailable",
+            );
             return Ok(Vec::new());
         }
 
