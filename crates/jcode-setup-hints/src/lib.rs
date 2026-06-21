@@ -352,7 +352,7 @@ fn startup_hints_for_launch(state: &SetupHintsState) -> Option<StartupHints> {
         None
     } else {
         Some(format!(
-            "Cmd+; launches a new jcode from anywhere, system-wide (opens in {}).",
+            "Cmd+; launches a new jcode from anywhere, system-wide (opens in {}). Inside jcode, Cmd+Shift+; spawns a new session in the current directory.",
             effective_macos_terminal().label()
         ))
     };
@@ -486,6 +486,9 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
                 eprintln!(
                     "  Press \x1b[1mCmd+;\x1b[0m anywhere, system-wide, to launch a new jcode in {}.",
                     installed_terminal.label()
+                );
+                eprintln!(
+                    "  Inside jcode, press \x1b[1mCmd+Shift+;\x1b[0m to spawn a new session in the current directory."
                 );
                 return Ok(());
             }
