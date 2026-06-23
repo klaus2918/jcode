@@ -63,13 +63,50 @@ fn test_is_ci_detects_ci_env() {
 #[test]
 fn test_error_counters() {
     let _guard = lock_telemetry_test_state();
-    reset_counters();
+    if let Ok(mut session) = SESSION_STATE.lock() {
+        *session = None;
+    }
+    begin_session_with_mode("openai", "gpt-5.4", None, false);
     record_error(ErrorCategory::ProviderTimeout);
     record_error(ErrorCategory::ProviderTimeout);
     record_error(ErrorCategory::ToolError);
-    assert_eq!(ERROR_PROVIDER_TIMEOUT.load(Ordering::Relaxed), 2);
-    assert_eq!(ERROR_TOOL_ERROR.load(Ordering::Relaxed), 1);
-    reset_counters();
+    {
+        let guard = SESSION_STATE.lock().unwrap();
+        let state = guard.as_ref().expect("session telemetry state");
+        assert_eq!(state.error_provider_timeout, 2);
+        assert_eq!(state.error_tool_error, 1);
+        let errors = current_error_counts(state);
+        assert_eq!(errors.provider_timeout, 2);
+        assert_eq!(errors.tool_error, 1);
+    }
+    if let Ok(mut session) = SESSION_STATE.lock() {
+        *session = None;
+    }
+}
+
+#[test]
+fn test_error_counters_no_session_is_noop() {
+    let _guard = lock_telemetry_test_state();
+    // Errors recorded with no active session must not bump any counter that a
+    // future session could observe (issue #394: counts drifting across the
+    // session boundary).
+    if let Ok(mut session) = SESSION_STATE.lock() {
+        *session = None;
+    }
+    record_error(ErrorCategory::AuthFailed);
+    record_provider_switch();
+    record_model_switch();
+    begin_session_with_mode("openai", "gpt-5.4", None, false);
+    {
+        let guard = SESSION_STATE.lock().unwrap();
+        let state = guard.as_ref().expect("session telemetry state");
+        assert_eq!(state.error_auth_failed, 0);
+        assert_eq!(state.provider_switches, 0);
+        assert_eq!(state.model_switches, 0);
+    }
+    if let Ok(mut session) = SESSION_STATE.lock() {
+        *session = None;
+    }
 }
 
 #[test]
@@ -283,7 +320,6 @@ fn test_session_end_event_serialization() {
 #[test]
 fn test_record_token_usage_aggregates_session_and_turn() {
     let _guard = lock_telemetry_test_state();
-    reset_counters();
     if let Ok(mut session) = SESSION_STATE.lock() {
         *session = None;
     }
@@ -310,13 +346,11 @@ fn test_record_token_usage_aggregates_session_and_turn() {
     if let Ok(mut session) = SESSION_STATE.lock() {
         *session = None;
     }
-    reset_counters();
 }
 
 #[test]
 fn test_record_connection_type_buckets_transport() {
     let _guard = lock_telemetry_test_state();
-    reset_counters();
     if let Ok(mut session) = SESSION_STATE.lock() {
         *session = None;
     }
@@ -341,7 +375,6 @@ fn test_record_connection_type_buckets_transport() {
     if let Ok(mut session) = SESSION_STATE.lock() {
         *session = None;
     }
-    reset_counters();
 }
 
 #[test]
