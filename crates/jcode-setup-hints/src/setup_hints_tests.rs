@@ -68,6 +68,115 @@ fn first_three_launches_can_include_hotkey_notice_too() {
     assert!(message.contains("Cmd+;"));
     // The notice should make clear the hotkey works globally, not just inside jcode.
     assert!(message.contains("system-wide"));
+    // All three launch hotkeys should be mentioned.
+    assert!(message.contains("Cmd+'"));
+    assert!(message.contains("Cmd+Shift+'"));
+}
+
+#[test]
+fn default_resolved_hotkeys_match_legacy_three() {
+    // With no config, the resolver reproduces the historical three hotkeys.
+    let resolved = launch_hotkeys::resolve_launch_hotkeys(
+        &jcode_config_types::LaunchHotkeysConfig::default(),
+        "/usr/local/bin/jcode",
+        "/home/u/.jcode/hotkey/last_dir",
+        "/home/u/.jcode/hotkey/last_repo",
+    );
+    let chords: Vec<&str> = resolved.iter().map(|r| r.chord.as_str()).collect();
+    assert_eq!(chords, vec!["cmd+;", "cmd+'", "cmd+shift+'"]);
+
+    // Home launch passes no extra subcommand; self-dev passes `self-dev`.
+    let home = launch_hotkeys::shell_command_for(&resolved[0], "/usr/local/bin/jcode");
+    assert!(home.starts_with("cd \"$HOME\"; "));
+    assert!(!home.contains("self-dev"));
+
+    let last_dir = launch_hotkeys::shell_command_for(&resolved[1], "/usr/local/bin/jcode");
+    assert!(last_dir.contains("cat '/home/u/.jcode/hotkey/last_dir'"));
+    assert!(last_dir.contains("cd \"$HOME\""));
+
+    let selfdev = launch_hotkeys::shell_command_for(&resolved[2], "/usr/local/bin/jcode");
+    assert!(selfdev.contains("cat '/home/u/.jcode/hotkey/last_repo'"));
+    assert!(selfdev.contains("'/usr/local/bin/jcode' 'self-dev';"));
+}
+
+#[test]
+fn baked_repo_hotkey_cds_into_fixed_dir() {
+    // A config-baked per-repo hotkey opens a fixed directory.
+    let config = jcode_config_types::LaunchHotkeysConfig {
+        enabled: Some(true),
+        imported: true,
+        entries: vec![jcode_config_types::LaunchHotkeyEntry {
+            chord: "cmd+[".to_string(),
+            dir: "/Users/jeremy/jcode-github".to_string(),
+            label: "jcode-github".to_string(),
+            self_dev: false,
+        }],
+    };
+    let resolved = launch_hotkeys::resolve_launch_hotkeys(
+        &config,
+        "/usr/local/bin/jcode",
+        "/home/u/.jcode/hotkey/last_dir",
+        "/home/u/.jcode/hotkey/last_repo",
+    );
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].chord, "cmd+[");
+    let cmd = launch_hotkeys::shell_command_for(&resolved[0], "/usr/local/bin/jcode");
+    assert!(cmd.contains("/Users/jeremy/jcode-github"));
+    assert!(cmd.contains("cd \"$HOME\""), "must keep a home fallback");
+    assert!(!cmd.contains("self-dev"));
+}
+
+#[test]
+fn should_record_last_dir_skips_home_only() {
+    use std::path::Path;
+    let home = Path::new("/Users/jeremy");
+    // Home itself is skipped (Cmd+; already covers home).
+    assert!(!super::should_record_last_dir(home, Some(home)));
+    // Any other project dir is recorded for Cmd+'.
+    assert!(super::should_record_last_dir(
+        Path::new("/Users/jeremy/projects/foo"),
+        Some(home)
+    ));
+    // With no known home, always record.
+    assert!(super::should_record_last_dir(home, None));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn install_writes_executable_scripts_and_plan() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let resolved = launch_hotkeys::resolve_launch_hotkeys(
+        &jcode_config_types::LaunchHotkeysConfig::default(),
+        "/usr/local/bin/jcode",
+        "/home/u/.jcode/hotkey/last_dir",
+        "/home/u/.jcode/hotkey/last_repo",
+    );
+    let plan = super::write_hotkey_launch_scripts(
+        dir.path(),
+        MacTerminalKind::Ghostty,
+        "/usr/local/bin/jcode",
+        &resolved,
+    )
+    .expect("scripts should write");
+
+    // One plan entry per resolved hotkey, each pointing at an executable bash
+    // script that exists on disk.
+    assert_eq!(plan.len(), resolved.len());
+    for entry in &plan {
+        let path = std::path::Path::new(&entry.script);
+        let body = std::fs::read_to_string(path).expect("script exists");
+        assert!(body.starts_with("#!/bin/bash"));
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "script should be executable");
+    }
+
+    // Only the self-dev (3rd) script invokes the self-dev subcommand.
+    let selfdev = std::fs::read_to_string(&plan[2].script).unwrap();
+    assert!(selfdev.contains("self-dev"));
+    let home = std::fs::read_to_string(&plan[0].script).unwrap();
+    assert!(!home.contains("self-dev"));
 }
 
 #[test]

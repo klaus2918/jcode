@@ -166,17 +166,35 @@ fn open_command_for_terminal(app_name: &str, app_args: &str, shell_command: &str
     format!("/usr/bin/open -na {app_name} --args {app_args} '{escaped_shell}'")
 }
 
+/// Wrap a POSIX/bash launcher snippet so it always runs under bash, regardless
+/// of the user's login shell.
+///
+/// macOS `do script` (Terminal.app/Warp/VS Code) and iTerm's `command` run the
+/// string in the user's *default login shell*. Our launcher snippet is plain
+/// bash (`status=$?`, `[ ... ]`, `read -r _`), which non-POSIX shells like fish
+/// cannot parse (`fish: Unsupported use of '='`). Running it through
+/// `/bin/bash -lc` makes the launcher shell-agnostic, matching what the
+/// open-command terminals (Ghostty/Alacritty/WezTerm) already do.
+fn run_in_bash_login(shell_command: &str) -> String {
+    format!(
+        "/bin/bash -lc '{}'",
+        escape_shell_single_quotes(shell_command)
+    )
+}
+
 fn applescript_command_for_terminal(app_name: &str, shell_command: &str) -> String {
+    let bash_command = run_in_bash_login(shell_command);
     format!(
         "/usr/bin/osascript <<'APPLESCRIPT'\ntell application \"{app_name}\"\n    activate\n    do script \"{}\"\nend tell\nAPPLESCRIPT",
-        escape_applescript_text(shell_command)
+        escape_applescript_text(&bash_command)
     )
 }
 
 fn applescript_command_for_iterm(shell_command: &str) -> String {
+    let bash_command = run_in_bash_login(shell_command);
     format!(
         "/usr/bin/osascript <<'APPLESCRIPT'\ntell application \"iTerm2\"\n    create window with default profile command \"{}\"\n    activate\nend tell\nAPPLESCRIPT",
-        escape_applescript_text(shell_command)
+        escape_applescript_text(&bash_command)
     )
 }
 
@@ -306,5 +324,47 @@ mod tests {
             launch_command_for_macos_terminal(MacTerminalKind::Warp, shell_command),
             applescript_command_for_terminal("Terminal", shell_command)
         );
+    }
+
+    #[test]
+    fn applescript_launchers_run_under_bash_for_non_bash_login_shells() {
+        // The launcher snippet is bash-specific (`status=$?`). `do script` and
+        // iTerm `command` run in the user's login shell, so a fish/zsh-quirky
+        // login shell would otherwise choke ("fish: Unsupported use of '='").
+        // Both must wrap the snippet in `/bin/bash -lc`.
+        let shell_command = super::paused_jcode_shell_command("/usr/local/bin/jcode");
+        assert!(shell_command.contains("status=$?"));
+
+        for terminal in [
+            MacTerminalKind::AppleTerminal,
+            MacTerminalKind::Warp,
+            MacTerminalKind::Vscode,
+            MacTerminalKind::Unknown,
+            MacTerminalKind::Iterm2,
+        ] {
+            let launcher = launch_command_for_macos_terminal(terminal, &shell_command);
+            assert!(
+                launcher.contains("/bin/bash -lc"),
+                "{terminal:?} launcher must run under bash: {launcher}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_command_terminals_pass_snippet_to_bash_not_login_shell() {
+        // Ghostty/Alacritty/WezTerm wrap via `open -na ... -e /bin/bash -lc`,
+        // so the bash-specific snippet never reaches the login shell.
+        let shell_command = super::paused_jcode_shell_command("/usr/local/bin/jcode");
+        for terminal in [
+            MacTerminalKind::Ghostty,
+            MacTerminalKind::Alacritty,
+            MacTerminalKind::WezTerm,
+        ] {
+            let launcher = launch_command_for_macos_terminal(terminal, &shell_command);
+            assert!(
+                launcher.contains("/bin/bash -lc"),
+                "{terminal:?} launcher must run under bash: {launcher}"
+            );
+        }
     }
 }

@@ -19,6 +19,8 @@ use std::path::PathBuf;
 pub mod keymap;
 
 #[cfg(any(test, target_os = "macos"))]
+mod launch_hotkeys;
+#[cfg(any(test, target_os = "macos"))]
 mod macos_launcher;
 #[cfg(any(test, target_os = "macos"))]
 mod macos_terminal;
@@ -32,8 +34,9 @@ use macos_terminal::launch_script_for_macos_terminal;
 use macos_terminal::load_preferred_macos_terminal;
 #[cfg(any(test, target_os = "macos"))]
 use macos_terminal::{
-    MacTerminalKind, effective_macos_terminal, escape_applescript_text, escape_shell_single_quotes,
-    launch_command_for_macos_terminal, paused_jcode_shell_command, save_preferred_macos_terminal,
+    MacTerminalKind, effective_macos_terminal, escape_applescript_text,
+    escape_shell_single_quotes, launch_command_for_macos_terminal, paused_jcode_shell_command,
+    save_preferred_macos_terminal,
 };
 #[cfg(windows)]
 use windows_setup::{
@@ -93,8 +96,17 @@ pub struct SetupHintsState {
 ///   process is actually eligible to receive `RegisterEventHotKey` events.
 ///   Version 1 still never fired because the process had no window-server
 ///   connection.
+/// - 3: register three launch hotkeys instead of one. `Cmd+;` opens jcode in
+///   `$HOME`, `Cmd+'` opens it in the last project directory, and `Cmd+Shift+'`
+///   opens a self-dev session in the last jcode repo. Existing users are
+///   migrated so the extra scripts/registrations are installed on update.
+/// - 4: hotkeys are config-driven. The installer resolves `[launch_hotkeys]`
+///   from config (empty -> the same three built-ins) into per-entry scripts and
+///   a `plan.json`; the listener registers chords from that plan. Existing users
+///   migrate so the plan file and per-entry scripts are written, enabling the
+///   baked per-repo hotkeys auto-import can add.
 #[cfg(any(test, target_os = "macos"))]
-pub const HOTKEY_LISTENER_VERSION: u32 = 2;
+pub const HOTKEY_LISTENER_VERSION: u32 = 4;
 
 /// Maximum number of times we will ever show the terminal/setup nudge prompt
 /// to a user (across all launches and platforms). After this many nudges we stop
@@ -158,7 +170,14 @@ impl SetupHintsState {
 
     pub fn save(&self) -> Result<()> {
         let path = Self::path()?;
-        storage::write_json(&path, self)
+        // Best-effort UI state (launch counter + one-time hint/nudge flags).
+        // This is written on every interactive launch and is not durability
+        // critical: losing the most recent update on a power cut just re-shows a
+        // hint or under-counts a launch. Use the non-fsync fast write so we do
+        // not pay macOS's `F_FULLFSYNC` (full disk-platter flush, ~8ms here)
+        // twice on the startup critical path. The atomic rename still protects
+        // against torn/partial writes, and load() falls back to `.bak`.
+        storage::write_json_fast(&path, self)
     }
 
     /// Whether we are still allowed to show a terminal/setup nudge. Once we have
@@ -182,9 +201,108 @@ impl SetupHintsState {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 fn mac_hotkey_support_dir() -> Result<PathBuf> {
     Ok(storage::jcode_dir()?.join("hotkey"))
+}
+
+/// File holding the last project directory jcode was launched from. The `Cmd+'`
+/// global hotkey reads this at fire time to reopen jcode there.
+#[cfg(any(test, target_os = "macos"))]
+fn mac_hotkey_last_dir_file() -> Result<PathBuf> {
+    Ok(mac_hotkey_support_dir()?.join("last_dir"))
+}
+
+/// File holding the last jcode *repository* directory the user worked in. The
+/// `Cmd+Shift+'` global hotkey reads this to open a self-dev session there.
+#[cfg(any(test, target_os = "macos"))]
+fn mac_hotkey_last_repo_file() -> Result<PathBuf> {
+    Ok(mac_hotkey_support_dir()?.join("last_repo"))
+}
+
+/// JSON file mapping each registered chord to the launch script the listener
+/// should run. Written by the installer from the resolved config, read by the
+/// launchd listener so it never re-parses config at fire time.
+#[cfg(any(test, target_os = "macos"))]
+fn mac_hotkey_plan_file() -> Result<PathBuf> {
+    Ok(mac_hotkey_support_dir()?.join("plan.json"))
+}
+
+/// Load the `[launch_hotkeys]` table from `~/.jcode/config.toml`.
+///
+/// Returns the default (empty -> built-in 3 hotkeys) when the file is missing or
+/// the section is absent. Best-effort: a malformed config falls back to default
+/// rather than blocking hotkey install.
+#[cfg(any(test, target_os = "macos"))]
+fn load_launch_hotkeys_config() -> jcode_config_types::LaunchHotkeysConfig {
+    #[derive(serde::Deserialize, Default)]
+    struct Wrapper {
+        #[serde(default)]
+        launch_hotkeys: jcode_config_types::LaunchHotkeysConfig,
+    }
+    let Ok(dir) = storage::jcode_dir() else {
+        return Default::default();
+    };
+    let path = dir.join("config.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Default::default();
+    };
+    toml::from_str::<Wrapper>(&text)
+        .map(|w| w.launch_hotkeys)
+        .unwrap_or_default()
+}
+
+/// Record the directories the global launch hotkeys should reopen.
+///
+/// Called once per interactive launch with the process's working directory.
+/// `$HOME` launches are ignored for the "last project" file so the `Cmd+'`
+/// hotkey keeps pointing at a real project rather than home (which already has
+/// its own `Cmd+;` hotkey). When `dir` is inside a jcode repo, the repo root is
+/// recorded for the self-dev hotkey.
+///
+/// Best-effort and side-effect-only: failures are logged, never propagated, so
+/// this can be dropped onto the startup path without risk.
+pub fn record_launch_dirs(dir: &std::path::Path, repo_dir: Option<&std::path::Path>) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(err) = record_launch_dirs_inner(dir, repo_dir) {
+            jcode_logging::warn(&format!("failed to record launch dirs for hotkeys: {err}"));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (dir, repo_dir);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn record_launch_dirs_inner(
+    dir: &std::path::Path,
+    repo_dir: Option<&std::path::Path>,
+) -> Result<()> {
+    let support_dir = mac_hotkey_support_dir()?;
+    std::fs::create_dir_all(&support_dir)?;
+
+    if should_record_last_dir(dir, dirs::home_dir().as_deref()) {
+        std::fs::write(mac_hotkey_last_dir_file()?, format!("{}\n", dir.display()))?;
+    }
+
+    if let Some(repo) = repo_dir {
+        std::fs::write(
+            mac_hotkey_last_repo_file()?,
+            format!("{}\n", repo.display()),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Whether `dir` should be recorded as the "last project" directory for the
+/// `Cmd+'` hotkey. Home is skipped because it already has its own `Cmd+;`
+/// hotkey, so recording it would make `Cmd+'` redundant with `Cmd+;`.
+#[cfg(any(test, target_os = "macos"))]
+fn should_record_last_dir(dir: &std::path::Path, home: Option<&std::path::Path>) -> bool {
+    home != Some(dir)
 }
 
 #[cfg(target_os = "macos")]
@@ -292,6 +410,39 @@ pub fn launch_jcode_in_macos_terminal(extra_args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Write one launch script per resolved hotkey into `hotkey_dir`, mark them
+/// executable, and return the chord -> script plan the listener will register.
+///
+/// Extracted from [`install_macos_hotkey_listener`] so the script set + plan can
+/// be verified in tests without invoking `launchctl`.
+#[cfg(target_os = "macos")]
+fn write_hotkey_launch_scripts(
+    hotkey_dir: &std::path::Path,
+    terminal: MacTerminalKind,
+    exe_path: &str,
+    resolved: &[launch_hotkeys::ResolvedLaunchHotkey],
+) -> Result<Vec<launch_hotkeys::PlanEntry>> {
+    let mut plan = Vec::with_capacity(resolved.len());
+    for entry in resolved {
+        let shell_command = launch_hotkeys::shell_command_for(entry, exe_path);
+        let script_path = hotkey_dir.join(&entry.script_file_name);
+        std::fs::write(
+            &script_path,
+            launch_script_for_macos_terminal(terminal, &shell_command),
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+        plan.push(launch_hotkeys::PlanEntry {
+            chord: entry.chord.clone(),
+            script: script_path.to_string_lossy().into_owned(),
+        });
+    }
+    Ok(plan)
+}
+
 #[cfg(target_os = "macos")]
 fn install_macos_hotkey_listener(
     preferred_terminal: Option<MacTerminalKind>,
@@ -302,18 +453,25 @@ fn install_macos_hotkey_listener(
 
     let exe = std::env::current_exe()?;
     let exe_path = exe.to_string_lossy().into_owned();
-    let shell_command = paused_jcode_shell_command(&exe_path);
 
-    let launch_script_path = hotkey_dir.join("launch_jcode.sh");
+    let last_dir_file = mac_hotkey_last_dir_file()?;
+    let last_repo_file = mac_hotkey_last_repo_file()?;
+
+    // Resolve the chord -> directory layout from config (empty config -> the
+    // three built-in hotkeys), write one launch script per entry, and persist a
+    // plan.json the listener registers from.
+    let config = load_launch_hotkeys_config();
+    let resolved = launch_hotkeys::resolve_launch_hotkeys(
+        &config,
+        &exe_path,
+        &last_dir_file.to_string_lossy(),
+        &last_repo_file.to_string_lossy(),
+    );
+    let plan = write_hotkey_launch_scripts(&hotkey_dir, terminal, &exe_path, &resolved)?;
     std::fs::write(
-        &launch_script_path,
-        launch_script_for_macos_terminal(terminal, &shell_command),
+        mac_hotkey_plan_file()?,
+        serde_json::to_string_pretty(&plan)?,
     )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&launch_script_path, std::fs::Permissions::from_mode(0o755))?;
-    }
 
     let plist_path = mac_hotkey_launch_agent_path()?;
     if let Some(parent) = plist_path.parent() {
@@ -352,7 +510,7 @@ fn startup_hints_for_launch(state: &SetupHintsState) -> Option<StartupHints> {
         None
     } else {
         Some(format!(
-            "Cmd+; launches a new jcode from anywhere, system-wide (opens in {}). Inside jcode, Cmd+Shift+; spawns a new session in the current directory.",
+            "Cmd+; launches a new jcode in your home directory from anywhere, system-wide (opens in {}). Cmd+' reopens your last project; Cmd+Shift+' opens a self-dev session.",
             effective_macos_terminal().label()
         ))
     };
@@ -468,7 +626,7 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
         eprintln!();
         eprintln!("  Preferred terminal: {}", terminal.label());
         eprintln!(
-            "  Installing a LaunchAgent so Cmd+; launches a new jcode from anywhere, system-wide."
+            "  Installing a LaunchAgent with three system-wide jcode launch hotkeys."
         );
         eprintln!();
 
@@ -479,16 +637,19 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
                 state.hotkey_listener_version = HOTKEY_LISTENER_VERSION;
                 let _ = state.save();
                 eprintln!(
-                    "  \x1b[32m✓\x1b[0m Created hotkey (\x1b[1mCmd+;\x1b[0m) → {} + jcode",
+                    "  \x1b[32m✓\x1b[0m Created launch hotkeys → {} + jcode",
                     installed_terminal.label()
                 );
                 eprintln!();
+                eprintln!("  Press these anywhere, system-wide:");
                 eprintln!(
-                    "  Press \x1b[1mCmd+;\x1b[0m anywhere, system-wide, to launch a new jcode in {}.",
-                    installed_terminal.label()
+                    "    \x1b[1mCmd+;\x1b[0m       new jcode in your home directory"
                 );
                 eprintln!(
-                    "  Inside jcode, press \x1b[1mCmd+Shift+;\x1b[0m to spawn a new session in the current directory."
+                    "    \x1b[1mCmd+'\x1b[0m       new jcode in your last project directory"
+                );
+                eprintln!(
+                    "    \x1b[1mCmd+Shift+'\x1b[0m new jcode self-dev session (last jcode repo)"
                 );
                 return Ok(());
             }
@@ -601,7 +762,6 @@ mod macos_run_loop {
 
 #[cfg(target_os = "macos")]
 fn run_macos_hotkey_listener() -> Result<()> {
-    use global_hotkey::hotkey::{Code, HotKey, Modifiers};
     use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
     use std::process::Command;
 
@@ -627,44 +787,115 @@ fn run_macos_hotkey_listener() -> Result<()> {
     // normal startup path, so initialize logging here. Diagnostics land in the
     // standard jcode log plus the plist's StandardOut/ErrorPath.
     jcode_logging::init();
-    macos_hotkey_log("starting macOS Cmd+; hotkey listener");
+    macos_hotkey_log("starting macOS jcode launch hotkey listener");
 
     let status = macos_run_loop::promote_to_ui_element();
     if status != 0 {
         macos_hotkey_log(&format!(
             "warning: TransformProcessType returned status {status}; \
-             Cmd+; may not be delivered to this process"
+             hotkeys may not be delivered to this process"
         ));
     }
 
-    let launch_script = mac_hotkey_support_dir()?.join("launch_jcode.sh");
     let manager =
         GlobalHotKeyManager::new().context("failed to initialize global hotkey manager")?;
-    let hotkey = HotKey::new(Some(Modifiers::META), Code::Semicolon);
-    manager
-        .register(hotkey)
-        .context("failed to register Cmd+; hotkey")?;
 
-    let hotkey_id = hotkey.id();
+    // Register each launch hotkey from the installer-written plan, mapping the
+    // registration id to the launch script it should run. The plan is the single
+    // source of truth (built from config), so adding/removing per-repo hotkeys is
+    // just a reinstall + restart, with no listener code change.
+    let plan = load_hotkey_plan();
+    let mut script_for_id: std::collections::HashMap<u32, std::path::PathBuf> =
+        std::collections::HashMap::new();
+    for entry in &plan {
+        let Some(chord) = keymap::KeyChord::parse(&entry.chord) else {
+            macos_hotkey_log(&format!("skipping unparseable chord: {}", entry.chord));
+            continue;
+        };
+        let Some(hotkey) = launch_hotkeys::chord_to_global_hotkey(&chord) else {
+            macos_hotkey_log(&format!("skipping unregisterable chord: {}", entry.chord));
+            continue;
+        };
+        match manager.register(hotkey) {
+            Ok(()) => {
+                script_for_id.insert(hotkey.id(), std::path::PathBuf::from(&entry.script));
+                macos_hotkey_log(&format!("registered {} → {}", chord.display(), entry.script));
+            }
+            Err(err) => macos_hotkey_log(&format!(
+                "failed to register {} hotkey: {err}",
+                chord.display()
+            )),
+        }
+    }
+
+    if script_for_id.is_empty() {
+        anyhow::bail!("failed to register any jcode launch hotkey");
+    }
+
     GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
-        if event.id == hotkey_id && event.state == HotKeyState::Pressed {
-            macos_hotkey_log("Cmd+; pressed; launching new jcode");
-            match Command::new("sh").arg(&launch_script).spawn() {
+        if event.state != HotKeyState::Pressed {
+            return;
+        }
+        if let Some(script) = script_for_id.get(&event.id) {
+            macos_hotkey_log(&format!("hotkey pressed; launching {}", script.display()));
+            match Command::new("sh").arg(script).spawn() {
                 Ok(_) => {}
                 Err(err) => macos_hotkey_log(&format!("failed to launch jcode: {err}")),
             }
         }
     }));
 
-    macos_hotkey_log("macOS Cmd+; hotkey listener registered; entering event loop");
+    macos_hotkey_log("macOS jcode launch hotkeys registered; entering event loop");
     // Keep the manager alive for the lifetime of the event loop so the hotkey
     // registration and event handler stay installed.
     let _manager = manager;
     // Hand the main thread to the Carbon event loop so hotkey events are
     // delivered. This normally never returns for our long-lived listener.
     macos_run_loop::run_forever();
-    macos_hotkey_log("macOS Cmd+; hotkey event loop exited");
+    macos_hotkey_log("macOS jcode launch hotkey event loop exited");
     Ok(())
+}
+
+/// Load the chord -> script plan the listener registers from.
+///
+/// Reads `plan.json` written by the installer. For older installs that predate
+/// the plan file (or if it is missing/corrupt), fall back to resolving the
+/// current config against the support-file paths and synthesizing the plan in
+/// memory, so the listener still works without a reinstall.
+#[cfg(target_os = "macos")]
+fn load_hotkey_plan() -> Vec<launch_hotkeys::PlanEntry> {
+    if let Ok(path) = mac_hotkey_plan_file()
+        && let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(plan) = serde_json::from_str::<Vec<launch_hotkeys::PlanEntry>>(&text)
+        && !plan.is_empty()
+    {
+        return plan;
+    }
+
+    // Fallback: synthesize from config + support files (no script files needed;
+    // the scripts still exist on disk from a prior install, and resolve produces
+    // their stable names).
+    let exe_path = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "jcode".to_string());
+    let hotkey_dir = mac_hotkey_support_dir().ok();
+    let last_dir = mac_hotkey_last_dir_file()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let last_repo = mac_hotkey_last_repo_file()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let config = load_launch_hotkeys_config();
+    launch_hotkeys::resolve_launch_hotkeys(&config, &exe_path, &last_dir, &last_repo)
+        .into_iter()
+        .map(|r| launch_hotkeys::PlanEntry {
+            chord: r.chord,
+            script: hotkey_dir
+                .as_ref()
+                .map(|d| d.join(&r.script_file_name).to_string_lossy().into_owned())
+                .unwrap_or(r.script_file_name),
+        })
+        .collect()
 }
 
 /// Log a hotkey-listener diagnostic to both the jcode log and stderr.
@@ -1055,6 +1286,33 @@ fn migrate_macos_hotkey_listener(state: &mut SetupHintsState) -> Result<()> {
         terminal.label()
     ));
     Ok(())
+}
+
+/// Reinstall the launch hotkeys after the `[launch_hotkeys]` config changed
+/// (e.g. auto-import baked a per-repo mapping).
+///
+/// Re-resolves config into scripts + `plan.json` and reloads the LaunchAgent so
+/// the new chords take effect immediately. No-op unless the hotkeys are already
+/// configured (so we never install behind a user who opted out). Best-effort:
+/// errors are logged, never propagated, so this is safe on the startup path.
+pub fn reinstall_launch_hotkeys_after_config_change() {
+    #[cfg(target_os = "macos")]
+    {
+        let state = SetupHintsState::load();
+        if !state.hotkey_configured {
+            return;
+        }
+        let preferred = load_preferred_macos_terminal();
+        match install_macos_hotkey_listener(preferred) {
+            Ok(terminal) => jcode_logging::info(&format!(
+                "Reinstalled launch hotkeys after config change for {}",
+                terminal.label()
+            )),
+            Err(err) => {
+                jcode_logging::warn(&format!("failed to reinstall launch hotkeys: {err}"))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
