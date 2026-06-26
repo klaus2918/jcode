@@ -18,6 +18,7 @@
 
 use jcode_config_types::{LaunchHotkeyEntry, LaunchHotkeysConfig};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::keymap::KeyChord;
 use crate::macos_terminal::{escape_shell_single_quotes, paused_jcode_shell_command_with_args};
@@ -42,6 +43,9 @@ pub(crate) struct ResolvedLaunchHotkey {
     /// Shell snippet that `cd`s into the target directory (with a `$HOME`
     /// fallback) before launching jcode.
     pub cd_prefix: String,
+    /// Original configured directory target. May be a sentinel such as `$HOME`,
+    /// `$LAST_DIR`, or `$LAST_REPO`; direct launchers resolve it at fire time.
+    pub dir: String,
     /// Extra CLI args passed to jcode (e.g. `self-dev`).
     pub args: Vec<String>,
     /// Human label for notices.
@@ -166,6 +170,7 @@ pub(crate) fn resolve_launch_hotkeys(
             chord: canonical,
             script_file_name: script_name_for(&entry.chord, index),
             cd_prefix,
+            dir: entry.dir.clone(),
             args,
             label: if entry.label.is_empty() {
                 entry.dir.clone()
@@ -175,6 +180,32 @@ pub(crate) fn resolve_launch_hotkeys(
         });
     }
     out
+}
+
+/// Resolve a configured hotkey directory into a concrete cwd for direct spawns.
+/// Missing/stale dynamic targets fall back to `$HOME`, matching the shell-script
+/// launcher behavior.
+pub(crate) fn resolve_target_dir(dir: &str, last_dir_file: &str, last_repo_file: &str) -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    match dir {
+        "$HOME" => home,
+        "$LAST_DIR" => read_existing_dir(last_dir_file).unwrap_or(home),
+        "$LAST_REPO" => read_existing_dir(last_repo_file).unwrap_or(home),
+        path => {
+            let expanded = if let Some(rest) = path.strip_prefix("~/") {
+                home.join(rest)
+            } else {
+                PathBuf::from(path)
+            };
+            if expanded.is_dir() { expanded } else { home }
+        }
+    }
+}
+
+fn read_existing_dir(file: &str) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let path = PathBuf::from(text.trim());
+    path.is_dir().then_some(path)
 }
 
 /// Build the full shell command (run inside the freshly opened terminal) for a
@@ -394,7 +425,10 @@ mod tests {
             "/last_dir",
             "/last_repo",
         );
-        let names: Vec<&str> = resolved.iter().map(|r| r.script_file_name.as_str()).collect();
+        let names: Vec<&str> = resolved
+            .iter()
+            .map(|r| r.script_file_name.as_str())
+            .collect();
         assert_eq!(names.len(), 3);
         let mut sorted = names.clone();
         sorted.sort();

@@ -450,7 +450,10 @@ fn glyph_safe_notice_shows_once_then_debounces() {
 
     // First launch in a fragile terminal: disclose the tradeoff and persist.
     let (hint, changed) = glyph_safe_notice_for(true, &mut state);
-    assert!(hint.is_some(), "should disclose glyph-safe mode on first launch");
+    assert!(
+        hint.is_some(),
+        "should disclose glyph-safe mode on first launch"
+    );
     assert!(changed, "state should be marked shown");
     assert!(state.glyph_safe_notice_shown);
     let (title, body) = hint.unwrap().display_message.unwrap();
@@ -468,7 +471,66 @@ fn glyph_safe_notice_shows_once_then_debounces() {
 fn glyph_safe_notice_silent_on_robust_terminals() {
     let mut state = SetupHintsState::default();
     let (hint, changed) = glyph_safe_notice_for(false, &mut state);
-    assert!(hint.is_none(), "no disclosure when glyph-safe mode is inactive");
+    assert!(
+        hint.is_none(),
+        "no disclosure when glyph-safe mode is inactive"
+    );
     assert!(!changed);
     assert!(!state.glyph_safe_notice_shown);
+}
+
+fn row(chord: &str, label: &str, self_dev: bool) -> LaunchHotkeyRow {
+    LaunchHotkeyRow {
+        chord: chord.to_string(),
+        label: label.to_string(),
+        cwd_display: format!("/repos/{label}"),
+        self_dev,
+    }
+}
+
+#[test]
+fn launch_hotkey_notice_lists_all_unlearned_bindings() {
+    let rows = vec![
+        row("cmd+;", "home", false),
+        row("cmd+'", "last project", false),
+        row("cmd+shift+'", "self-dev", true),
+    ];
+    let usage = std::collections::HashMap::new();
+    let lines = launch_hotkey_notice_lines(&rows, &usage, 1).expect("should show all bindings");
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].starts_with("cmd+; → home (/repos/home)"));
+    assert!(lines[2].ends_with("[self-dev]"));
+}
+
+#[test]
+fn launch_hotkey_notice_hides_individually_learned_bindings() {
+    let rows = vec![row("cmd+;", "home", false), row("cmd+'", "last project", false)];
+    let mut usage = std::collections::HashMap::new();
+    // cmd+; used enough to be considered learned; cmd+' still new.
+    usage.insert("cmd+;".to_string(), LAUNCH_HOTKEY_LEARNED_USES);
+    let lines = launch_hotkey_notice_lines(&rows, &usage, 3).expect("one binding still new");
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].starts_with("cmd+' → last project"));
+}
+
+#[test]
+fn launch_hotkey_notice_stops_once_learned_and_experienced() {
+    let rows = vec![row("cmd+;", "home", false), row("cmd+'", "last project", false)];
+    let mut usage = std::collections::HashMap::new();
+    usage.insert("cmd+;".to_string(), LAUNCH_HOTKEY_LEARNED_USES);
+    // Learned at least one binding AND launched enough overall -> stop entirely,
+    // even though cmd+' was never used.
+    assert!(
+        launch_hotkey_notice_lines(&rows, &usage, LAUNCH_HOTKEY_NOTICE_MIN_LAUNCHES_TO_STOP)
+            .is_none()
+    );
+}
+
+#[test]
+fn launch_hotkey_notice_keeps_showing_for_new_user_with_many_launches() {
+    // Many launches but no binding learned yet: keep showing so they can adopt it.
+    let rows = vec![row("cmd+;", "home", false)];
+    let usage = std::collections::HashMap::new();
+    let lines = launch_hotkey_notice_lines(&rows, &usage, 50).expect("never learned -> keep showing");
+    assert_eq!(lines.len(), 1);
 }
