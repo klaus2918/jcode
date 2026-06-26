@@ -292,6 +292,17 @@ pub fn init_picker() {
     });
 }
 
+/// Force the global picker into Kitty protocol for deterministic benchmarks and
+/// tests. No-op if the picker is already initialized. Uses a font-size-correct
+/// fast picker base so cell<->pixel math matches a real Kitty terminal.
+pub fn force_test_kitty_picker() {
+    PICKER.get_or_init(|| {
+        let mut picker = fast_picker();
+        picker.set_protocol_type(ProtocolType::Kitty);
+        Some(picker)
+    });
+}
+
 /// Get the current protocol type (for debugging/display)
 pub fn protocol_type() -> Option<ProtocolType> {
     let real = PICKER
