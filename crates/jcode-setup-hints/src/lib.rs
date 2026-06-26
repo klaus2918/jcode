@@ -1288,6 +1288,33 @@ fn migrate_macos_hotkey_listener(state: &mut SetupHintsState) -> Result<()> {
     Ok(())
 }
 
+/// Reinstall the launch hotkeys after the `[launch_hotkeys]` config changed
+/// (e.g. auto-import baked a per-repo mapping).
+///
+/// Re-resolves config into scripts + `plan.json` and reloads the LaunchAgent so
+/// the new chords take effect immediately. No-op unless the hotkeys are already
+/// configured (so we never install behind a user who opted out). Best-effort:
+/// errors are logged, never propagated, so this is safe on the startup path.
+pub fn reinstall_launch_hotkeys_after_config_change() {
+    #[cfg(target_os = "macos")]
+    {
+        let state = SetupHintsState::load();
+        if !state.hotkey_configured {
+            return;
+        }
+        let preferred = load_preferred_macos_terminal();
+        match install_macos_hotkey_listener(preferred) {
+            Ok(terminal) => jcode_logging::info(&format!(
+                "Reinstalled launch hotkeys after config change for {}",
+                terminal.label()
+            )),
+            Err(err) => {
+                jcode_logging::warn(&format!("failed to reinstall launch hotkeys: {err}"))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "setup_hints_tests.rs"]
 mod setup_hints_tests;
