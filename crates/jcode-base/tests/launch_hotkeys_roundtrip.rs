@@ -1,16 +1,31 @@
 #[test]
 fn launch_hotkeys_config_round_trips_toml() {
-    use jcode_config_types::{LaunchHotkeysConfig, LaunchHotkeyEntry};
+    use jcode_config_types::{LaunchHotkeyEntry, LaunchHotkeysConfig};
     #[derive(serde::Serialize, serde::Deserialize, Default)]
     #[serde(default)]
-    struct W { launch_hotkeys: LaunchHotkeysConfig }
-    let w = W { launch_hotkeys: LaunchHotkeysConfig {
-        enabled: Some(true), imported: true,
-        entries: vec![
-            LaunchHotkeyEntry{chord:"cmd+;".into(),dir:"/Users/jeremy/jcode-github".into(),label:"jcode-github".into(),self_dev:false},
-            LaunchHotkeyEntry{chord:"cmd+'".into(),dir:"$HOME".into(),label:"home".into(),self_dev:false},
-        ],
-    }};
+    struct W {
+        launch_hotkeys: LaunchHotkeysConfig,
+    }
+    let w = W {
+        launch_hotkeys: LaunchHotkeysConfig {
+            enabled: Some(true),
+            imported: true,
+            entries: vec![
+                LaunchHotkeyEntry {
+                    chord: "cmd+;".into(),
+                    dir: "/Users/jeremy/jcode-github".into(),
+                    label: "jcode-github".into(),
+                    self_dev: false,
+                },
+                LaunchHotkeyEntry {
+                    chord: "cmd+'".into(),
+                    dir: "$HOME".into(),
+                    label: "home".into(),
+                    self_dev: false,
+                },
+            ],
+        },
+    };
     let toml = toml::to_string(&w).unwrap();
     let back: W = toml::from_str(&toml).unwrap();
     assert_eq!(back.launch_hotkeys.entries.len(), 2);
