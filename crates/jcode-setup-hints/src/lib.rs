@@ -43,7 +43,7 @@ use windows_setup::{
     create_windows_desktop_shortcut, maybe_show_windows_setup_hints, run_setup_hotkey_windows,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SetupHintsState {
     pub launch_count: u64,
@@ -55,7 +55,7 @@ pub struct SetupHintsState {
     pub alacritty_dismissed: bool,
     #[serde(default)]
     pub desktop_shortcut_created: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub startup_spawn_hint_dismissed: bool,
     pub mac_ghostty_guided: bool,
     pub mac_ghostty_dismissed: bool,
@@ -87,6 +87,34 @@ pub struct SetupHintsState {
     /// showing already-learned repo hotkey hints.
     #[serde(default)]
     pub launch_hotkey_usage: HashMap<String, u64>,
+}
+
+/// Serde default helper: fields documented as "true by default".
+fn default_true() -> bool {
+    true
+}
+
+impl Default for SetupHintsState {
+    fn default() -> Self {
+        Self {
+            launch_count: 0,
+            hotkey_configured: false,
+            hotkey_dismissed: false,
+            alacritty_configured: false,
+            alacritty_dismissed: false,
+            desktop_shortcut_created: false,
+            // Dismissed by default: the system-wide launch-hotkey spawn notice is
+            // opt-in noise, so new state starts with it suppressed.
+            startup_spawn_hint_dismissed: true,
+            mac_ghostty_guided: false,
+            mac_ghostty_dismissed: false,
+            terminal_nudge_count: 0,
+            hotkey_listener_version: 0,
+            keymap_conflict_signature: String::new(),
+            glyph_safe_notice_shown: false,
+            launch_hotkey_usage: HashMap::new(),
+        }
+    }
 }
 
 /// Current macOS hotkey listener implementation version.
