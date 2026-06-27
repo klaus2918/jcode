@@ -250,7 +250,7 @@ mod macos {
     use objc2_app_kit::{
         NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
         NSApplicationActivationPolicy, NSCellImagePosition, NSColor, NSFont, NSFontAttributeName,
-        NSForegroundColorAttributeName, NSFontWeightRegular, NSImage, NSMenu, NSMenuItem,
+        NSFontWeightRegular, NSForegroundColorAttributeName, NSImage, NSMenu, NSMenuItem,
         NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
     };
     use objc2_foundation::{
@@ -294,7 +294,11 @@ mod macos {
         {
             Ok(file) => file,
             // If we cannot open the lock file at all, don't block the indicator.
-            Err(_) => return Some(SingletonLock { file: dummy_file()? }),
+            Err(_) => {
+                return Some(SingletonLock {
+                    file: dummy_file()?,
+                });
+            }
         };
 
         // SAFETY: `flock` on a valid fd. LOCK_NB makes this non-blocking.
@@ -609,10 +613,9 @@ mod macos {
         } else {
             NSColor::labelColor()
         };
-        let keys: [&NSString; 2] =
-            [unsafe { NSForegroundColorAttributeName }, unsafe {
-                NSFontAttributeName
-            }];
+        let keys: [&NSString; 2] = [unsafe { NSForegroundColorAttributeName }, unsafe {
+            NSFontAttributeName
+        }];
         let color_obj: &AnyObject = &color;
         let font_obj: &AnyObject = font;
         let values: [&AnyObject; 2] = [color_obj, font_obj];
