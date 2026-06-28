@@ -921,6 +921,7 @@ struct DirectHotkeyLaunch {
     label: String,
 }
 
+#[cfg(target_os = "macos")]
 impl DirectHotkeyLaunch {
     fn resolved_cwd(&self) -> PathBuf {
         launch_hotkeys::resolve_target_dir(&self.dir, &self.last_dir_file, &self.last_repo_file)
