@@ -1810,6 +1810,40 @@ fn named_openai_compatible_model_context_window_overrides_default() {
 }
 
 #[test]
+fn named_profile_context_window_survives_provider_qualified_model() {
+    // Regression for #403: if the runtime model transiently carries the
+    // session-routing `<profile>:<model>` prefix, context_window() must still
+    // resolve the configured per-model context_window rather than falling
+    // through to the (large) provider default and over-budgeting the request.
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let mut config = crate::config::NamedProviderConfig {
+        base_url: "http://10.15.15.53:8080/v1".to_string(),
+        auth: crate::config::NamedProviderAuth::None,
+        default_model: Some("qwen3.6-35b-a2000-128k".to_string()),
+        models: vec![crate::config::NamedProviderModelConfig {
+            id: "qwen3.6-35b-a2000-128k".to_string(),
+            context_window: Some(131_072),
+            input: Vec::new(),
+        }],
+        ..Default::default()
+    };
+    config.model_catalog = false;
+    config.requires_api_key = Some(false);
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("cachyai-a2000", &config)
+        .expect("provider");
+
+    // Simulate the poisoned/qualified runtime model that #403 reported.
+    {
+        let mut model = provider.model.try_write().expect("model lock");
+        *model = "cachyai-a2000:qwen3.6-35b-a2000-128k".to_string();
+    }
+
+    assert_eq!(provider.context_window(), 131_072);
+}
+
+#[test]
 fn named_openai_compatible_loads_api_key_from_env_file() {
     let _lock = ENV_LOCK.lock();
     let temp = TempDir::new().expect("create temp dir");

@@ -613,7 +613,13 @@ impl Provider for OpenRouterProvider {
     }
 
     fn context_window(&self) -> usize {
-        let model_id = self.model();
+        // Defensive: the runtime model may transiently carry a session-routing
+        // `<profile>:<model>` prefix (e.g. right after session restore, before
+        // set_model normalizes it). Strip it so the per-model context_window
+        // lookups below hit on the bare model id instead of falling through to
+        // the (large) provider default and over-budgeting the request. See #403.
+        let raw_model = self.model();
+        let model_id = self.strip_session_profile_prefix(&raw_model).to_string();
         // Try cached model data from OpenRouter API
         let cache = self.models_cache.try_read();
         if let Ok(cache) = cache
