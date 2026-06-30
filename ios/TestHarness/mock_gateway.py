@@ -47,6 +47,52 @@ class GatewayState:
         self.messages = []
         self.token_input = 0
         self.token_output = 0
+        self.push_demo = False
+
+
+def scenario_messages(name):
+    """Pre-seeded transcripts for the layout matrix. Each is a deterministic
+    content state so UI efficiency can be measured across the real range."""
+    bash_tool = {
+        "id": "t1", "name": "bash",
+        "input": '{"command": "echo hello"}',
+        "output": "hello\n", "error": None,
+    }
+    if name == "empty":
+        return []
+    if name == "short":
+        return [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "Hello! How can I help?"},
+        ]
+    if name == "tool":
+        return [
+            {"role": "user", "content": "run echo hello"},
+            {"role": "assistant", "content": "Done. Output above.", "tool_data": bash_tool},
+        ]
+    if name == "long":
+        turns = []
+        for i in range(6):
+            turns.append({"role": "user", "content": f"Question number {i + 1} about the codebase?"})
+            turns.append({
+                "role": "assistant",
+                "content": (
+                    f"Answer {i + 1}: here is a reasonably detailed paragraph that "
+                    "wraps across multiple lines to simulate a real assistant reply "
+                    "with enough text to fill vertical space and exercise scrolling."
+                ),
+                "tool_data": bash_tool if i % 2 == 0 else None,
+            })
+        return turns
+    if name == "code":
+        return [
+            {"role": "user", "content": "show me a python snippet"},
+            {"role": "assistant", "content": (
+                "Sure:\n\n```python\ndef fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n"
+                "        a, b = b, a + b\n    return a\n```\n\nThat is iterative and O(n)."
+            )},
+        ]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -450,10 +496,14 @@ async def main():
     parser.add_argument("--token", default="mocktoken0123456789abcdef")
     parser.add_argument("--push-demo", action="store_true",
                         help="spontaneously push notification + compaction notices after connect")
+    parser.add_argument("--scenario", default="",
+                        help="pre-seed transcript: empty|short|tool|long|code")
     args = parser.parse_args()
 
     state = GatewayState(args.code, args.token)
     state.push_demo = args.push_demo
+    if args.scenario:
+        state.messages = scenario_messages(args.scenario)
 
     server = await asyncio.start_server(
         lambda r, w: handle_connection(r, w, state),

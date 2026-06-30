@@ -74,14 +74,30 @@ struct ChatView: View {
 }
 
 /// Scrolling transcript with auto-follow.
+///
+/// Short threads are anchored to the bottom (chat convention) so a couple of
+/// messages don't float at the top above a large dead zone; once the content
+/// exceeds the viewport it scrolls normally. An empty session shows a centered
+/// placeholder instead of a blank canvas.
 struct TranscriptView: View {
     let entries: [TranscriptEntry]
     let isReasoning: Bool
 
     var body: some View {
+        if entries.isEmpty && !isReasoning {
+            EmptyTranscript()
+        } else {
+            scroller
+        }
+    }
+
+    private var scroller: some View {
         ScrollViewReader { proxy in
             ScrollView {
+                // A flexible top spacer pushes short content to the bottom of
+                // the viewport; it collapses to zero once content overflows.
                 LazyVStack(alignment: .leading, spacing: 12) {
+                    Spacer(minLength: 0)
                     ForEach(entries) { entry in
                         EntryView(entry: entry)
                             .id(entry.id)
@@ -99,8 +115,9 @@ struct TranscriptView: View {
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
+                .frame(minHeight: viewportMinHeight, alignment: .bottom)
                 .padding(.horizontal, 16)
-                .padding(.top, 8)
+                .padding(.vertical, 8)
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: entries.last?.text) {
@@ -112,6 +129,30 @@ struct TranscriptView: View {
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
+    }
+
+    // A large min height makes the LazyVStack at least fill the viewport so
+    // the bottom alignment can take effect; the ScrollView absorbs any excess.
+    private var viewportMinHeight: CGFloat { 600 }
+}
+
+/// Friendly placeholder for a fresh session, centered in the canvas.
+struct EmptyTranscript: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "terminal")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(Theme.mint)
+            Text("Ready when you are")
+                .font(Theme.mono(16, weight: .medium))
+                .foregroundStyle(Theme.textPrimary)
+            Text("Send a message to start driving this session.")
+                .font(.subheadline)
+                .foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
