@@ -598,13 +598,13 @@ fn single_session_content_width(size: PhysicalSize<u32>) -> f32 {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SingleSessionLayoutMetrics {
+pub(crate) struct SingleSessionLayoutMetrics {
     body_line_height: f32,
     composer_line_height: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SingleSessionLayout {
+pub(crate) struct SingleSessionLayout {
     body: Rect,
     draft_top: f32,
     composer: Rect,
@@ -743,7 +743,7 @@ struct InlineWidgetCardStyle {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct InlineWidgetCardLayout {
+pub(crate) struct InlineWidgetCardLayout {
     card: Rect,
     radius: f32,
     padding_x: f32,
