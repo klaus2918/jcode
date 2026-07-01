@@ -152,7 +152,8 @@ def lint_root(root: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="Sources/JCodeMobile")
+    default_root = Path(__file__).resolve().parent.parent / "Sources" / "JCodeMobile"
+    ap.add_argument("--root", default=str(default_root))
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--max-issues", type=int, default=40)
     ap.add_argument("--min", type=float, default=0.0,
