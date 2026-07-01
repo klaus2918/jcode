@@ -64,8 +64,24 @@ transcript. Together they make client behavior hill-climbable without a device.
 - **`ui_lint.py`** - source-level design-token discipline (hardcoded colors /
   fonts / off-grid spacing that bypass `Theme`).
 - **`ui_matrix.py`** - renders the app across content scenarios
-  (`empty,short,tool,long,code`) x devices, scores each, reports a mean + worst
-  cell. The mean is the hill to climb.
+  (`empty,short,tool,long,code`) x devices x Dynamic Type sizes, scores each
+  cell, reports a mean + worst cell. The mean is the hill to climb.
+  - **Devices**: defaults to `iPhone 17` (large, 3x) plus
+    `iPhone SE (3rd generation)` (small, 2x), so layout robustness is measured
+    against real width/height pressure. Override with `--devices`.
+  - **Dynamic Type**: the primary device is re-run at `accessibility-large`
+    (via `simctl ui <dev> content_size`) so text-scaling breakage shows up in
+    the matrix. Tune or disable with `--a11y-size ""`.
+  - **Runtime perf**: each cell records best-effort runtime metrics in the
+    schema `reward/scorers/perf.py` consumes: `cold_launch_ms` (wall time of
+    `simctl launch` on a fresh install, i.e. a true cold launch) and
+    `first_frame_ms` (screenshot polling until the app's background dominates
+    the screen). Measurements include harness overhead, so treat them as
+    consistent relative signals, not absolute truth. If measurement fails the
+    cell omits `runtime` and the perf scorer degrades to unavailable
+    (weights renormalize; the reward is never tanked by missing data).
+    Skip with `--no-perf`. Scroll-jank capture is not implemented yet;
+    `scroll_jank_frac` stays absent.
 - **`reward/`** - the full UX reward framework. 13 scorers across 5 weighted
   categories (A space .30, B ergonomics .25, C clarity .20, D legibility/a11y
   .15, E responsiveness .10) aggregate into one 0-100 reward with a
