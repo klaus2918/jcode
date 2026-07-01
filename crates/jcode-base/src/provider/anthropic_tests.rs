@@ -1391,37 +1391,38 @@ fn credential_mode_runtime_provider_identity_round_trips() {
 }
 
 #[test]
-fn test_anthropic_fable_5_sends_no_reasoning_fields() {
-    // REGRESSION: `claude-fable-5` is listed with effort levels in
-    // `GET /v1/models`, but the live Messages API rejects BOTH an adaptive
-    // `thinking` block ("adaptive thinking is not supported on this model") and
-    // an `output_config` effort ("This model does not support the effort
-    // parameter."). It is effectively a non-reasoning model, so the request
-    // builder must send neither field, even with an explicit effort and the
-    // display toggle on.
+fn test_anthropic_fable_5_sends_reasoning_fields() {
+    // `claude-fable-5` rejected reasoning fields during its preview, but the
+    // released model accepts an adaptive `thinking` block and an
+    // `output_config` effort (verified live 2026-07-01). The request builder
+    // must send both when an effort is configured.
     let provider = AnthropicProvider::new();
     *provider.reasoning_effort.write().unwrap() = Some("high".to_string());
 
-    // Explicit effort: no thinking, no output_config; OAuth temperature restored.
     let (thinking, output_config, temperature) =
         provider.build_reasoning_request_parts_inner("claude-fable-5", true, false);
     assert!(
-        thinking.is_none(),
-        "Fable 5 must not send an adaptive thinking block (API rejects it with 400)"
+        matches!(thinking, Some(ApiThinking::Adaptive { .. })),
+        "Fable 5 should send an adaptive thinking block"
     );
-    assert!(
-        output_config.is_none(),
-        "Fable 5 must not send an output_config effort (API rejects it with 400)"
+    assert_eq!(
+        output_config.as_ref().map(|c| c.effort.as_str()),
+        Some("high"),
+        "Fable 5 should send the configured output_config effort"
     );
-    assert_eq!(temperature, Some(1.0));
+    assert_eq!(temperature, None);
 
-    // Even with show_thinking on, no reasoning fields are requested.
-    let (thinking, output_config, _temp) =
-        provider.build_reasoning_request_parts_inner("claude-fable-5", true, true);
-    assert!(thinking.is_none() && output_config.is_none());
+    // Fable 5 supports xhigh, so `max` resolves to xhigh.
+    *provider.reasoning_effort.write().unwrap() = Some("max".to_string());
+    let (_thinking, output_config, _temp) =
+        provider.build_reasoning_request_parts_inner("claude-fable-5", true, false);
+    assert_eq!(
+        output_config.as_ref().map(|c| c.effort.as_str()),
+        Some("xhigh")
+    );
 
-    // The effort picker also surfaces no levels for Fable 5.
-    assert!(!AnthropicProvider::model_supports_reasoning_effort(
+    // The effort picker surfaces levels for Fable 5.
+    assert!(AnthropicProvider::model_supports_reasoning_effort(
         "claude-fable-5"
     ));
 }
@@ -1496,7 +1497,7 @@ fn anthropic_fallback_prefers_best_available_and_skips_tried_and_retired() {
 
     // A retired model in `tried` must never be re-offered, and the result must
     // skip retired families entirely.
-    let next = anthropic_fallback_model(&["claude-fable-5".to_string()], "")
+    let next = anthropic_fallback_model(&["claude-mythos-1".to_string()], "")
         .expect("another fallback should exist");
     assert!(!anthropic_model_is_retired(&next));
 
@@ -1522,7 +1523,7 @@ fn anthropic_fallback_honors_server_recommendation() {
     );
 
     // The full fallback also returns the recommended model.
-    let fallback = anthropic_fallback_model(&["claude-fable-5".to_string()], body)
+    let fallback = anthropic_fallback_model(&["claude-mythos-1".to_string()], body)
         .expect("a fallback should exist");
     assert_eq!(
         AnthropicProvider::normalized_model_key(&fallback),
@@ -1531,7 +1532,7 @@ fn anthropic_fallback_honors_server_recommendation() {
 
     // A recommendation pointing at a retired model is ignored (falls through to
     // quality ranking).
-    let retired_rec = "model x not available. please use fable 5.";
+    let retired_rec = "model x not available. please use mythos 1.";
     assert!(
         anthropic_recommended_model_from_error(retired_rec).is_none()
             || !anthropic_model_is_retired(
@@ -1548,7 +1549,13 @@ fn anthropic_quality_rank_orders_opus_before_haiku_and_retired_last() {
     let opus = anthropic_model_quality_rank("claude-opus-4-8");
     let sonnet = anthropic_model_quality_rank("claude-sonnet-4-6");
     let haiku = anthropic_model_quality_rank("claude-haiku-4-5");
-    let retired = anthropic_model_quality_rank("claude-fable-5");
+    let retired = anthropic_model_quality_rank("claude-mythos-1");
+    // Fable 5 is live again and curated as the flagship, so it ranks first.
+    let fable = anthropic_model_quality_rank("claude-fable-5");
+    assert!(
+        fable <= opus,
+        "Fable 5 should rank at or ahead of Opus ({fable} vs {opus})"
+    );
     assert!(
         opus < sonnet,
         "Opus should outrank Sonnet ({opus} vs {sonnet})"
