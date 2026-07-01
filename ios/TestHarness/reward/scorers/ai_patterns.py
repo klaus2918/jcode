@@ -47,7 +47,7 @@ from reward.types import CategoryScore, make_unavailable
 
 NAME = "ai_patterns"
 CATEGORY = "F"
-WEIGHT = 0.05
+WEIGHT = 0.04
 
 # --- slop palette ----------------------------------------------------------
 # Canonical AI-slop hexes from AI_SLOP_RESEARCH.md (Tailwind indigo-500 family

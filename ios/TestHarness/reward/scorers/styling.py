@@ -48,7 +48,7 @@ from reward.types import CategoryScore, make_unavailable
 
 NAME = "styling"
 CATEGORY = "F"
-WEIGHT = 0.05
+WEIGHT = 0.04
 
 # Neutral Theme tokens (surfaces, borders, text). These are the canvas, not an
 # accent, so they never count toward the accent palette.

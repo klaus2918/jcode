@@ -21,50 +21,67 @@ Everything runs headless on this machine via the existing harness
 (`mock_gateway.py` scenarios + `xcrun simctl` screenshots). No LLM, no device,
 no network.
 
-## Category taxonomy (what matters, UX efficiency first)
+## Category taxonomy (what matters, perceived UX first)
 
-Weights sum to 1.0. UX efficiency is weighted highest per the product goal.
-Categories A-E are scaled to sum 0.85; category F (design authenticity) adds
-0.15. Declared per-scorer weights below already reflect this rebalance.
+Weights sum to 1.0. The rebalance principle: what a real user of a mobile
+coding-agent chat app *feels* every minute dominates. That is (1) reading
+streaming text and tool output for long stretches -> legibility first,
+(2) the tap-cost of frequent flows (send, interrupt, switch session) ->
+ergonomics second. Abstract pixel-geometry aesthetics (fill ratios, grid snap,
+focal-point math) matter but cannot outvote "can I read it, can I reach it".
 
-### A. Space & density (weight 0.255) - "no wasted pixels"
-- `space_efficiency`   canvas fill ratio, vertical balance, largest dead zone.
-- `information_density` useful content vs chrome (status bar/header/composer).
-- `content_safety`     no clipping/overflow/truncation; nothing under chrome.
+### A. Space & density (weight 0.15) - "no wasted pixels"
+- `space_efficiency` (0.05)  canvas fill ratio, vertical balance, largest dead
+                       zone. Scenario-aware: the `empty` scenario is graded as
+                       an empty STATE (calm canvas + visible start affordance),
+                       never against the 30-60% transcript fill band.
+- `information_density` (0.05) useful content vs chrome. Scenario-aware: on
+                       `empty` it grades chrome leanness instead of transcript
+                       ink share (an empty transcript is not "low density").
+- `content_safety` (0.05) no clipping/overflow/truncation; nothing under chrome.
 
-### B. Ergonomics & interaction (weight 0.2125) - "cheap to use"
-- `touch_targets`      interactive elements >= 44x44pt, adequate spacing.
-- `reachability`       primary actions in the comfortable thumb zone.
-- `interaction_cost`   taps/steps to complete key flows (pair, send, switch
-                       session, change model, interrupt).
+### B. Ergonomics & interaction (weight 0.30) - "cheap to use"
+The dominant category: users touch this app dozens of times per session.
+- `touch_targets` (0.10)   interactive elements >= 44x44pt, adequate spacing.
+- `reachability` (0.08)    primary actions in the comfortable thumb zone.
+- `interaction_cost` (0.12) expected seconds per action for the key flows
+                       (send, interrupt, switch session, change model, pair),
+                       KLM/Fitts model grounded in real usage logs.
 
-### C. Visual clarity (weight 0.17) - "easy to parse"
-- `visual_hierarchy`   one clear focal point / salient primary action.
-- `consistency`        design-token discipline (source) + palette discipline
+### C. Visual clarity (weight 0.12) - "easy to parse"
+- `visual_hierarchy` (0.04) one clear focal point / salient primary action.
+                       Scenario-aware: on `empty`, a single obvious start
+                       affordance is the whole job, so the concentration
+                       target is relaxed (0.3 vs 0.5) and the one-focal-point
+                       term dominates.
+- `consistency` (0.04)     design-token discipline (source) + palette discipline
                        (pixel): few dominant colors, aligned margins.
-- `rhythm`             spacing snaps to the 8pt grid (source + pixel).
+- `rhythm` (0.04)          spacing snaps to the 8pt grid (source + pixel).
 
-### D. Legibility & accessibility (weight 0.1275) - "everyone can read it"
-- `contrast`           WCAG text/background contrast on real content.
-- `accessibility`      VoiceOver labels, Dynamic Type, reduce-motion, semantic
-                       roles present in source / AX tree.
+### D. Legibility & accessibility (weight 0.22) - "everyone can read it"
+Highest-leverage for this product: sessions are spent READING streaming agent
+text and tool output on a dark screen, often in bad light.
+- `contrast` (0.14)        WCAG text/background contrast on real rendered
+                       content, including the dim secondary/tool-output tier.
+- `accessibility` (0.08)   VoiceOver labels, Dynamic Type, reduce-motion,
+                       semantic roles present in source / AX tree.
 
-### E. Responsiveness (weight 0.085) - "feels instant"
-- `layout_robustness`  stable across the device x content matrix (variance of
-                       per-cell scores; penalize fragile layouts).
-- `perf`               cold-launch-to-first-frame + scroll smoothness signals
+### E. Responsiveness (weight 0.09) - "feels instant"
+- `layout_robustness` (0.05) stable across the device x content matrix (variance
+                       of per-cell scores; penalize fragile layouts).
+- `perf` (0.04)            cold-launch-to-first-frame + scroll smoothness signals
                        (best-effort from simctl/Instruments; degrade to N/A).
 
-### F. Design authenticity & craft (weight 0.15) - "designed, not generated"
+### F. Design authenticity & craft (weight 0.12) - "designed, not generated"
 Higher score = MORE crafted / LESS generic. Grounded in
 `reward/AI_SLOP_RESEARCH.md` (documented AI-slop tells).
-- `styling`       aesthetic coherence & intent: one dominant color + sparing
+- `styling` (0.04)     aesthetic coherence & intent: one dominant color + sparing
                   sharp accent (not a timid rainbow), a real type scale, a
                   consistent radius/elevation system. Source + pixel.
-- `simplicity`    anti-complexity: shallow view-nesting depth, few distinct UI
+- `simplicity` (0.04)  anti-complexity: shallow view-nesting depth, few distinct UI
                   primitives per screen, minimal card-in-card nesting, generous
                   purposeful negative space. Source + pixel.
-- `ai_patterns`   anti-slop (higher = less slop): penalize purple/indigo/cyan
+- `ai_patterns` (0.04) anti-slop (higher = less slop): penalize purple/indigo/cyan
                   slop palettes, gradient text, glassmorphism/blur overuse,
                   generic fonts (Inter/Roboto/Arial/Space Grotesk), emoji-as-UI,
                   uniform 0.1 shadows, oversized uniform radius, decorative
@@ -88,6 +105,10 @@ def score(ctx: "Context") -> "CategoryScore":
   need: the screenshot path + decoded numpy array, the device + scenario, the
   px-per-point scale, the source root, an optional AX-tree JSON, and an
   optional runtime-metrics dict. Scorers use only what they need.
+- Scorers SHOULD be scenario-aware via `ctx.scenario` when the scenario changes
+  what a good screen looks like (e.g. `empty` is a deliberate empty state).
+  Scenario-aware scorers report a `mode` key in evidence so per-cell reports
+  stay auditable.
 - `CategoryScore` (in `reward/types.py`): `{name, category, weight, value:
   0..100, evidence: dict, available: bool}`. `available=False` means "could not
   measure here" (e.g. perf without Instruments); the aggregator drops it and

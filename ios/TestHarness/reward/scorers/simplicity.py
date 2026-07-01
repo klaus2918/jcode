@@ -47,7 +47,7 @@ from reward.types import CategoryScore, make_unavailable
 
 NAME = "simplicity"
 CATEGORY = "F"
-WEIGHT = 0.05
+WEIGHT = 0.04
 
 # Layout containers that genuinely create UI nesting depth. Buttons/Menus also
 # take trailing closures but wrap a single label, so counting them would inflate

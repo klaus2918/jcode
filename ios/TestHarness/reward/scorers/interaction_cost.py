@@ -29,7 +29,7 @@ from reward.types import CategoryScore, make_unavailable
 
 NAME = "interaction_cost"
 CATEGORY = "B"
-WEIGHT = 0.068
+WEIGHT = 0.12
 
 
 def score(ctx: Context) -> CategoryScore:

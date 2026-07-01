@@ -26,7 +26,7 @@ from reward.types import CategoryScore, make_unavailable
 
 NAME = "accessibility"
 CATEGORY = "D"
-WEIGHT = 0.0595
+WEIGHT = 0.08
 
 # Semantic text styles scale with Dynamic Type; fixed Theme.mono(pt) does not.
 _DYNAMIC_FONT = re.compile(
