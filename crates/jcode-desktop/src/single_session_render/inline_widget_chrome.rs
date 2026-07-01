@@ -935,7 +935,10 @@ pub(crate) fn inline_command_row_palette(
     }
 }
 
-pub(crate) fn resume_session_row_palette(primary_text: &str, selected: bool) -> InlineCommandRowPalette {
+pub(crate) fn resume_session_row_palette(
+    primary_text: &str,
+    selected: bool,
+) -> InlineCommandRowPalette {
     let status = resume_session_status_from_row(primary_text);
     let (fill, border, accent, icon_background, icon_color, icon) = match status {
         "active" => (

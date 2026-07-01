@@ -274,11 +274,17 @@ pub(crate) fn single_session_body_char_width_for_scale(text_scale: f32) -> f32 {
     typography.body_size * 0.58
 }
 
-pub(crate) fn single_session_body_top_for_app(_app: &SingleSessionApp, _size: PhysicalSize<u32>) -> f32 {
+pub(crate) fn single_session_body_top_for_app(
+    _app: &SingleSessionApp,
+    _size: PhysicalSize<u32>,
+) -> f32 {
     PANEL_BODY_TOP_PADDING
 }
 
-pub(crate) fn single_session_body_bottom_base_for_app(app: &SingleSessionApp, size: PhysicalSize<u32>) -> f32 {
+pub(crate) fn single_session_body_bottom_base_for_app(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+) -> f32 {
     if app.is_welcome_timeline_visible() {
         // Treat the welcome hero as the first visual item in the chat timeline.
         // Anything inline, such as the /model picker, must reserve space between

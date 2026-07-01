@@ -851,7 +851,11 @@ pub(crate) fn exiting_tool_card_visual(
     visual
 }
 
-pub(crate) fn timed_animation_progress(started_at: Instant, now: Instant, duration: Duration) -> (f32, bool) {
+pub(crate) fn timed_animation_progress(
+    started_at: Instant,
+    now: Instant,
+    duration: Duration,
+) -> (f32, bool) {
     if duration.is_zero() || crate::animation::desktop_reduced_motion_enabled() {
         return (1.0, false);
     }
@@ -861,7 +865,10 @@ pub(crate) fn timed_animation_progress(started_at: Instant, now: Instant, durati
     (progress, progress < 1.0)
 }
 
-pub(crate) fn tool_card_palette(state: SingleSessionToolVisualState, active: bool) -> ToolCardPalette {
+pub(crate) fn tool_card_palette(
+    state: SingleSessionToolVisualState,
+    active: bool,
+) -> ToolCardPalette {
     let accent = single_session_tool_state_accent(state);
     let background = single_session_tool_card_background(state, active);
     let border = if active || state.is_active() {
@@ -1128,7 +1135,10 @@ pub(crate) fn transcript_card_alpha(color: [f32; 4], opacity: f32) -> [f32; 4] {
     surface_motion_alpha(color, opacity)
 }
 
-pub(crate) fn inline_markdown_pill_visual_rect(rect: Rect, visual: InlineMarkdownPillVisual) -> Rect {
+pub(crate) fn inline_markdown_pill_visual_rect(
+    rect: Rect,
+    visual: InlineMarkdownPillVisual,
+) -> Rect {
     surface_motion_visual_rect(rect, visual)
 }
 

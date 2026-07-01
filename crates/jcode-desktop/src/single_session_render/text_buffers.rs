@@ -718,7 +718,10 @@ pub(crate) fn single_session_body_text_buffer_layout_compatible(
         == single_session_body_text_buffer_layout_bucket((size.width, size.height), text_scale)
 }
 
-pub(crate) fn single_session_body_text_buffer_layout_bucket(size: (u32, u32), text_scale: f32) -> (u32, u32) {
+pub(crate) fn single_session_body_text_buffer_layout_bucket(
+    size: (u32, u32),
+    text_scale: f32,
+) -> (u32, u32) {
     let physical_size = PhysicalSize::new(size.0, size.1);
     let width_columns =
         single_session_body_max_columns(physical_size, text_scale).min(u32::MAX as usize) as u32;
@@ -727,13 +730,19 @@ pub(crate) fn single_session_body_text_buffer_layout_bucket(size: (u32, u32), te
     (width_columns, height_lines)
 }
 
-pub(crate) fn single_session_body_text_buffer_layout_height(size: PhysicalSize<u32>, text_scale: f32) -> f32 {
+pub(crate) fn single_session_body_text_buffer_layout_height(
+    size: PhysicalSize<u32>,
+    text_scale: f32,
+) -> f32 {
     let typography = single_session_typography_for_scale(text_scale);
     let line_height = typography.body_size * typography.body_line_height;
     single_session_body_text_buffer_layout_lines(size, text_scale) as f32 * line_height
 }
 
-pub(crate) fn single_session_body_text_buffer_layout_lines(size: PhysicalSize<u32>, text_scale: f32) -> usize {
+pub(crate) fn single_session_body_text_buffer_layout_lines(
+    size: PhysicalSize<u32>,
+    text_scale: f32,
+) -> usize {
     let typography = single_session_typography_for_scale(text_scale);
     let line_height = typography.body_size * typography.body_line_height;
     let available_height = (size.height as f32 - 150.0).max(line_height);

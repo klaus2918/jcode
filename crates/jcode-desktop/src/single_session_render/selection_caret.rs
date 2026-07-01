@@ -288,7 +288,10 @@ pub(crate) fn welcome_timeline_body_draft_gap() -> f32 {
     body_line_height.max(composer_line_height * 0.86)
 }
 
-pub(crate) fn welcome_timeline_total_body_lines(app: &SingleSessionApp, size: PhysicalSize<u32>) -> usize {
+pub(crate) fn welcome_timeline_total_body_lines(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+) -> usize {
     let transcript_lines =
         single_session_wrapped_body_lines(app.body_styled_lines(), size, app.text_scale()).len();
     if app.is_welcome_timeline_visible() && app.has_welcome_timeline_transcript() {
@@ -298,7 +301,10 @@ pub(crate) fn welcome_timeline_total_body_lines(app: &SingleSessionApp, size: Ph
     }
 }
 
-pub(crate) fn welcome_timeline_virtual_body_lines(app: &SingleSessionApp, size: PhysicalSize<u32>) -> usize {
+pub(crate) fn welcome_timeline_virtual_body_lines(
+    app: &SingleSessionApp,
+    size: PhysicalSize<u32>,
+) -> usize {
     // Reserve scrollable visual space for the handwritten hero without adding
     // the hero phrase to transcript text or model-derived body lines.
     let typography = single_session_typography_for_scale(app.text_scale());

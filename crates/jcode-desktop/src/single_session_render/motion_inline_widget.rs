@@ -786,7 +786,9 @@ pub(crate) fn inline_widget_list_reflow_visual_from_state(
     (visual, active)
 }
 
-pub(crate) fn exiting_inline_widget_list_reflow_visual(progress: f32) -> InlineWidgetListReflowVisual {
+pub(crate) fn exiting_inline_widget_list_reflow_visual(
+    progress: f32,
+) -> InlineWidgetListReflowVisual {
     let eased = ease_out_cubic_local(progress);
     InlineWidgetListReflowVisual {
         opacity: 1.0 - eased,

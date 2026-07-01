@@ -426,7 +426,10 @@ pub(crate) fn push_single_session_tool_card(
     }
 }
 
-pub(crate) fn default_tool_card_visual(run: &SingleSessionToolCardRun, pulse: f32) -> ToolCardVisual {
+pub(crate) fn default_tool_card_visual(
+    run: &SingleSessionToolCardRun,
+    pulse: f32,
+) -> ToolCardVisual {
     let mut palette = tool_card_palette(run.state, run.active);
     if run.active || run.state.is_active() {
         palette.background[3] = (palette.background[3] + 0.08 * pulse).clamp(0.0, 0.82);
@@ -523,7 +526,12 @@ pub(crate) fn push_active_tool_card_motion(
     }
 }
 
-pub(crate) fn clipped_horizontal_sweep(x: f32, width: f32, min_x: f32, max_x: f32) -> Option<(f32, f32)> {
+pub(crate) fn clipped_horizontal_sweep(
+    x: f32,
+    width: f32,
+    min_x: f32,
+    max_x: f32,
+) -> Option<(f32, f32)> {
     let left = x.max(min_x);
     let right = (x + width).min(max_x);
     (right > left).then_some((left, right - left))

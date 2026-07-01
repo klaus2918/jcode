@@ -495,7 +495,11 @@ impl StdinOverlayMotionRegistry {
         self.frame_from_state(false, now)
     }
 
-    pub(crate) fn frame_from_state(&mut self, mut active: bool, now: Instant) -> StdinOverlayMotionFrame {
+    pub(crate) fn frame_from_state(
+        &mut self,
+        mut active: bool,
+        now: Instant,
+    ) -> StdinOverlayMotionFrame {
         let current = if let Some(target) = self.target {
             let visual = if let Some(transition) = self.transition {
                 let (progress, running) =
@@ -788,7 +792,10 @@ pub(crate) fn stdin_overlay_visual_lerp(
     }
 }
 
-pub(crate) fn stdin_overlay_exit_visual(from: StdinOverlayVisual, progress: f32) -> StdinOverlayVisual {
+pub(crate) fn stdin_overlay_exit_visual(
+    from: StdinOverlayVisual,
+    progress: f32,
+) -> StdinOverlayVisual {
     let eased = ease_out_cubic_local(progress);
     StdinOverlayVisual {
         opacity: from.opacity * (1.0 - eased),

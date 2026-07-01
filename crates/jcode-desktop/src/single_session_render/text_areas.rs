@@ -549,7 +549,11 @@ pub(crate) fn fresh_welcome_version_gap_for_scale(ui_scale: f32) -> f32 {
     (fresh_welcome_version_font_size() * ui_scale * 2.25).max(30.0 * ui_scale)
 }
 
-pub(crate) fn fresh_welcome_version_left(label: &str, size: PhysicalSize<u32>, font_size: f32) -> f32 {
+pub(crate) fn fresh_welcome_version_left(
+    label: &str,
+    size: PhysicalSize<u32>,
+    font_size: f32,
+) -> f32 {
     let estimated_width = label.chars().count() as f32 * font_size * 0.58;
     ((size.width as f32 - estimated_width) * 0.5).max(PANEL_TITLE_LEFT_PADDING)
 }

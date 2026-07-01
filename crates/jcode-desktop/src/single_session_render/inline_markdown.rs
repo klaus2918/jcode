@@ -570,7 +570,11 @@ pub(crate) fn byte_index_inside_any_range(index: usize, ranges: &[(usize, usize)
         .any(|(start, end)| *start <= index && index < *end)
 }
 
-pub(crate) fn byte_range_overlaps_any_range(start: usize, end: usize, ranges: &[(usize, usize)]) -> bool {
+pub(crate) fn byte_range_overlaps_any_range(
+    start: usize,
+    end: usize,
+    ranges: &[(usize, usize)],
+) -> bool {
     ranges
         .iter()
         .any(|(range_start, range_end)| start < *range_end && *range_start < end)
@@ -587,7 +591,9 @@ pub(crate) fn inline_markdown_runs_overlap(
     start_a < end_b && start_b < end_a
 }
 
-pub(crate) fn single_session_line_style_supports_inline_code_cards(style: SingleSessionLineStyle) -> bool {
+pub(crate) fn single_session_line_style_supports_inline_code_cards(
+    style: SingleSessionLineStyle,
+) -> bool {
     matches!(
         style,
         SingleSessionLineStyle::Assistant

@@ -371,7 +371,10 @@ pub(crate) fn handwritten_welcome_bounds_for_phrase_with_scale(
     )
 }
 
-pub(crate) fn glyph_welcome_hero_bounds(size: PhysicalSize<u32>, ui_scale: f32) -> ([f32; 2], [f32; 2]) {
+pub(crate) fn glyph_welcome_hero_bounds(
+    size: PhysicalSize<u32>,
+    ui_scale: f32,
+) -> ([f32; 2], [f32; 2]) {
     let normal_draft_top = single_session_draft_top(size);
     let target_width = size.width as f32 * 0.68 * ui_scale;
     let font_size = glyph_welcome_hero_font_size(size, ui_scale);
@@ -413,7 +416,11 @@ pub(crate) fn stroke_paths_length(paths: &[Vec<[f32; 2]>]) -> f32 {
         .sum()
 }
 
-pub(crate) fn transform_handwriting_point(point: [f32; 2], origin: [f32; 2], scale: f32) -> [f32; 2] {
+pub(crate) fn transform_handwriting_point(
+    point: [f32; 2],
+    origin: [f32; 2],
+    scale: f32,
+) -> [f32; 2] {
     [origin[0] + point[0] * scale, origin[1] + point[1] * scale]
 }
 
