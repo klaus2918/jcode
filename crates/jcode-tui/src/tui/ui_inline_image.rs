@@ -1014,8 +1014,7 @@ mod tests {
     #[test]
     fn expand_level_caps_grow_monotonically() {
         assert!(
-            ImageExpandLevel::Fit.anchored_cap_rows()
-                < ImageExpandLevel::Large.anchored_cap_rows()
+            ImageExpandLevel::Fit.anchored_cap_rows() < ImageExpandLevel::Large.anchored_cap_rows()
         );
         assert!(
             ImageExpandLevel::Large.anchored_cap_rows()
