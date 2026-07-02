@@ -534,20 +534,26 @@ impl GmailClient {
         in_reply_to: Option<&str>,
         thread_id: Option<&str>,
     ) -> Result<Draft> {
+        self.create_draft_with_attachments(to, subject, body, in_reply_to, thread_id, &[])
+            .await
+    }
+
+    /// Create a draft, optionally with file attachments. When `attachments` is
+    /// empty this produces the same plain-text draft as `create_draft`;
+    /// otherwise it builds a `multipart/mixed` MIME body with each file
+    /// base64-encoded.
+    pub async fn create_draft_with_attachments(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+        in_reply_to: Option<&str>,
+        thread_id: Option<&str>,
+        attachments: &[std::path::PathBuf],
+    ) -> Result<Draft> {
         let url = format!("{}/drafts", GMAIL_API_BASE);
 
-        let mut headers = format!(
-            "To: {}\r\nSubject: {}\r\nContent-Type: text/plain; charset=utf-8\r\n",
-            to, subject
-        );
-        if let Some(reply_to) = in_reply_to {
-            headers.push_str(&format!(
-                "In-Reply-To: {}\r\nReferences: {}\r\n",
-                reply_to, reply_to
-            ));
-        }
-
-        let raw = format!("{}\r\n{}", headers, body);
+        let raw = build_raw_mime(to, subject, body, in_reply_to, attachments)?;
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes());
 
         let mut message = json!({ "raw": encoded });

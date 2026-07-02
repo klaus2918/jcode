@@ -300,20 +300,50 @@ impl Tool for GmailTool {
                 let subject = params.subject.as_deref().unwrap_or("");
                 let body = params.body.as_deref().unwrap_or("");
 
+                let attachments: Vec<std::path::PathBuf> = params
+                    .attachments
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                for path in &attachments {
+                    if !path.is_file() {
+                        return Ok(ToolOutput::new(format!(
+                            "Attachment not found or not a file: {}",
+                            path.display()
+                        )));
+                    }
+                }
+
                 let draft = self
                     .client
-                    .create_draft(
+                    .create_draft_with_attachments(
                         to,
                         subject,
                         body,
                         params.in_reply_to.as_deref(),
                         params.thread_id.as_deref(),
+                        &attachments,
                     )
                     .await?;
 
+                let attach_line = if attachments.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "Attachments ({}):\n{}\n",
+                        attachments.len(),
+                        attachments
+                            .iter()
+                            .map(|p| format!("  - {}", p.display()))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
                 Ok(ToolOutput::new(format!(
-                    "Draft created successfully.\nDraft ID: {}\nTo: {}\nSubject: {}\n\nTo send this draft, use action 'send_draft' with draft_id '{}' and confirmed: true.",
-                    draft.id, to, subject, draft.id
+                    "Draft created successfully.\nDraft ID: {}\nTo: {}\nSubject: {}\n{}\nTo send this draft, use action 'send_draft' with draft_id '{}' and confirmed: true.",
+                    draft.id, to, subject, attach_line, draft.id
                 )))
             }
 
