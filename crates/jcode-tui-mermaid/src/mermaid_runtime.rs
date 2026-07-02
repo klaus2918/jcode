@@ -241,7 +241,17 @@ fn probe_picker() -> Picker {
     picker
 }
 
-fn prewarm_svg_font_db_async() {
+/// Start loading the system font database on a background thread.
+///
+/// Called lazily from [`crate::is_mermaid_lang`] the first time mermaid
+/// content is actually detected, NOT at startup: loading the font DB costs
+/// tens of milliseconds of CPU and most sessions never render a diagram, so
+/// prewarming on every spawn made the font load one of the larger fixed costs
+/// of launching a client. Detection happens while markdown is still
+/// streaming/rendering, so the DB is warm (or loading concurrently) by the
+/// time the first real diagram render needs it; if the render wins the race it
+/// just blocks on the same `LazyLock`.
+pub(crate) fn prewarm_svg_font_db_async() {
     SVG_FONT_DB_PREWARM_STARTED.get_or_init(|| {
         let _ = std::thread::Builder::new()
             .name("jcode-mermaid-fontdb-prewarm".to_string())
@@ -285,7 +295,10 @@ pub fn init_picker() {
             PickerInitMode::Probe => Some(probe_picker()),
         }
     });
-    prewarm_svg_font_db_async();
+    // Note: the SVG font-DB prewarm is intentionally NOT triggered here.
+    // init_picker() runs on every TUI startup, and the font load is only
+    // needed if a mermaid diagram is actually rendered; see
+    // prewarm_svg_font_db_async() for the lazy trigger.
     // Evict old cache files once per process
     CACHE_EVICTED.get_or_init(|| {
         evict_old_cache();

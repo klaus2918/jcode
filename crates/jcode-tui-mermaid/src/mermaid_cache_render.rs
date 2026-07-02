@@ -315,7 +315,16 @@ pub enum RenderResult {
 /// Check if a code block language is mermaid
 pub fn is_mermaid_lang(lang: &str) -> bool {
     let lang_lower = lang.to_lowercase();
-    lang_lower == "mermaid" || lang_lower.starts_with("mermaid")
+    let is_mermaid = lang_lower == "mermaid" || lang_lower.starts_with("mermaid");
+    if is_mermaid {
+        // First sighting of mermaid content anywhere (streaming markdown,
+        // transcript render, pinned pane) kicks off the system font-DB load in
+        // the background so the eventual PNG render finds it warm. Doing this
+        // here instead of at startup keeps diagram-free sessions from paying
+        // the font scan at all. OnceLock-guarded: only the first call spawns.
+        super::runtime::prewarm_svg_font_db_async();
+    }
+    is_mermaid
 }
 
 /// Maximum allowed nodes in a diagram (prevents OOM on complex diagrams)
