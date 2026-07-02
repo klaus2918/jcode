@@ -5,11 +5,19 @@ import SwiftUI
 struct ChatView: View {
     @Environment(AppModel.self) private var model
     @State private var showSettings = false
+    @State private var sendCount = 0
 
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
             header
+
+            if showConnectionBanner {
+                ConnectionBanner(phase: model.session.phase) {
+                    model.retryConnection()
+                }
+                .padding(.bottom, 8)
+            }
 
             if let banner = model.session.errorBanner {
                 ErrorBanner(message: banner) {
@@ -31,17 +39,52 @@ struct ChatView: View {
                 isReasoning: model.session.isReasoning
             )
 
+            if model.session.hasPendingInterrupts {
+                QueuedInterruptChip(count: model.session.pendingInterrupts.count) {
+                    model.cancelQueuedInterrupts()
+                }
+                .padding(.bottom, 8)
+            }
+
             Composer(
                 draft: $model.draft,
                 isProcessing: model.session.isProcessing,
                 isConnected: model.isConnected,
-                onSend: { model.sendDraft() },
+                onSend: {
+                    sendCount += 1
+                    model.sendDraft()
+                },
                 onInterrupt: { model.interrupt() }
             )
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
+        .sensoryFeedback(.impact(weight: .light), trigger: sendCount)
+        .sensoryFeedback(.impact(flexibility: .soft), trigger: finishedToolCallCount) {
+            $1 > $0
+        }
+        .sensoryFeedback(.error, trigger: model.session.errorBanner) {
+            $1 != nil
+        }
+    }
+
+    private var showConnectionBanner: Bool {
+        switch model.session.phase {
+        case .reconnecting, .disconnected, .failed: true
+        case .connected, .connecting: false
+        }
+    }
+
+    /// Finished tool calls on the streaming (last) entry; drives a subtle
+    /// tick as tools complete without scanning the whole transcript.
+    private var finishedToolCallCount: Int {
+        model.session.transcript.last?.toolCalls.filter { call in
+            switch call.status {
+            case .succeeded, .failed: true
+            case .streamingInput, .running: false
+            }
+        }.count ?? 0
     }
 
     private var header: some View {

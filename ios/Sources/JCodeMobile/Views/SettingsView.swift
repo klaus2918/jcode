@@ -1,21 +1,27 @@
 import JCodeKit
 import SwiftUI
 
-/// Settings sheet: model picker, sessions, servers, session info.
+/// Settings sheet: model picker, reasoning effort, sessions, servers, info.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var renameDraft = ""
-    @State private var showRename = false
-    @State private var showPairNew = false
+    @State var renameDraft = ""
+    @State var showRename = false
+    @State var showPairNew = false
+
+    /// Reasoning effort levels offered when the provider exposes the knob.
+    static let reasoningEfforts = ["none", "low", "medium", "high", "xhigh"]
 
     var body: some View {
         NavigationStack {
             List {
                 modelSection
-                sessionsSection
-                serversSection
-                infoSection
+                if model.session.reasoningEffort != nil {
+                    reasoningSection
+                }
+                SettingsSessionsSection(renameDraft: $renameDraft, showRename: $showRename)
+                SettingsServersSection(showPairNew: $showPairNew)
+                SettingsInfoSection()
             }
             .scrollContentBackground(.hidden)
             .background(Theme.background)
@@ -83,16 +89,15 @@ struct SettingsView: View {
         }
     }
 
-    private var sessionsSection: some View {
-        Section("Sessions") {
-            ForEach(model.session.allSessions, id: \.self) { sessionID in
-                let isActive = sessionID == model.session.sessionID
+    private var reasoningSection: some View {
+        Section("Reasoning effort") {
+            ForEach(Self.reasoningEfforts, id: \.self) { effort in
+                let isActive = effort == model.session.reasoningEffort
                 Button {
-                    model.switchSession(sessionID)
-                    dismiss()
+                    model.setReasoningEffort(effort)
                 } label: {
                     HStack {
-                        Text(shortSessionID(sessionID))
+                        Text(effort)
                             .font(Theme.mono(13))
                             .foregroundStyle(Theme.textPrimary)
                         Spacer()
@@ -105,115 +110,11 @@ struct SettingsView: View {
                     }
                 }
                 .listRowBackground(Theme.surface)
-                .accessibilityLabel("Session \(shortSessionID(sessionID))")
-                .accessibilityValue(isActive ? "Current" : "")
-                .accessibilityHint("Switches to this session")
+                .accessibilityLabel("Reasoning effort \(effort)")
+                .accessibilityValue(isActive ? "Selected" : "")
+                .accessibilityHint("Sets how much the model reasons before answering")
                 .accessibilityAddTraits(isActive ? [.isSelected] : [])
             }
-            Button {
-                renameDraft = model.session.sessionTitle ?? ""
-                showRename = true
-            } label: {
-                Label("Rename current session", systemImage: "pencil")
-                    .foregroundStyle(Theme.textPrimary)
-            }
-            .listRowBackground(Theme.surface)
-            .accessibilityHint("Opens a field to rename the active session")
-            Button {
-                model.clearConversation()
-                dismiss()
-            } label: {
-                Label("New session (clear)", systemImage: "square.and.pencil")
-                    .foregroundStyle(Theme.mint)
-            }
-            .listRowBackground(Theme.surface)
-            .accessibilityHint("Clears the conversation and starts fresh")
         }
-    }
-
-    private var serversSection: some View {
-        Section("Servers") {
-            ForEach(model.servers) { server in
-                let isActive = server.id == model.activeServer?.id
-                Button {
-                    model.connect(to: server)
-                    dismiss()
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(server.serverName)
-                                .font(.body)
-                                .foregroundStyle(Theme.textPrimary)
-                            Text("\(server.host):\(String(server.port))")
-                                .font(Theme.mono(11))
-                                .foregroundStyle(Theme.textTertiary)
-                        }
-                        Spacer()
-                        if isActive {
-                            Circle()
-                                .fill(Theme.mint)
-                                .frame(width: 8, height: 8)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                }
-                .listRowBackground(Theme.surface)
-                .accessibilityLabel(server.serverName)
-                .accessibilityValue(isActive ? "Connected" : "")
-                .accessibilityHint("Connects to this server")
-                .accessibilityAddTraits(isActive ? [.isSelected] : [])
-                .swipeActions {
-                    Button(role: .destructive) {
-                        model.removeServer(server)
-                    } label: {
-                        Label("Remove", systemImage: "trash")
-                    }
-                }
-            }
-            Button {
-                showPairNew = true
-            } label: {
-                Label("Pair new server", systemImage: "plus")
-                    .foregroundStyle(Theme.mint)
-            }
-            .listRowBackground(Theme.surface)
-            .accessibilityHint("Opens pairing to add a server")
-        }
-    }
-
-    private var infoSection: some View {
-        Section("Info") {
-            row("Server version", model.session.serverVersion ?? "unknown")
-            row("Provider", model.session.providerName ?? "unknown")
-            row(
-                "Tokens",
-                "\(model.session.tokenInput) in / \(model.session.tokenOutput) out"
-            )
-            if let detail = model.session.statusDetail {
-                row("Status", detail)
-            }
-        }
-    }
-
-    private func row(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(.callout)
-                .foregroundStyle(Theme.textSecondary)
-            Spacer()
-            Text(value)
-                .font(Theme.mono(12))
-                .foregroundStyle(Theme.textTertiary)
-                .lineLimit(1)
-        }
-        .listRowBackground(Theme.surface)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func shortSessionID(_ id: String) -> String {
-        if id.count > 24 {
-            return String(id.prefix(24)) + "…"
-        }
-        return id
     }
 }

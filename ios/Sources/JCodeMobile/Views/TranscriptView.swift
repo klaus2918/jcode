@@ -1,25 +1,34 @@
 import JCodeKit
 import SwiftUI
 
-/// Scrolling transcript with auto-follow.
+/// Scrolling transcript with pinned-to-bottom auto-follow.
 ///
-/// Short threads are anchored to the bottom (chat convention) so a couple of
-/// messages don't float at the top above a large dead zone; once the content
-/// exceeds the viewport it scrolls normally. An empty session shows a centered
-/// placeholder instead of a blank canvas.
+/// Auto-scroll only engages while the user is at (or near) the bottom, so
+/// scrolling up to read history is never hijacked by streaming output. A
+/// jump-to-latest button appears whenever the view is unpinned. Short threads
+/// are anchored to the bottom (chat convention); once the content exceeds the
+/// viewport it scrolls normally. An empty session shows a centered placeholder.
 struct TranscriptView: View {
     let entries: [TranscriptEntry]
     let isReasoning: Bool
+
+    /// True while the viewport is at (or near) the bottom of the content.
+    @State private var isPinnedToBottom = true
+
+    /// Distance from the bottom below which the view counts as pinned.
+    private static let pinThreshold: CGFloat = 56
 
     var body: some View {
         if entries.isEmpty && !isReasoning {
             EmptyTranscript()
         } else {
-            scroller
+            GeometryReader { viewport in
+                scroller(viewportHeight: viewport.size.height)
+            }
         }
     }
 
-    private var scroller: some View {
+    private func scroller(viewportHeight: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 // A flexible top spacer pushes short content to the bottom of
@@ -31,96 +40,96 @@ struct TranscriptView: View {
                             .id(entry.id)
                     }
                     if isReasoning {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(Theme.textTertiary)
-                            Text("thinking")
-                                .font(Theme.mono(12))
-                                .foregroundStyle(Theme.textTertiary)
-                        }
-                        .padding(.leading, 4)
+                        thinkingRow
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .frame(minHeight: viewportMinHeight, alignment: .bottom)
+                .frame(minHeight: max(0, viewportHeight - 16), alignment: .bottom)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
+                .background(
+                    GeometryReader { content in
+                        Color.clear.preference(
+                            key: BottomDistanceKey.self,
+                            value: content.frame(in: .named("transcript")).maxY
+                                - viewportHeight
+                        )
+                    }
+                )
             }
+            .coordinateSpace(name: "transcript")
             .scrollDismissesKeyboard(.interactively)
+            .onPreferenceChange(BottomDistanceKey.self) { distance in
+                MainActor.assumeIsolated {
+                    let pinned = distance < Self.pinThreshold
+                    if pinned != isPinnedToBottom {
+                        isPinnedToBottom = pinned
+                    }
+                }
+            }
             .onChange(of: entries.last?.text) {
-                withAnimation(.easeOut(duration: 0.15)) {
+                guard isPinnedToBottom else { return }
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            .onChange(of: entries.count) {
+                // Follow new entries when pinned; always follow the user's
+                // own sends so their message never lands off-screen.
+                if isPinnedToBottom || entries.last?.role == .user {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
-            .onChange(of: entries.count) {
-                proxy.scrollTo("bottom", anchor: .bottom)
+            .overlay(alignment: .bottomTrailing) {
+                if !isPinnedToBottom {
+                    ScrollToBottomButton {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 8)
+                }
             }
         }
     }
 
-    // A large min height makes the LazyVStack at least fill the viewport so
-    // the bottom alignment can take effect; the ScrollView absorbs any excess.
-    private var viewportMinHeight: CGFloat { 600 }
-}
-
-/// Friendly placeholder for a fresh session, centered in the canvas.
-struct EmptyTranscript: View {
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "terminal")
-                .font(Theme.icon(40, weight: .light))
-                .foregroundStyle(Theme.mint)
-            Text("Ready when you are")
-                .font(Theme.mono(16, weight: .medium))
-                .foregroundStyle(Theme.textPrimary)
-            Text("Send a message to start driving this session.")
-                .font(.subheadline)
-                .foregroundStyle(Theme.textSecondary)
-                .multilineTextAlignment(.center)
-        }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// One transcript entry: user bubble, assistant markdown, or system note.
-struct EntryView: View {
-    let entry: TranscriptEntry
-
-    var body: some View {
-        switch entry.role {
-        case .user:
-            HStack {
-                Spacer(minLength: 48)
-                Text(entry.text)
-                    .font(.body)
-                    .foregroundStyle(Theme.textPrimary)
-                    .padding(12)
-                    .background(Theme.mintTint)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-            }
-        case .assistant:
-            VStack(alignment: .leading, spacing: 8) {
-                if !entry.reasoning.isEmpty {
-                    Text(entry.reasoning)
-                        .font(Theme.mono(12))
-                        .italic()
-                        .foregroundStyle(Theme.textTertiary)
-                        .lineLimit(4)
-                }
-                ForEach(entry.toolCalls) { call in
-                    ToolCallCard(call: call)
-                }
-                if !entry.text.isEmpty {
-                    MarkdownText(entry.text)
-                }
-            }
-        case .system:
-            Text(entry.text)
-                .font(.footnote)
+    private var thinkingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(Theme.textTertiary)
+            Text("thinking")
+                .font(Theme.mono(12))
                 .foregroundStyle(Theme.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .center)
         }
+        .padding(.leading, 4)
+    }
+}
+
+/// How far the content's bottom edge sits below the viewport's bottom edge.
+private struct BottomDistanceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// Floating jump-to-latest affordance shown while scrolled up.
+private struct ScrollToBottomButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.down")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Theme.textPrimary)
+                .frame(width: 44, height: 44)
+                .background(Theme.surfaceElevated)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+        }
+        .accessibilityLabel("Scroll to bottom")
+        .accessibilityHint("Jumps to the latest message")
+        .transition(.opacity)
     }
 }
