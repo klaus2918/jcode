@@ -245,7 +245,21 @@ impl Tool for GmailTool {
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("thread_id is required for thread action"))?;
 
-                let thread = self.client.get_thread(id).await?;
+                // Accept a message ID too: if the thread lookup fails, try
+                // resolving the ID as a message and use its containing thread.
+                let thread = match self.client.get_thread(id).await {
+                    Ok(t) => t,
+                    Err(thread_err) => {
+                        match self.client.get_message(id, MessageFormat::Metadata).await {
+                            Ok(msg) => {
+                                let tid = msg.thread_id.ok_or(thread_err)?;
+                                self.client.get_thread(&tid).await?
+                            }
+                            Err(_) => return Err(thread_err),
+                        }
+                    }
+                };
+                let thread_id = thread.id.clone();
                 let messages = thread.messages.unwrap_or_default();
 
                 if messages.is_empty() {
@@ -254,19 +268,29 @@ impl Tool for GmailTool {
 
                 let mut results = Vec::new();
                 for (i, msg) in messages.iter().enumerate() {
-                    results.push(format!(
-                        "--- Message {} ---\nFrom: {}\nDate: {}\nSubject: {}\nSnippet: {}",
+                    let mut entry = format!(
+                        "--- Message {} ---\nID: {}\nFrom: {}\nDate: {}\nSubject: {}\nSnippet: {}",
                         i + 1,
+                        msg.id,
                         msg.from().unwrap_or("(unknown)"),
                         msg.date().unwrap_or(""),
                         msg.subject().unwrap_or("(no subject)"),
                         msg.snippet.as_deref().unwrap_or(""),
-                    ));
+                    );
+                    let attachments = msg.attachments();
+                    if !attachments.is_empty() {
+                        entry.push_str(&format!(
+                            "\nAttachments ({}):\n{}",
+                            attachments.len(),
+                            gmail::format_attachment_lines(&attachments)
+                        ));
+                    }
+                    results.push(entry);
                 }
 
                 Ok(ToolOutput::new(format!(
                     "Thread {} ({} messages):\n\n{}",
-                    id,
+                    thread_id,
                     messages.len(),
                     results.join("\n\n")
                 )))
