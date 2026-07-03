@@ -1,6 +1,8 @@
 mod animation;
 mod desktop_app_driver;
 mod desktop_benchmark;
+mod desktop_branding;
+pub(crate) use desktop_branding::*;
 mod desktop_config;
 mod desktop_gallery;
 mod desktop_ipc;
@@ -310,8 +312,9 @@ async fn run() -> Result<()> {
     }
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!(
-            "{} {}",
-            desktop_header_version_label(),
+            "{} {} {}",
+            DESKTOP_PRODUCT_NAME,
+            desktop_app_directory_label(),
             desktop_build_hash_label()
         );
         return Ok(());
@@ -368,7 +371,7 @@ async fn run() -> Result<()> {
         .context("failed to create event loop")?;
     let event_loop_proxy = event_loop.create_proxy();
     startup_trace.mark("event loop created");
-    let mut window_builder = WindowBuilder::new().with_title("Jcode Desktop");
+    let mut window_builder = WindowBuilder::new().with_title(DESKTOP_PRODUCT_NAME);
     if let Some(placement) = desktop_reload_startup.window_placement {
         window_builder = placement.apply_to_window_builder(window_builder);
     } else {

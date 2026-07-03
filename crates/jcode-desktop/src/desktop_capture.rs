@@ -111,7 +111,7 @@ pub(crate) fn spawn_desktop_stream_simulator(
 }
 
 pub(crate) const DESKTOP_HELP_LINES: &[&str] = &[
-    "Jcode Desktop",
+    crate::DESKTOP_PRODUCT_NAME,
     "",
     "Usage:",
     "  jcode-desktop [OPTIONS]",

@@ -1305,7 +1305,7 @@ impl SingleSessionApp {
     }
 
     pub(crate) fn status_title(&self) -> String {
-        format!("Jcode · {}", self.title())
+        format!("{} · {}", crate::DESKTOP_PRODUCT_NAME, self.title())
     }
 
     pub(crate) fn title(&self) -> String {

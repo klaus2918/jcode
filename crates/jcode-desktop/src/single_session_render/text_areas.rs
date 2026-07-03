@@ -518,7 +518,11 @@ pub(crate) fn visualize_composer_whitespace(text: &str) -> String {
 }
 
 pub(crate) fn desktop_header_version_label() -> String {
-    desktop_app_directory_label()
+    format!(
+        "{} · {}",
+        crate::DESKTOP_RELEASE_CHANNEL,
+        desktop_app_directory_label()
+    )
 }
 
 pub(crate) fn desktop_app_directory_label() -> String {
@@ -532,7 +536,7 @@ pub(crate) fn desktop_app_directory_label() -> String {
 }
 
 pub(crate) fn fresh_welcome_version_label() -> String {
-    desktop_app_directory_label()
+    desktop_header_version_label()
 }
 
 pub(crate) fn fresh_welcome_version_font_size() -> f32 {
