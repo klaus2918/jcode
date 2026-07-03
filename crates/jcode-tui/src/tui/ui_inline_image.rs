@@ -23,12 +23,6 @@ use ratatui::text::{Line, Span};
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, OnceLock, mpsc};
 
-#[inline]
-fn div_ceil_u32(value: u32, divisor: u32) -> u32 {
-    let divisor = divisor.max(1);
-    value.div_ceil(divisor)
-}
-
 /// One image to render inline, resolved from a `RenderedImage`.
 #[derive(Clone)]
 pub(crate) struct InlineImageItem {
@@ -38,8 +32,6 @@ pub(crate) struct InlineImageItem {
     pub label: String,
 }
 
-/// Default font cell size when the terminal has not reported one yet.
-const DEFAULT_CELL: (u16, u16) = (8, 16);
 /// Cap an inline image at this fraction of the chat viewport height so a tall
 /// image cannot push the rest of the transcript off-screen.
 const MAX_VIEWPORT_FRACTION_PERCENT: u16 = 55;
@@ -216,7 +208,11 @@ pub(crate) fn materialize_visible(id: u64) -> bool {
     if let Some((media_type, data_b64)) = PAYLOAD_REGISTRY.lock().ok().and_then(|reg| reg.get(id)) {
         return mermaid::materialize_inline_image_by_id(id, &media_type, &data_b64).is_some();
     }
-    false
+    // Mermaid diagrams share this pipeline but have no payload registration:
+    // their PNG lives in the shared render cache. A hash evicted from the
+    // in-memory cache can still be rediscovered on disk (and re-registered)
+    // by the cached-path lookup.
+    mermaid::get_cached_path(id).is_some()
 }
 
 /// One pending prewarm request: build everything needed to draw image `id`
@@ -540,43 +536,10 @@ pub(crate) fn resolve_anchored_items_cached(
 /// the draw step actually paints, so layout (e.g. info widget placement) can
 /// know the real horizontal extent.
 fn fit_geometry_with_cap(width: u32, height: u32, chat_width: u16, cap_rows: u16) -> (u16, u16) {
-    if width == 0 || height == 0 {
-        return (MIN_IMAGE_ROWS, chat_width.min(2));
-    }
-    let (cell_w, cell_h) = mermaid::get_font_size().unwrap_or(DEFAULT_CELL);
-    let cell_w = cell_w.max(1) as u32;
-    let cell_h = cell_h.max(1) as u32;
-
-    // Available width in pixels (border bar + padding take 2 cells, matching
-    // the renderer's BORDER_WIDTH).
-    let avail_cells = chat_width.saturating_sub(2).max(1) as u32;
-    let avail_px = avail_cells * cell_w;
-
-    let cap_rows = (cap_rows as u32).max(MIN_IMAGE_ROWS as u32);
-    let cap_px = cap_rows * cell_h;
-
-    // Scale to fit *both* the width and the row cap, preserving aspect ratio,
-    // exactly like the draw-time fit does. This keeps the placeholder geometry
-    // and the rendered pixels in lockstep so borders/labels hug the image.
-    let scale_num_w = avail_px.min(width);
-    let scaled_h_by_w = height.saturating_mul(scale_num_w) / width.max(1);
-    let (final_w_px, final_h_px) = if scaled_h_by_w <= cap_px {
-        (scale_num_w, scaled_h_by_w)
-    } else {
-        // Height-bound: shrink further so the height fits the cap.
-        let w = width.saturating_mul(cap_px) / height.max(1);
-        (w.min(avail_px).max(1), cap_px)
-    };
-
-    let rows = div_ceil_u32(final_h_px.max(1), cell_h).max(MIN_IMAGE_ROWS as u32) as u16;
-    let cols = (div_ceil_u32(final_w_px.max(1), cell_w) as u16)
-        .saturating_add(2)
-        .min(chat_width);
-    (
-        rows.min(cap_rows.min(u16::MAX as u32) as u16)
-            .max(MIN_IMAGE_ROWS),
-        cols,
-    )
+    // Single source of truth for inline-fit placeholder geometry, shared with
+    // the mermaid crate so diagrams and raster images stay in lockstep with
+    // the draw-time fit math.
+    mermaid::inline_fit_geometry(width, height, chat_width, cap_rows)
 }
 
 /// Compute `(rows, cols)` for an inline image at `chat_width`, given a viewport

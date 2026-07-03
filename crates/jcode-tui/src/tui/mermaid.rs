@@ -12,7 +12,7 @@ pub use jcode_tui_mermaid::{
     debug_test_scroll, deferred_render_epoch, diagram_placeholder_lines, error_lines_for,
     error_to_lines, estimate_image_height, evict_old_cache, get_active_diagrams, get_cached_path,
     get_cached_png, get_font_size, image_protocol_available, image_widget_placeholder_markdown,
-    init_picker, inline_fit_readiness, inline_image_dims, inline_image_id,
+    init_picker, inline_fit_geometry, inline_fit_readiness, inline_image_dims, inline_image_id,
     inline_image_is_materialized, inline_image_placeholder_lines, invalidate_render_state,
     is_mermaid_lang, is_video_export_mode, materialize_inline_image,
     materialize_inline_image_by_id, normalize_aspect_ratio, parse_image_placeholder,
