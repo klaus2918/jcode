@@ -69,6 +69,10 @@ pub fn debug_stats() -> MermaidDebugStats {
     if let Ok(pending) = PENDING_RENDER_REQUESTS.lock() {
         out.deferred_pending = pending.len();
     }
+    let (layout_entries, layout_bytes) = layout_cache_usage();
+    out.layout_cache_entries = layout_entries;
+    out.layout_cache_limit = LAYOUT_CACHE_MAX;
+    out.layout_cache_approx_bytes = layout_bytes;
     out.deferred_epoch = deferred_render_epoch();
     out.protocol = protocol_type().map(|p| format!("{:?}", p));
     out.render_size_backend = render_size_backend();
@@ -165,10 +169,16 @@ pub fn debug_memory_profile() -> MermaidMemoryProfile {
 
     out.active_diagrams = active_diagram_count();
 
+    let (layout_entries, layout_bytes) = layout_cache_usage();
+    out.layout_cache_entries = layout_entries;
+    out.layout_cache_limit = LAYOUT_CACHE_MAX;
+    out.layout_cache_approx_bytes = layout_bytes;
+
     out.mermaid_working_set_estimate_bytes = out
         .render_cache_metadata_estimate_bytes
         .saturating_add(out.image_state_protocol_min_estimate_bytes)
-        .saturating_add(out.source_cache_decoded_estimate_bytes);
+        .saturating_add(out.source_cache_decoded_estimate_bytes)
+        .saturating_add(layout_bytes);
 
     out
 }

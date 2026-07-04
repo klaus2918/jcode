@@ -264,8 +264,10 @@ pub use widget_render::{render_image_widget, render_image_widget_fit, render_ima
 use cache_render::calculate_render_size;
 use cache_render::{
     CachedDiagram, MermaidCache, RENDER_CACHE_MAX, RENDER_WIDTH_BUCKET_CELLS,
-    bump_deferred_render_epoch, get_cached_diagram, get_cached_diagram_in_memory,
+    bump_deferred_render_epoch, clear_layout_cache, get_cached_diagram,
+    get_cached_diagram_in_memory, layout_cache_usage,
 };
+use cache_render::LAYOUT_CACHE_MAX;
 use viewport_render::clear_image_area;
 use widget_render::{BORDER_WIDTH, draw_left_border, render_stateful_image_safe};
 
@@ -791,6 +793,11 @@ pub struct MermaidDebugStats {
     pub total_requests: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
+    /// Layout-tier cache hits: the PNG cache missed but the computed layout
+    /// was reused, so only SVG+PNG rasterization ran (no parse/compute_layout).
+    pub layout_cache_hits: u64,
+    /// Layout-tier cache misses: full parse + compute_layout executed.
+    pub layout_cache_misses: u64,
     pub deferred_enqueued: u64,
     pub deferred_deduped: u64,
     pub deferred_superseded: u64,
@@ -832,6 +839,11 @@ pub struct MermaidDebugStats {
     pub last_target_height: Option<u32>,
     pub deferred_pending: usize,
     pub deferred_epoch: u64,
+    /// Layout-tier cache resident entries (see `layout_cache_hits`).
+    pub layout_cache_entries: usize,
+    pub layout_cache_limit: usize,
+    /// Approximate resident bytes held by cached layouts.
+    pub layout_cache_approx_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -911,6 +923,11 @@ pub struct MermaidMemoryProfile {
     pub cache_disk_max_age_secs: u64,
     /// Mermaid-specific working set estimate (cache metadata + protocol floor + decoded source).
     pub mermaid_working_set_estimate_bytes: u64,
+    /// Number of computed layouts cached in the layout tier.
+    pub layout_cache_entries: usize,
+    pub layout_cache_limit: usize,
+    /// Approximate resident bytes held by cached layouts (nodes+edges+labels walk).
+    pub layout_cache_approx_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

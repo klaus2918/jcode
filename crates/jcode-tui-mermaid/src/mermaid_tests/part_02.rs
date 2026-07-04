@@ -88,6 +88,7 @@ fn deferred_render_supersedes_prefix_stream_updates_only() {
 #[cfg(all(feature = "mmdr-size-api", mmdr_size_api_available))]
 #[test]
 fn mmdr_size_api_fits_natural_aspect_into_target_canvas() {
+    let _stats_guard = render_stats_test_lock();
     super::reset_debug_stats();
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -347,4 +348,210 @@ fn transcript_profile_keeps_pinned_pane_aspect_when_present() {
 
     let no_geometry = crate::transcript_preferred_aspect_ratio_with_font(None, 120, 40, None);
     assert_eq!(no_geometry, None, "no pane + no geometry -> None");
+}
+
+/// Serialize tests that render diagrams and assert on the global
+/// `MermaidDebugStats` (`last_*` fields and counters), which concurrent
+/// renders in sibling tests would otherwise clobber.
+fn render_stats_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Layout is terminal-width independent: rendering the same source at two
+/// terminal widths that map to different PNG width buckets must compute the
+/// layout exactly once, with the second render taking the rasterize-only
+/// layout-cache hit path.
+#[cfg(feature = "renderer")]
+#[test]
+fn layout_cache_reuses_layout_across_terminal_widths() {
+    let _stats_guard = render_stats_test_lock();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let content = format!(
+        "flowchart TD\n    A{unique}[Start] --> B{unique}{{Check}}\n    B{unique} -->|yes| C{unique}[Fast]\n    B{unique} -->|no| D{unique}[Slow]\n    C{unique} --> E{unique}[Done]\n    D{unique} --> E{unique}"
+    );
+    let hash = super::hash_content(&content);
+    let hits_before = super::debug_stats().layout_cache_hits;
+
+    // Narrow terminal: small width bucket.
+    let first = super::render_mermaid_untracked(&content, Some(60));
+    let first_width = match first {
+        super::RenderResult::Image { width, .. } => width,
+        super::RenderResult::Error(error) => panic!("first render failed: {error}"),
+    };
+    assert_eq!(
+        super::cache_render::layout_computations_for_test(hash),
+        1,
+        "first render must compute the layout"
+    );
+
+    // Wide terminal: crosses the PNG width bucket (85% reuse threshold), so
+    // the PNG cache misses but the layout tier must hit.
+    let second = super::render_mermaid_untracked(&content, Some(200));
+    let second_width = match second {
+        super::RenderResult::Image { width, .. } => width,
+        super::RenderResult::Error(error) => panic!("second render failed: {error}"),
+    };
+    assert!(
+        second_width > first_width,
+        "test setup: widths must land in different buckets ({first_width} vs {second_width})"
+    );
+    assert_eq!(
+        super::cache_render::layout_computations_for_test(hash),
+        1,
+        "bucket-crossing resize must reuse the cached layout (rasterize only)"
+    );
+    assert!(
+        super::debug_stats().layout_cache_hits > hits_before,
+        "layout cache hit must be visible in debug stats"
+    );
+}
+
+/// Different aspect profiles produce different layouts (the aspect goal feeds
+/// `LayoutConfig::preferred_aspect_ratio`), so each profile is its own layout
+/// cache entry: two profiles -> exactly two layout computations.
+#[cfg(feature = "renderer")]
+#[test]
+fn layout_cache_keys_on_aspect_profile() {
+    let _stats_guard = render_stats_test_lock();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let content = format!(
+        "flowchart LR\n    P{unique}[Input] --> Q{unique}[Transform] --> R{unique}[Output]"
+    );
+    let hash = super::hash_content(&content);
+
+    super::with_preferred_aspect_ratio(Some(2.0), || {
+        assert!(matches!(
+            super::render_mermaid_untracked(&content, Some(80)),
+            super::RenderResult::Image { .. }
+        ));
+    });
+    assert_eq!(super::cache_render::layout_computations_for_test(hash), 1);
+
+    super::with_preferred_aspect_ratio(Some(1.0), || {
+        assert!(matches!(
+            super::render_mermaid_untracked(&content, Some(80)),
+            super::RenderResult::Image { .. }
+        ));
+    });
+    assert_eq!(
+        super::cache_render::layout_computations_for_test(hash),
+        2,
+        "a different aspect profile must re-run layout"
+    );
+
+    // Same profile again: layout tier hit, still two computations.
+    super::with_preferred_aspect_ratio(Some(2.0), || {
+        assert!(matches!(
+            super::render_mermaid_untracked(&content, Some(80)),
+            super::RenderResult::Image { .. }
+        ));
+    });
+    assert_eq!(super::cache_render::layout_computations_for_test(hash), 2);
+}
+
+/// A layout-cache hit must rasterize a byte-identical PNG to the uncached
+/// (parse+layout) path for the same source and target size.
+#[cfg(feature = "renderer")]
+#[test]
+fn layout_cache_hit_renders_byte_identical_png() {
+    let _stats_guard = render_stats_test_lock();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let content = format!(
+        "flowchart TD\n    X{unique}[Request] --> Y{unique}{{Cache?}}\n    Y{unique} -->|hit| Z{unique}[Serve]\n    Y{unique} -->|miss| W{unique}[Render]\n    W{unique} --> Z{unique}"
+    );
+    let hash = super::hash_content(&content);
+
+    let first = super::render_mermaid_untracked(&content, Some(90));
+    let first_path = match first {
+        super::RenderResult::Image { path, .. } => path,
+        super::RenderResult::Error(error) => panic!("first render failed: {error}"),
+    };
+    let uncached_bytes = std::fs::read(&first_path).expect("read uncached png");
+    assert_eq!(super::cache_render::layout_computations_for_test(hash), 1);
+
+    // Drop the PNG tier (memory entries + on-disk files) so the next render
+    // must rasterize, while the layout tier stays warm.
+    super::cache_render::evict_render_cache_for_test(hash);
+
+    let second = super::render_mermaid_untracked(&content, Some(90));
+    let second_path = match second {
+        super::RenderResult::Image { path, .. } => path,
+        super::RenderResult::Error(error) => panic!("second render failed: {error}"),
+    };
+    assert_eq!(
+        super::cache_render::layout_computations_for_test(hash),
+        1,
+        "second render must be a layout-cache hit"
+    );
+    let cached_bytes = std::fs::read(&second_path).expect("read cached-layout png");
+    assert_eq!(
+        uncached_bytes, cached_bytes,
+        "layout-cache hit must produce a byte-identical PNG"
+    );
+}
+
+/// LRU eviction and theme-change clearing for the layout tier, exercised
+/// directly on the cache struct so the test does not need 33 real renders.
+#[cfg(feature = "renderer")]
+#[test]
+fn layout_cache_evicts_lru_and_clears_on_theme_change() {
+    use mermaid_rs_renderer::ir::DiagramKind;
+    use mermaid_rs_renderer::layout::{DiagramData, Layout};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let empty_layout = || {
+        Arc::new(Layout {
+            kind: DiagramKind::Flowchart,
+            nodes: BTreeMap::new(),
+            edges: Vec::new(),
+            subgraphs: Vec::new(),
+            width: 10.0,
+            height: 10.0,
+            diagram: DiagramData::Graph {
+                state_notes: Vec::new(),
+            },
+        })
+    };
+    let key = |source_hash: u64, theme_fingerprint: u64| super::cache_render::LayoutCacheKey {
+        source_hash,
+        theme_fingerprint,
+        profile: super::RenderProfile::default(),
+        layout_config_fingerprint: 7,
+    };
+
+    let mut cache = super::cache_render::LayoutCache::new();
+    for idx in 0..super::cache_render::LAYOUT_CACHE_MAX as u64 {
+        cache.insert(key(idx, 1), empty_layout());
+    }
+    assert_eq!(cache.entries.len(), super::cache_render::LAYOUT_CACHE_MAX);
+
+    // Touch entry 0 so it becomes most-recently used, then overflow: entry 1
+    // (now the LRU) must be evicted, entry 0 retained.
+    assert!(cache.get(&key(0, 1)).is_some());
+    cache.insert(key(super::cache_render::LAYOUT_CACHE_MAX as u64, 1), empty_layout());
+    assert_eq!(cache.entries.len(), super::cache_render::LAYOUT_CACHE_MAX);
+    assert!(cache.get(&key(0, 1)).is_some(), "recently used entry survives");
+    assert!(cache.get(&key(1, 1)).is_none(), "LRU entry is evicted");
+
+    // Theme change: a lookup with a new theme fingerprint clears stale entries.
+    assert!(cache.get(&key(0, 2)).is_none());
+    assert_eq!(
+        cache.entries.len(),
+        0,
+        "theme change must clear the layout cache"
+    );
+    cache.insert(key(0, 2), empty_layout());
+    assert_eq!(cache.entries.len(), 1);
+    assert!(cache.get(&key(0, 2)).is_some());
 }

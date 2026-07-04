@@ -54,6 +54,7 @@ pub fn clear_cache() -> Result<(), String> {
         cache.entries.clear();
         cache.order.clear();
     }
+    clear_layout_cache();
     if let Ok(mut state) = IMAGE_STATE.lock() {
         state.clear();
     }
