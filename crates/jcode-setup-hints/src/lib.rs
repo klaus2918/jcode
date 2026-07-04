@@ -97,6 +97,11 @@ pub struct SetupHintsState {
     /// showing already-learned repo hotkey hints.
     #[serde(default)]
     pub launch_hotkey_usage: HashMap<String, u64>,
+    /// Whether the first-run onboarding "resume a previous session" picker has
+    /// already been shown once. After that, launching jcode goes straight to
+    /// the normal screen; old transcripts stay reachable via `/resume`.
+    #[serde(default)]
+    pub onboarding_resume_shown: bool,
 }
 
 /// Serde default helper: fields documented as "true by default".
@@ -123,6 +128,7 @@ impl Default for SetupHintsState {
             keymap_conflict_signature: String::new(),
             glyph_safe_notice_shown: false,
             launch_hotkey_usage: HashMap::new(),
+            onboarding_resume_shown: false,
         }
     }
 }
