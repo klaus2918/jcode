@@ -41,10 +41,12 @@ pub(super) async fn run_stream_with_retries(
 
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
-            let delay =
-                crate::provider::attempt_tracker::retry_backoff_delay(attempt, RETRY_BASE_DELAY_MS);
+            let delay = jcode_provider_core::attempt_tracker::retry_backoff_delay(
+                attempt,
+                RETRY_BASE_DELAY_MS,
+            );
             tokio::time::sleep(delay).await;
-            crate::logging::info(&format!(
+            jcode_base::logging::info(&format!(
                 "Retrying API request using {} (attempt {}/{})",
                 auth.label(),
                 attempt + 1,
@@ -52,7 +54,7 @@ pub(super) async fn run_stream_with_retries(
             ));
         }
 
-        crate::logging::info(&format!(
+        jcode_base::logging::info(&format!(
             "API stream attempt {}/{} over HTTPS transport (model: {}, endpoint: {}, auth: {})",
             attempt + 1,
             MAX_RETRIES,
@@ -65,7 +67,7 @@ pub(super) async fn run_stream_with_retries(
         // mid-stream transport fault can roll the partial output back on the
         // consumer before the retry replays the response from the top.
         let (attempt_tx, attempt_guard) =
-            crate::provider::attempt_tracker::track_attempt_output(tx.clone());
+            jcode_provider_core::attempt_tracker::track_attempt_output(tx.clone());
 
         // Retries use a fresh unpooled client: the fault that broke attempt N
         // (e.g. TLS BadRecordMac from a corrupting middlebox) may also have
@@ -75,7 +77,7 @@ pub(super) async fn run_stream_with_retries(
         let attempt_client = if attempt == 0 {
             client.clone()
         } else {
-            crate::provider::fresh_transport_client()
+            jcode_provider_core::fresh_transport_client()
         };
 
         match stream_response(
@@ -104,7 +106,7 @@ pub(super) async fn run_stream_with_retries(
                         // Partial output already reached the consumer; tell it
                         // to discard the partial attempt so the retried
                         // response replays cleanly instead of duplicating.
-                        crate::logging::warn(&format!(
+                        jcode_base::logging::warn(&format!(
                             "Transient API error after partial output; rolling back partial attempt and retrying: {}",
                             e
                         ));
@@ -115,7 +117,10 @@ pub(super) async fn run_stream_with_retries(
                             }))
                             .await;
                     } else {
-                        crate::logging::info(&format!("Transient API error, will retry: {}", e));
+                        jcode_base::logging::info(&format!(
+                            "Transient API error, will retry: {}",
+                            e
+                        ));
                     }
                     last_error = Some(e);
                     continue;
@@ -152,7 +157,7 @@ async fn stream_response(
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
     model: String,
 ) -> Result<()> {
-    use crate::message::ConnectionPhase;
+    use jcode_message_types::ConnectionPhase;
     let _ = tx
         .send(Ok(StreamEvent::ConnectionPhase {
             phase: ConnectionPhase::Connecting,
@@ -195,7 +200,7 @@ async fn stream_response(
         })?;
 
     let connect_ms = connect_start.elapsed().as_millis();
-    crate::logging::info(&format!(
+    jcode_base::logging::info(&format!(
         "HTTP connection established in {}ms (status={})",
         connect_ms,
         response.status()
@@ -203,7 +208,7 @@ async fn stream_response(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = crate::util::http_error_body(response, "HTTP error").await;
+        let body = jcode_base::util::http_error_body(response, "HTTP error").await;
         let hint = local_endpoint_troubleshooting_hint(&api_base, &model);
         anyhow::bail!(
             "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  status: {}\n  response: {}\n{}",
@@ -229,7 +234,7 @@ async fn stream_response(
     // tokens don't trip a premature timeout (issue #196). Resolved from
     // `[provider] stream_idle_timeout_secs` / `JCODE_STREAM_IDLE_TIMEOUT_SECS`,
     // defaulting to 180s. Shared with the native provider paths (issue #434).
-    let sse_chunk_timeout = crate::provider::stream_idle_timeout();
+    let sse_chunk_timeout = jcode_base::provider::stream_idle_timeout();
     let idle_timeout_secs = sse_chunk_timeout.as_secs();
 
     loop {
@@ -244,7 +249,7 @@ async fn stream_response(
             ),
             Ok(None) => break, // stream ended normally
             Err(_) => {
-                crate::logging::warn(&format!(
+                jcode_base::logging::warn(&format!(
                     "OpenRouter SSE stream timed out (no data for {}s)",
                     idle_timeout_secs
                 ));
@@ -296,7 +301,7 @@ fn is_retryable_error(error_str: &str) -> bool {
         }
     }
 
-    crate::provider::is_transient_transport_error(error_str)
+    jcode_provider_core::is_transient_transport_error(error_str)
         || error_str.contains("stream error")
         || error_str.contains("eof")
         || error_str.contains("5")

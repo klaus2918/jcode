@@ -1,9 +1,39 @@
 use super::openrouter_sse_stream::run_stream_with_retries;
 use super::*;
-use crate::provider::{ModelCatalogRefreshSummary, summarize_model_catalog_refresh};
+use jcode_base::provider::{ModelCatalogRefreshSummary, summarize_model_catalog_refresh};
 
 #[async_trait]
 impl Provider for OpenRouterProvider {
+    fn runtime_display_name(&self) -> String {
+        OpenRouterProvider::runtime_display_name(self)
+    }
+
+    fn supports_provider_routing_features(&self) -> bool {
+        OpenRouterProvider::supports_provider_routing_features(self)
+    }
+
+    fn direct_openai_compatible_route_parts(&self) -> Option<(String, String, String)> {
+        OpenRouterProvider::direct_openai_compatible_route_parts(self)
+    }
+
+    fn explicit_provider_pin_for_current_model(&self) -> Option<String> {
+        OpenRouterProvider::explicit_provider_pin_for_current_model(self)
+    }
+
+    fn maybe_schedule_endpoint_refresh_for_display(
+        &self,
+        model: &str,
+        cache_age_secs: Option<u64>,
+        context: &'static str,
+    ) -> bool {
+        OpenRouterProvider::maybe_schedule_endpoint_refresh_for_display(
+            self,
+            model,
+            cache_age_secs,
+            context,
+        )
+    }
+
     async fn complete(
         &self,
         messages: &[Message],
@@ -95,7 +125,7 @@ impl Provider for OpenRouterProvider {
         if let Some(effort) = reasoning_effort.as_deref() {
             if self.supports_deepseek_reasoning_effort() {
                 // The `swarm` sentinel maps to the strongest real effort.
-                let effort = if crate::prompt::is_swarm_effort(effort) {
+                let effort = if jcode_base::prompt::is_swarm_effort(effort) {
                     "max"
                 } else {
                     effort
@@ -108,7 +138,7 @@ impl Provider for OpenRouterProvider {
                 self.profile_id.as_deref(),
                 self.send_openrouter_headers,
             ) {
-                let effort = if crate::prompt::is_swarm_effort(effort) {
+                let effort = if jcode_base::prompt::is_swarm_effort(effort) {
                     "xhigh"
                 } else {
                     effort
@@ -208,7 +238,7 @@ impl Provider for OpenRouterProvider {
             .and_then(|value| value.as_array())
             .map(|tools| tools.len())
             .unwrap_or(0);
-        crate::provider::fingerprint::log_provider_canonical_input(
+        jcode_provider_core::fingerprint::log_provider_canonical_input(
             if self.supports_provider_features {
                 "openrouter"
             } else {
@@ -233,7 +263,7 @@ impl Provider for OpenRouterProvider {
         );
 
         // OpenRouter uses HTTPS/SSE transport only
-        crate::logging::info("OpenRouter transport: HTTPS (SSE)");
+        jcode_base::logging::info("OpenRouter transport: HTTPS (SSE)");
 
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
         let client = self.client.clone();
@@ -321,7 +351,7 @@ impl Provider for OpenRouterProvider {
         let (model_id, provider) = if self.supports_provider_features {
             let (model_id, provider) = parse_model_spec(trimmed);
             let model_id = if provider.is_some() {
-                crate::provider::openrouter_catalog_model_id(&model_id).unwrap_or(model_id)
+                jcode_base::provider::openrouter_catalog_model_id(&model_id).unwrap_or(model_id)
             } else {
                 model_id
             };
@@ -333,7 +363,7 @@ impl Provider for OpenRouterProvider {
             (trimmed.to_string(), None)
         };
         if let Some(profile_id) = self.profile_id.as_deref()
-            && !crate::provider_catalog::openai_compatible_profile_model_supports_chat(
+            && !jcode_base::provider_catalog::openai_compatible_profile_model_supports_chat(
                 profile_id, &model_id,
             )
         {
@@ -389,12 +419,28 @@ impl Provider for OpenRouterProvider {
 
     fn available_efforts(&self) -> Vec<&'static str> {
         if self.supports_deepseek_reasoning_effort() {
-            vec!["none", "low", "medium", "high", "max", "swarm", "swarm-deep"]
+            vec![
+                "none",
+                "low",
+                "medium",
+                "high",
+                "max",
+                "swarm",
+                "swarm-deep",
+            ]
         } else if Self::profile_supports_unified_reasoning(
             self.profile_id.as_deref(),
             self.send_openrouter_headers,
         ) {
-            vec!["none", "low", "medium", "high", "xhigh", "swarm", "swarm-deep"]
+            vec![
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "swarm",
+                "swarm-deep",
+            ]
         } else {
             vec![]
         }
@@ -496,7 +542,7 @@ impl Provider for OpenRouterProvider {
         self.available_models_display()
     }
 
-    fn model_routes(&self) -> Vec<crate::provider::ModelRoute> {
+    fn model_routes(&self) -> Vec<jcode_provider_core::ModelRoute> {
         let (provider_label, api_method, detail) = self
             .direct_openai_compatible_route_parts()
             .unwrap_or_else(|| {
@@ -512,7 +558,7 @@ impl Provider for OpenRouterProvider {
 
         self.available_models_display()
             .into_iter()
-            .filter(|model| crate::provider::is_listable_model_name(model))
+            .filter(|model| jcode_base::provider::is_listable_model_name(model))
             .map(|model| {
                 let fallback_not_live = is_direct_profile
                     && live_model_ids
@@ -528,7 +574,7 @@ impl Provider for OpenRouterProvider {
                 } else {
                     detail.clone()
                 };
-                crate::provider::ModelRoute {
+                jcode_provider_core::ModelRoute {
                     model,
                     provider: provider_label.clone(),
                     api_method: api_method.clone(),
@@ -643,14 +689,15 @@ impl Provider for OpenRouterProvider {
             return *limit;
         }
         if let Some(profile_id) = self.profile_id.as_deref()
-            && let Some(limit) = crate::provider_catalog::openai_compatible_profile_context_limit(
-                profile_id, &model_id,
-            )
+            && let Some(limit) =
+                jcode_base::provider_catalog::openai_compatible_profile_context_limit(
+                    profile_id, &model_id,
+                )
         {
             return limit;
         }
-        crate::provider::context_limit_for_model_with_provider(&model_id, Some(self.name()))
-            .unwrap_or(crate::provider::DEFAULT_CONTEXT_LIMIT)
+        jcode_provider_core::context_limit_for_model_with_provider(&model_id, Some(self.name()))
+            .unwrap_or(jcode_provider_core::DEFAULT_CONTEXT_LIMIT)
     }
 
     fn fork(&self) -> Arc<dyn Provider> {
