@@ -1,5 +1,9 @@
 use super::*;
-use crate::provider::Provider;
+use chrono::Utc;
+use jcode_provider_antigravity::{
+    FETCH_MODELS_API_URL, FetchAvailableModelsResponse, parse_fetch_available_models_response,
+};
+use jcode_provider_core::Provider;
 use tokio_stream::StreamExt;
 
 #[test]
@@ -97,13 +101,13 @@ fn available_models_display_includes_dynamic_cache_and_current_override() {
 
 #[test]
 fn available_models_display_seeds_from_persisted_catalog() {
-    let _guard = crate::storage::lock_test_env();
+    let _guard = jcode_base::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("temp dir");
     let previous = std::env::var_os("JCODE_HOME");
-    crate::env::set_var("JCODE_HOME", temp.path());
+    jcode_base::env::set_var("JCODE_HOME", temp.path());
 
-    let path = AntigravityProvider::persisted_catalog_path().expect("catalog path");
-    crate::storage::write_json(
+    let path = jcode_base::provider::antigravity::persisted_catalog_path().expect("catalog path");
+    jcode_base::storage::write_json(
         &path,
         &PersistedCatalog {
             models: vec![CatalogModel {
@@ -136,9 +140,9 @@ fn available_models_display_seeds_from_persisted_catalog() {
     );
 
     if let Some(previous) = previous {
-        crate::env::set_var("JCODE_HOME", previous);
+        jcode_base::env::set_var("JCODE_HOME", previous);
     } else {
-        crate::env::remove_var("JCODE_HOME");
+        jcode_base::env::remove_var("JCODE_HOME");
     }
 }
 
