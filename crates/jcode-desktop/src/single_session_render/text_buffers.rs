@@ -562,19 +562,10 @@ pub(crate) fn inline_widget_text_width_for_split_buffers(
         return inline_widget_text_width_for_lines(kind, primary, size, ui_scale);
     }
 
-    let typography = single_session_typography_for_scale(ui_scale);
-    // JetBrains Mono advance width is 0.6em; under-estimating clips the
-    // longest line at the card right clip edge.
-    let average_char_width = inline_widget_font_size(kind, &typography) * 0.6;
-    let max_columns = primary
-        .iter()
-        .chain(preview.iter())
-        .map(|line| inline_widget_visual_columns(&line.text))
-        .max()
-        .unwrap_or_default() as f32;
-    (max_columns * average_char_width)
-        .ceil()
-        .min(inline_widget_max_text_width_for_kind(kind, size))
+    // Split layout always uses the full widget width (matching
+    // `inline_widget_text_width_for_lines`), so the rail and preview panes get
+    // room instead of shrinking to the longest text line.
+    inline_widget_max_text_width_for_kind(kind, size)
 }
 
 pub(crate) fn inline_widget_estimated_wrapped_text_height(

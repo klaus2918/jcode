@@ -493,6 +493,10 @@ pub(crate) enum SingleSessionToolVisualState {
 }
 
 impl SingleSessionToolVisualState {
+    /// Human-readable state name. The visual chip that rendered this label was
+    /// removed (it drew as an empty ghost pill), but the label stays for
+    /// debugging and future textual chrome.
+    #[allow(dead_code)]
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Preparing => "preparing",
@@ -1582,7 +1586,7 @@ fn stdin_response_styled_lines(state: &StdinResponseState) -> Vec<SingleSessionS
         ),
         blank_styled_line(),
         styled_line(
-            "Enter send · Ctrl+Enter send · Shift+Enter newline · Ctrl+V paste · Ctrl+U clear · Esc cancel",
+            "Enter\u{a0}send · Ctrl+Enter\u{a0}send · Shift+Enter\u{a0}newline · Ctrl+V\u{a0}paste · Ctrl+U\u{a0}clear · Esc\u{a0}cancel",
             SingleSessionLineStyle::Overlay,
         ),
     ]

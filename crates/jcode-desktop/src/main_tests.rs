@@ -6885,8 +6885,8 @@ fn single_session_model_picker_loads_filters_and_selects_model() {
     assert!(picker.contains("Current  Claude · claude-sonnet-4-5"));
     assert!(picker.contains("type to filter"));
     assert!(picker.contains("2 models"));
-    assert!(picker.contains("      claude-sonnet-4-5"));
-    assert!(picker.contains("      claude-opus-4-5"));
+    assert!(picker.contains("   claude-sonnet-4-5"));
+    assert!(picker.contains("   claude-opus-4-5"));
     assert!(picker.contains("Anthropic"));
     assert!(picker.contains("claude-oauth"));
 

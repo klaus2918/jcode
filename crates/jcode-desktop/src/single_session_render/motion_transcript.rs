@@ -625,7 +625,7 @@ impl ToolCardMotionRegistry {
         &mut self,
         lines: &[SingleSessionStyledLine],
         now: Instant,
-        tick: u64,
+        motion_seconds: f32,
     ) -> ToolCardMotionFrame {
         self.generation = self.generation.wrapping_add(1).max(1);
         let generation = self.generation;
@@ -690,7 +690,7 @@ impl ToolCardMotionRegistry {
             state.last_run = run.clone();
 
             let (visual, visual_active) =
-                tool_card_visual_from_state(state, &run, now, tick, reduced_motion);
+                tool_card_visual_from_state(state, &run, now, motion_seconds, reduced_motion);
             active |= visual_active || (!reduced_motion && (run.active || run.state.is_active()));
             visuals.insert(run.call_id, visual);
         }
@@ -706,7 +706,7 @@ impl ToolCardMotionRegistry {
             if !running {
                 continue;
             }
-            let visual = exiting_tool_card_visual(&state.last_run, progress, tick);
+            let visual = exiting_tool_card_visual(&state.last_run, progress, motion_seconds);
             active = true;
             state.last_seen_generation = generation;
             exiting.push((state.last_run.clone(), visual));
@@ -734,7 +734,7 @@ pub(crate) fn tool_card_visual_from_state(
     state: &mut ToolCardMotionState,
     run: &SingleSessionToolCardRun,
     now: Instant,
-    tick: u64,
+    motion_seconds: f32,
     reduced_motion: bool,
 ) -> (ToolCardVisual, bool) {
     let target_palette = tool_card_palette(run.state, run.active);
@@ -806,14 +806,17 @@ pub(crate) fn tool_card_visual_from_state(
     let pulse = if reduced_motion {
         0.0
     } else {
-        active_tool_card_pulse(tick)
+        active_tool_card_pulse(motion_seconds)
     };
-    let active_phase = if reduced_motion {
+    // Only active cards consume the sweep phase; keeping it zero for settled
+    // cards lets the primitive geometry cache stay warm while nothing moves.
+    let card_is_active = run.active || run.state.is_active();
+    let active_phase = if reduced_motion || !card_is_active {
         0.0
     } else {
-        (tick % 18) as f32 / 18.0
+        active_tool_card_sweep_phase(motion_seconds)
     };
-    if run.active || run.state.is_active() {
+    if card_is_active {
         palette.background[3] = (palette.background[3] + 0.08 * pulse).clamp(0.0, 0.82);
         palette.border[3] = (palette.border[3] + 0.16 * pulse).clamp(0.0, 0.62);
         palette.rail[3] = (palette.rail[3] + 0.24 * pulse).clamp(0.0, 0.78);
@@ -840,10 +843,11 @@ pub(crate) fn tool_card_visual_from_state(
 pub(crate) fn exiting_tool_card_visual(
     run: &SingleSessionToolCardRun,
     progress: f32,
-    tick: u64,
+    motion_seconds: f32,
 ) -> ToolCardVisual {
     let eased = ease_out_cubic_local(progress);
-    let mut visual = default_tool_card_visual(run, active_tool_card_pulse(tick));
+    let mut visual =
+        default_tool_card_visual(run, active_tool_card_pulse(motion_seconds), motion_seconds);
     visual.opacity = 1.0 - eased;
     visual.y_offset_pixels = -TOOL_CARD_ENTRY_OFFSET_PIXELS * 0.55 * eased;
     visual.scale = 1.0 - (1.0 - TOOL_CARD_ENTRY_SCALE) * eased;

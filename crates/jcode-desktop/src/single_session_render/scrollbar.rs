@@ -10,6 +10,9 @@ pub(crate) fn push_single_session_scrollbar(
     smooth_scroll_lines: f32,
     motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) {
+    if single_session_scrollbar_suppressed(app) {
+        return;
+    }
     let Some(metrics) = single_session_body_scroll_metrics(app, size, tick) else {
         return;
     };
@@ -24,11 +27,22 @@ pub(crate) fn push_single_session_scrollbar_for_total_lines(
     total_lines: usize,
     motion: Option<&SingleSessionScrollbarMotionFrame>,
 ) {
+    if single_session_scrollbar_suppressed(app) {
+        return;
+    }
     let Some(metrics) = single_session_body_scroll_metrics_for_total_lines(app, size, total_lines)
     else {
         return;
     };
     push_single_session_scrollbar_for_metrics(vertices, size, smooth_scroll_lines, metrics, motion);
+}
+
+/// The transcript scrollbar is suppressed while an inline widget (model
+/// picker, session switcher, help, slash suggestions) is up: the widget owns
+/// interaction focus, and the widget reserving body height would otherwise
+/// make a scrollbar thumb pop up floating next to empty space.
+pub(crate) fn single_session_scrollbar_suppressed(app: &SingleSessionApp) -> bool {
+    app.render_inline_widget_line_count() > 0
 }
 
 pub(crate) fn push_single_session_scrollbar_for_metrics(

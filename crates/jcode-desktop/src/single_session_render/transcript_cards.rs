@@ -40,6 +40,7 @@ pub(crate) fn push_single_session_transcript_cards_from_viewport(
         let visual = transcript_motion
             .and_then(|motion| motion.visual_for_key(motion_key))
             .unwrap_or_default();
+        let width = transcript_card_run_width(app, &viewport.lines, &run, width);
         push_single_session_transcript_card(
             vertices,
             run,
@@ -189,6 +190,32 @@ pub(crate) struct TranscriptCardGeometryContext {
     pub(crate) top_offset_pixels: f32,
 }
 
+/// Card width for a transcript run. Markdown tables hug their content width
+/// (plus padding) instead of banding the full content column, so the zebra
+/// background doesn't stretch far past a narrow table.
+pub(crate) fn transcript_card_run_width(
+    app: &SingleSessionApp,
+    lines: &[SingleSessionStyledLine],
+    run: &SingleSessionTranscriptCardRun,
+    full_width: f32,
+) -> f32 {
+    if run.style != SingleSessionLineStyle::AssistantTable {
+        return full_width;
+    }
+    let max_columns = lines
+        .iter()
+        .skip(run.line)
+        .take(run.line_count)
+        .map(|line| line.text.chars().count())
+        .max()
+        .unwrap_or(0);
+    if max_columns == 0 {
+        return full_width;
+    }
+    let char_width = single_session_body_char_width_for_scale(app.text_scale());
+    (max_columns as f32 * char_width + 18.0).min(full_width)
+}
+
 pub(crate) fn push_single_session_transcript_card(
     vertices: &mut Vec<Vertex>,
     run: SingleSessionTranscriptCardRun,
@@ -239,7 +266,7 @@ pub(crate) fn push_single_session_tool_cards(
         size,
         &viewport,
         viewport.total_lines,
-        tick,
+        motion_seconds_for_tick(tick),
         tool_motion,
     );
 }
@@ -250,7 +277,7 @@ pub(crate) fn push_single_session_tool_cards_from_viewport(
     size: PhysicalSize<u32>,
     viewport: &SingleSessionBodyViewport,
     total_lines: usize,
-    tick: u64,
+    motion_seconds: f32,
     tool_motion: Option<&ToolCardMotionFrame>,
 ) {
     let typography = single_session_typography_for_scale(app.text_scale());
@@ -258,7 +285,7 @@ pub(crate) fn push_single_session_tool_cards_from_viewport(
     let width = (single_session_content_right(size) - (PANEL_TITLE_LEFT_PADDING - 10.0)).max(1.0);
     let body_top = single_session_body_top_for_app(app, size);
     let body_bottom = single_session_body_bottom_for_total_lines(app, size, total_lines);
-    let pulse = active_tool_card_pulse(tick);
+    let pulse = active_tool_card_pulse(motion_seconds);
 
     for run in single_session_tool_card_runs(&viewport.lines) {
         let rect = Rect {
@@ -272,7 +299,7 @@ pub(crate) fn push_single_session_tool_cards_from_viewport(
         };
         let visual = tool_motion
             .and_then(|motion| motion.visual_for(&run.call_id))
-            .unwrap_or_else(|| default_tool_card_visual(&run, pulse));
+            .unwrap_or_else(|| default_tool_card_visual(&run, pulse, motion_seconds));
         push_single_session_tool_card(vertices, &run, rect, line_height, pulse, visual, size);
     }
 
@@ -389,21 +416,6 @@ pub(crate) fn push_single_session_tool_card(
         size,
     );
 
-    let chip_width = (run.state.label().chars().count() as f32 * 8.0 + 24.0).clamp(52.0, 96.0);
-    let chip_rect = Rect {
-        x: rect.x + rect.width - chip_width - 10.0,
-        y: rect.y + 7.0,
-        width: chip_width,
-        height: (line_height * 0.52).clamp(17.0, 25.0),
-    };
-    push_rounded_rect(
-        vertices,
-        chip_rect,
-        chip_rect.height / 2.0,
-        tool_card_alpha(visual.chip, opacity),
-        size,
-    );
-
     if run.detail_line_count > 0 {
         let drawer_target_height = (rect.height - line_height - 7.0).max(1.0);
         let drawer_height = (drawer_target_height * visual.output_reveal.clamp(0.0, 1.0)).max(1.0);
@@ -429,6 +441,7 @@ pub(crate) fn push_single_session_tool_card(
 pub(crate) fn default_tool_card_visual(
     run: &SingleSessionToolCardRun,
     pulse: f32,
+    motion_seconds: f32,
 ) -> ToolCardVisual {
     let mut palette = tool_card_palette(run.state, run.active);
     if run.active || run.state.is_active() {
@@ -441,6 +454,7 @@ pub(crate) fn default_tool_card_visual(
         border: palette.border,
         rail: palette.rail,
         chip: palette.chip,
+        active_phase: active_tool_card_sweep_phase(motion_seconds),
         ..ToolCardVisual::default()
     }
 }
@@ -634,9 +648,23 @@ pub(crate) fn tool_card_rail_rect(card_rect: Rect) -> Rect {
     }
 }
 
-pub(crate) fn active_tool_card_pulse(tick: u64) -> f32 {
-    let phase = (tick % 36) as f32 / 36.0;
+/// Breathing pulse for active tool cards, driven by continuous seconds so the
+/// live render loop (smooth wall clock) and deterministic captures (tick
+/// seconds) share one code path.
+pub(crate) fn active_tool_card_pulse(motion_seconds: f32) -> f32 {
+    if crate::animation::desktop_reduced_motion_enabled() {
+        return 0.0;
+    }
+    let phase = (motion_seconds / TOOL_CARD_PULSE_PERIOD_SECONDS).rem_euclid(1.0);
     0.5 + 0.5 * (phase * std::f32::consts::TAU).sin()
+}
+
+/// Continuous 0..1 phase for the active tool card rail/edge sweep.
+pub(crate) fn active_tool_card_sweep_phase(motion_seconds: f32) -> f32 {
+    if crate::animation::desktop_reduced_motion_enabled() {
+        return 0.0;
+    }
+    (motion_seconds / TOOL_CARD_SWEEP_PERIOD_SECONDS).rem_euclid(1.0)
 }
 
 pub(crate) fn single_session_tool_card_background(

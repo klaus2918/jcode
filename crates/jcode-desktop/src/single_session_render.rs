@@ -60,8 +60,12 @@ pub(crate) const MARKDOWN_LIST_MARKER_COLOR: [f32; 4] = [0.060, 0.110, 0.240, 0.
 pub(crate) const MARKDOWN_TASK_DONE_COLOR: [f32; 4] = [0.025, 0.350, 0.190, 1.000];
 pub(crate) const MARKDOWN_TASK_OPEN_COLOR: [f32; 4] = [0.420, 0.320, 0.075, 0.980];
 pub(crate) const MARKDOWN_STRIKE_TEXT_COLOR: [f32; 4] = [0.310, 0.330, 0.380, 0.880];
-pub(crate) const STREAMING_ACTIVITY_PILL_COLOR: [f32; 4] = [0.965, 0.985, 1.000, 0.58];
-pub(crate) const STREAMING_ACTIVITY_PILL_BORDER_COLOR: [f32; 4] = [0.000, 0.260, 0.720, 0.18];
+pub(crate) const STREAMING_ACTIVITY_PILL_COLOR: [f32; 4] = [0.972, 0.988, 1.000, 0.78];
+pub(crate) const STREAMING_ACTIVITY_PILL_BORDER_COLOR: [f32; 4] = [0.000, 0.260, 0.720, 0.26];
+/// Period of one full left-to-right sweep of the activity-pill dot wave.
+const STREAMING_ACTIVITY_DOT_WAVE_PERIOD_SECONDS: f32 = 1.05;
+/// Phase offset between neighboring dots in the wave.
+const STREAMING_ACTIVITY_DOT_WAVE_STAGGER: f32 = 0.16;
 const INLINE_WIDGET_CARD_SHADOW_COLOR: [f32; 4] = [0.020, 0.035, 0.070, 0.080];
 pub(crate) const INLINE_WIDGET_CARD_BACKGROUND_COLOR: [f32; 4] = [0.992, 0.996, 1.000, 0.72];
 const INLINE_WIDGET_CARD_BORDER_COLOR: [f32; 4] = [0.105, 0.185, 0.360, 0.20];
@@ -149,6 +153,10 @@ const TOOL_CARD_OUTPUT_REVEAL_DURATION: Duration = Duration::from_millis(180);
 const TOOL_CARD_RESOLUTION_FLASH_DURATION: Duration = Duration::from_millis(320);
 const TOOL_CARD_ENTRY_OFFSET_PIXELS: f32 = 12.0;
 const TOOL_CARD_ENTRY_SCALE: f32 = 0.985;
+/// Breathing period of the active tool card background/rail pulse.
+const TOOL_CARD_PULSE_PERIOD_SECONDS: f32 = 2.4;
+/// Period of one full rail/edge sweep across an active tool card.
+const TOOL_CARD_SWEEP_PERIOD_SECONDS: f32 = 1.6;
 
 #[cfg(test)]
 pub(crate) fn build_single_session_vertices(
@@ -302,7 +310,15 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
         smooth_scroll_lines,
     );
     if app.streaming_activity_pill_visible() {
-        push_streaming_activity_cue(&mut vertices, app, size, spinner_tick, None, None);
+        push_streaming_activity_cue(
+            &mut vertices,
+            app,
+            size,
+            spinner_tick,
+            motion_seconds_for_tick(spinner_tick),
+            None,
+            None,
+        );
     }
     if app.has_activity_indicator() && !app.streaming_response.is_empty() {
         let viewport = single_session_body_viewport_for_tick(app, size, spinner_tick, 0.0);
@@ -313,7 +329,7 @@ pub(crate) fn build_single_session_vertices_with_scroll_and_reveal(
             &viewport,
             None,
             None,
-            spinner_tick as f32 * (DESKTOP_SPINNER_FRAME_MS as f32 / 1000.0),
+            motion_seconds_for_tick(spinner_tick),
         );
     }
     push_single_session_selection(&mut vertices, app, size, None);
@@ -343,6 +359,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body(
         size,
         focus_pulse,
         spinner_tick,
+        motion_seconds_for_tick(spinner_tick),
         smooth_scroll_lines,
         welcome_hero_reveal_progress,
         rendered_body_lines,
@@ -367,6 +384,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
     size: PhysicalSize<u32>,
     focus_pulse: f32,
     spinner_tick: u64,
+    motion_seconds: f32,
     smooth_scroll_lines: f32,
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
@@ -388,6 +406,7 @@ pub(crate) fn build_single_session_vertices_with_cached_body_and_tool_motion(
         size,
         focus_pulse,
         spinner_tick,
+        motion_seconds,
         smooth_scroll_lines,
         welcome_hero_reveal_progress,
         rendered_body_lines,
@@ -412,6 +431,7 @@ fn build_single_session_vertices_with_cached_body_internal(
     size: PhysicalSize<u32>,
     focus_pulse: f32,
     spinner_tick: u64,
+    motion_seconds: f32,
     smooth_scroll_lines: f32,
     welcome_hero_reveal_progress: f32,
     rendered_body_lines: &[SingleSessionStyledLine],
@@ -541,7 +561,7 @@ fn build_single_session_vertices_with_cached_body_internal(
         size,
         &viewport,
         rendered_body_lines.len(),
-        spinner_tick,
+        motion_seconds,
         tool_motion,
     );
     push_single_session_inline_code_cards_from_viewport(
@@ -567,6 +587,7 @@ fn build_single_session_vertices_with_cached_body_internal(
             app,
             size,
             spinner_tick,
+            motion_seconds,
             Some(&viewport),
             activity_cue_motion,
         );
@@ -895,6 +916,12 @@ fn inline_widget_text_width_for_lines(
     size: PhysicalSize<u32>,
     ui_scale: f32,
 ) -> f32 {
+    // The session switcher is a split rail+preview browser; sizing it to the
+    // longest text line leaves a narrow card that ellipsizes every row while
+    // most of the window sits empty. It always claims the full widget width.
+    if kind == Some(InlineWidgetKind::SessionSwitcher) {
+        return inline_widget_max_text_width_for_kind(kind, size);
+    }
     let typography = single_session_typography_for_scale(ui_scale);
     // JetBrains Mono advance width is 0.6em; under-estimating clips the
     // longest line at the card right clip edge.
@@ -1075,11 +1102,23 @@ fn inline_widget_max_text_width_for_kind(
     }
 }
 
+/// Deterministic seconds derived from the quantized spinner tick.
+///
+/// Test, benchmark, and headless-capture builders use this so identical ticks
+/// always produce identical frames. The live render loop passes the smooth
+/// wall-clock `desktop_pulse_seconds()` instead, so continuous cues (activity
+/// dots, tool sweeps) animate at redraw rate rather than stepping every
+/// `DESKTOP_SPINNER_FRAME_MS`.
+pub(crate) fn motion_seconds_for_tick(tick: u64) -> f32 {
+    tick as f32 * (DESKTOP_SPINNER_FRAME_MS as f32 / 1000.0)
+}
+
 pub(crate) fn push_streaming_activity_cue(
     vertices: &mut Vec<Vertex>,
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
     tick: u64,
+    motion_seconds: f32,
     viewport: Option<&SingleSessionBodyViewport>,
     motion: Option<&StreamingActivityCueMotionFrame>,
 ) {
@@ -1098,10 +1137,10 @@ pub(crate) fn push_streaming_activity_cue(
     }
 
     if let Some(visual) = exiting {
-        push_streaming_activity_cue_visual(vertices, app, size, tick, viewport, visual);
+        push_streaming_activity_cue_visual(vertices, app, size, tick, motion_seconds, viewport, visual);
     }
     if let Some(visual) = current {
-        push_streaming_activity_cue_visual(vertices, app, size, tick, viewport, visual);
+        push_streaming_activity_cue_visual(vertices, app, size, tick, motion_seconds, viewport, visual);
     }
 }
 
@@ -1110,6 +1149,7 @@ fn push_streaming_activity_cue_visual(
     app: &SingleSessionApp,
     size: PhysicalSize<u32>,
     tick: u64,
+    motion_seconds: f32,
     viewport: Option<&SingleSessionBodyViewport>,
     visual: StreamingActivityCueVisual,
 ) {
@@ -1160,30 +1200,38 @@ fn push_streaming_activity_cue_visual(
         size,
     );
 
+    // Three dots ride a continuous left-to-right wave: each dot swells in
+    // size and opacity as the crest passes. `motion_seconds` is wall-clock
+    // smooth in the live app (60fps) and tick-derived in tests/captures.
+    let reduced_motion = crate::animation::desktop_reduced_motion_enabled();
     let dot_radius = (typography.body_size * 0.105).clamp(1.8, 2.8);
-    let dot_y = cue_rect.y + cue_rect.height * 0.50 - dot_radius;
     let dot_gap = dot_radius * 2.35;
     let dot_total_width = dot_radius * 2.0 * 3.0 + dot_gap * 2.0;
     let dot_start_x = cue_rect.x + (cue_rect.width - dot_total_width) * 0.5;
     for dot in 0..3 {
-        let dot_phase = ((tick + dot as u64 * 4) % 18) as f32 / 18.0;
-        let dot_pulse = 0.5 + 0.5 * (dot_phase * std::f32::consts::TAU).sin();
-        let mut dot_color = NATIVE_SPINNER_HEAD_COLOR;
-        let base_alpha = if app.streaming_response.is_empty() {
-            0.34
+        let pulse = if reduced_motion {
+            0.5
         } else {
-            0.46
+            let phase = (motion_seconds / STREAMING_ACTIVITY_DOT_WAVE_PERIOD_SECONDS
+                - dot as f32 * STREAMING_ACTIVITY_DOT_WAVE_STAGGER)
+                .rem_euclid(1.0);
+            // Raised-cosine crest: smooth swell, no hard sine kinks.
+            0.5 - 0.5 * (phase * std::f32::consts::TAU).cos()
         };
-        dot_color[3] = (base_alpha + 0.38 * dot_pulse).clamp(0.30, 0.86) * visual.opacity;
+        let mut dot_color = NATIVE_SPINNER_HEAD_COLOR;
+        dot_color[3] = (0.30 + 0.56 * pulse).clamp(0.26, 0.90) * visual.opacity;
+        let radius = dot_radius * (0.86 + 0.22 * pulse);
+        let center_x = dot_start_x + dot as f32 * (dot_radius * 2.0 + dot_gap) + dot_radius;
+        let center_y = cue_rect.y + cue_rect.height * 0.50;
         push_rounded_rect(
             vertices,
             Rect {
-                x: dot_start_x + dot as f32 * (dot_radius * 2.0 + dot_gap),
-                y: dot_y,
-                width: dot_radius * 2.0,
-                height: dot_radius * 2.0,
+                x: center_x - radius,
+                y: center_y - radius,
+                width: radius * 2.0,
+                height: radius * 2.0,
             },
-            dot_radius,
+            radius,
             dot_color,
             size,
         );

@@ -528,9 +528,11 @@ pub(crate) fn push_model_picker_component_chrome(
             continue;
         }
         let is_current = Some(choice.model.as_str()) == current;
-        // Circular icon badge, vertically centered on the row.
-        let badge_radius = 15.0;
-        let badge_cx = layout.card.x + INLINE_COMMAND_ROW_INSET_X + 14.0 + badge_radius;
+        // Circular icon badge, centered in the row text's 4-space gutter so
+        // icon and label stay grouped at every scale.
+        let advance = inline_widget_font_size(kind, typography) * 0.6;
+        let badge_radius = 15.0_f32.min(advance * 1.9).max(9.0);
+        let badge_cx = layout.text_left + advance * 2.0;
         let badge_bg = if is_current {
             [0.815, 0.935, 0.870, 0.95]
         } else {
@@ -576,7 +578,7 @@ pub(crate) fn push_model_picker_component_chrome(
         } else {
             [0.085, 0.215, 0.520, 0.92]
         };
-        let icon_size = 18.0;
+        let icon_size = badge_radius * 1.2;
         push_lucide_icon(
             vertices,
             icon,
@@ -685,7 +687,10 @@ pub(crate) fn push_inline_command_row_card(
     .max(line_height * 0.9);
     let visible_height = (layout.visible_text_bottom - row_top).min(row_height);
     let row_width = (layout.card.width - INLINE_COMMAND_ROW_INSET_X * 2.0).max(0.0);
-    if visible_height <= 4.0 || row_width <= 12.0 {
+    // A row whose visible area is only a sliver at the clip edge reads as a
+    // rendering glitch (a strip of background peeking from under the card
+    // bottom). Draw the row only when most of it fits.
+    if visible_height < row_height * 0.55 || row_width <= 12.0 {
         return;
     }
 

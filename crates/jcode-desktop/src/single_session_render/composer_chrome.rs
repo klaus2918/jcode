@@ -32,6 +32,19 @@ pub(crate) fn push_single_session_surface_without_bottom_rule(
 
     let stroke_width = FOCUSED_BORDER_WIDTH + focus_pulse * 2.5;
     push_top_and_side_surface_outline(vertices, rect, stroke_width, accent, size);
+    // Close the frame: a bottom stroke matching the top/side weight keeps the
+    // window border symmetric instead of visually cropped at the bottom.
+    push_rect(
+        vertices,
+        Rect {
+            x: rect.x,
+            y: rect.y + rect.height - stroke_width.max(1.0).min(rect.height),
+            width: rect.width,
+            height: stroke_width.max(1.0).min(rect.height),
+        },
+        accent,
+        size,
+    );
 
     if focus_pulse > 0.0 {
         let pulse_rect = inset_rect(rect, -3.0 * focus_pulse);
@@ -119,34 +132,21 @@ pub(crate) fn push_single_session_composer_chrome(
 
     push_single_session_attachment_chips(vertices, app, size, rect, attachment_chip_motion);
 
-    let accent_alpha =
-        (0.18 + 0.22 * visual.focus_opacity) * (1.0 - visual.blocked_progress * 0.55);
-    push_rounded_rect(
-        vertices,
-        Rect {
-            x: rect.x + 7.0,
-            y: rect.y + 7.0,
-            width: 3.0,
-            height: (rect.height - 14.0).max(1.0),
-        },
-        2.0,
-        with_alpha(COMPOSER_SUBMIT_READY_COLOR, accent_alpha),
-        size,
-    );
-
     if visual.placeholder_opacity > 0.001 {
         let prompt_width =
             app.composer_prompt().chars().count() as f32 * typography.code_size * 0.58;
         let rail_width = (content_width * 0.32).clamp(96.0, 260.0);
+        // Baseline underline attached to the prompt: reads as "type here"
+        // instead of a detached mid-row dash.
         push_rounded_rect(
             vertices,
             Rect {
-                x: PANEL_TITLE_LEFT_PADDING + prompt_width + 8.0,
-                y: draft_top + line_height * 0.50,
+                x: PANEL_TITLE_LEFT_PADDING + prompt_width + 4.0,
+                y: draft_top + line_height * 0.78,
                 width: rail_width,
-                height: 4.0,
+                height: 3.0,
             },
-            2.0,
+            1.5,
             with_alpha(
                 COMPOSER_PLACEHOLDER_RAIL_COLOR,
                 COMPOSER_PLACEHOLDER_RAIL_COLOR[3] * visual.placeholder_opacity,

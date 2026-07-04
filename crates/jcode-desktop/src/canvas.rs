@@ -1769,9 +1769,10 @@ impl Canvas {
                 let activity_cue_motion = self
                     .streaming_activity_cue_motion
                     .frame(single_session, now);
-                let tool_motion = self
-                    .tool_card_motion
-                    .frame(tool_motion_lines, now, spinner_tick);
+                let motion_seconds = desktop_pulse_seconds();
+                let tool_motion =
+                    self.tool_card_motion
+                        .frame(tool_motion_lines, now, motion_seconds);
                 let scrollbar_motion = self.single_session_scrollbar_motion.frame(
                     single_session,
                     single_session_render_size,
@@ -1835,6 +1836,7 @@ impl Canvas {
                                 single_session_render_size,
                                 focus_pulse,
                                 spinner_tick,
+                                motion_seconds,
                                 smooth_scroll_lines,
                                 welcome_hero_reveal_progress,
                                 &self.single_session_body_lines,
@@ -1863,6 +1865,7 @@ impl Canvas {
                             single_session_render_size,
                             focus_pulse,
                             spinner_tick,
+                            motion_seconds,
                             smooth_scroll_lines,
                             welcome_hero_reveal_progress,
                             &self.single_session_body_lines,

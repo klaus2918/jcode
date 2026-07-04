@@ -751,12 +751,12 @@ pub(crate) fn model_picker_inline_styled_lines(
             SingleSessionLineStyle::Overlay
         };
         lines.push(styled_line(
-            format!("       {}", truncate_chars(&choice.model, 46)),
+            format!("    {}", truncate_chars(&choice.model, 46)),
             row_style,
         ));
         lines.push(styled_line(
             format!(
-                "       {} · {} · {}",
+                "    {} · {} · {}",
                 truncate_chars(provider, 18),
                 truncate_chars(method, 16),
                 truncate_chars(detail, 24),
