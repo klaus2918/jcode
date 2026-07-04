@@ -68,6 +68,91 @@ pub const INLINE_FIT_MIN_ROWS: u16 = 3;
 /// keeps working.
 pub const INLINE_DIAGRAM_MAX_ROWS: u16 = 200;
 
+/// Rows assumed consumed by non-transcript chrome (status line, input box,
+/// hint line, spacing) when converting the chat column height into a
+/// readable-height budget for the inline aspect goal.
+const INLINE_ASPECT_CHROME_ROWS: u16 = 4;
+
+/// Coarse quantization step for the inline transcript aspect goal. Per-mille
+/// bucketing alone would mint a new render (and a new on-disk cache entry)
+/// for nearly every one-cell terminal resize; snapping the goal to 0.25-wide
+/// steps keeps resize jitter from re-rendering diagrams constantly.
+const INLINE_ASPECT_QUANT_STEP: f32 = 0.25;
+
+/// Never request an aspect goal taller (narrower) than the 4:3 sizing
+/// default: `calculate_render_size` only adjusts height from width, so a
+/// portrait goal in a narrow terminal would just produce a taller render
+/// than today's default behavior.
+const INLINE_ASPECT_MIN: f32 = 4.0 / 3.0;
+
+/// Cap on how flat an inline aspect goal can get in very wide, short
+/// terminals; beyond this the layout goal stops improving readability.
+const INLINE_ASPECT_MAX: f32 = 6.0;
+
+/// Best-effort aspect-ratio goal (width / height) for mermaid diagrams
+/// rendered inline in the chat transcript, so a wide terminal asks the
+/// renderer for a landscape layout that fits a visible-viewport height
+/// budget instead of the tall 4:3 default.
+///
+/// The goal is optional and advisory: the renderer fits the diagram's
+/// natural aspect toward it but may not hit it. Returns `None` when font or
+/// terminal geometry is unknown (no picker), preserving today's behavior.
+pub fn inline_transcript_aspect_goal_with_font(
+    chat_width: u16,
+    chat_height: u16,
+    font_size: Option<(u16, u16)>,
+) -> Option<f32> {
+    let (cell_w, cell_h) = font_size?;
+    if chat_width == 0 || chat_height == 0 {
+        return None;
+    }
+    // Mirror inline_fit_geometry: the border bar + padding take 2 cells.
+    let avail_cells = chat_width.saturating_sub(2).max(1);
+    let width_px = avail_cells as f32 * cell_w.max(1) as f32;
+    let goal_rows = chat_height
+        .saturating_sub(INLINE_ASPECT_CHROME_ROWS)
+        .clamp(INLINE_FIT_MIN_ROWS, INLINE_DIAGRAM_MAX_ROWS);
+    let height_px = goal_rows as f32 * cell_h.max(1) as f32;
+    let raw = (width_px / height_px).clamp(INLINE_ASPECT_MIN, INLINE_ASPECT_MAX);
+    let quantized = (raw / INLINE_ASPECT_QUANT_STEP).round() * INLINE_ASPECT_QUANT_STEP;
+    Some(quantized.clamp(INLINE_ASPECT_MIN, INLINE_ASPECT_MAX))
+}
+
+/// [`inline_transcript_aspect_goal_with_font`] using the global picker's font
+/// size. Without a picker (no image protocol) inline diagrams render as text
+/// placeholders anyway, so no goal is produced.
+pub fn inline_transcript_aspect_goal(chat_width: u16, chat_height: u16) -> Option<f32> {
+    inline_transcript_aspect_goal_with_font(chat_width, chat_height, get_font_size())
+}
+
+/// Aspect profile for transcript renders: an explicit pinned-pane aspect
+/// always wins (inline and pane then share one cached PNG); otherwise fall
+/// back to the terminal-friendly inline goal.
+pub fn transcript_preferred_aspect_ratio_with_font(
+    pinned_pane_aspect: Option<f32>,
+    chat_width: u16,
+    chat_height: u16,
+    font_size: Option<(u16, u16)>,
+) -> Option<f32> {
+    pinned_pane_aspect
+        .or_else(|| inline_transcript_aspect_goal_with_font(chat_width, chat_height, font_size))
+}
+
+/// [`transcript_preferred_aspect_ratio_with_font`] using the global picker's
+/// font size.
+pub fn transcript_preferred_aspect_ratio(
+    pinned_pane_aspect: Option<f32>,
+    chat_width: u16,
+    chat_height: u16,
+) -> Option<f32> {
+    transcript_preferred_aspect_ratio_with_font(
+        pinned_pane_aspect,
+        chat_width,
+        chat_height,
+        get_font_size(),
+    )
+}
+
 /// Compute `(rows, cols)` for an image/diagram scaled to fit `chat_width`
 /// cells wide (including the 2-cell left border) and at most `cap_rows` tall,
 /// preserving aspect ratio. This is the single source of placeholder geometry

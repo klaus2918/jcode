@@ -255,3 +255,96 @@ fn inline_fit_geometry_and_marker_roundtrip() {
         "padded marker line must still parse"
     );
 }
+
+/// Inline transcript renders get a terminal-friendly aspect goal derived from
+/// the chat geometry, bucketed through the existing per-mille RenderProfile
+/// machinery so cache keys stay coarse.
+#[test]
+fn inline_transcript_aspect_goal_produces_expected_bucketed_profile() {
+    // Wide terminal: 120 cols x 40 rows at an 8x16 cell.
+    // width_px = (120-2)*8 = 944; goal_rows = (40-4)=36 -> 36*16 = 576 px.
+    // raw = 944/576 ~= 1.639 -> quantized to 1.75.
+    let goal = crate::inline_transcript_aspect_goal_with_font(120, 40, Some((8, 16)));
+    assert_eq!(goal, Some(1.75));
+
+    // The goal flows through the standard profile bucketing (per-mille).
+    let bucket = crate::with_preferred_aspect_ratio(goal, || {
+        crate::current_preferred_aspect_ratio_bucket()
+    });
+    assert_eq!(bucket, Some(1750));
+
+    // Narrow terminals floor at the 4:3 sizing default instead of requesting
+    // portrait renders.
+    let narrow = crate::inline_transcript_aspect_goal_with_font(40, 50, Some((8, 16)));
+    assert!(
+        (narrow.unwrap() - 4.0 / 3.0).abs() < 1e-6,
+        "narrow terminal must floor at 4:3, got {narrow:?}"
+    );
+
+    // Very wide, short terminals cap at the flatness limit.
+    let flat = crate::inline_transcript_aspect_goal_with_font(500, 12, Some((8, 16)));
+    assert_eq!(flat, Some(6.0));
+}
+
+/// Coarse 0.25-step quantization means one-cell resize jitter does not mint a
+/// new aspect bucket (and thus does not re-render cached diagrams). Jitter can
+/// still cross a step boundary occasionally, but within a step it is stable;
+/// these cases sit inside one step.
+#[test]
+fn inline_transcript_aspect_goal_is_stable_under_resize_jitter() {
+    let a = crate::inline_transcript_aspect_goal_with_font(120, 40, Some((8, 16)));
+    let b = crate::inline_transcript_aspect_goal_with_font(121, 40, Some((8, 16)));
+    let c = crate::inline_transcript_aspect_goal_with_font(120, 39, Some((8, 16)));
+    assert_eq!(a, b, "1-col width jitter must stay in the same aspect step");
+    assert_eq!(a, c, "1-row height jitter must stay in the same aspect step");
+
+    let bucket_a = crate::preferred_aspect_ratio_bucket(a);
+    let bucket_b = crate::preferred_aspect_ratio_bucket(b);
+    assert_eq!(bucket_a, bucket_b);
+}
+
+/// Unknown font/terminal geometry keeps today's behavior: no aspect goal.
+#[test]
+fn inline_transcript_aspect_goal_no_geometry_yields_none() {
+    assert_eq!(
+        crate::inline_transcript_aspect_goal_with_font(120, 40, None),
+        None,
+        "unknown font size must not invent an aspect goal"
+    );
+    assert_eq!(
+        crate::inline_transcript_aspect_goal_with_font(0, 40, Some((8, 16))),
+        None,
+        "zero-width chat area must not produce a goal"
+    );
+    assert_eq!(
+        crate::inline_transcript_aspect_goal_with_font(120, 0, Some((8, 16))),
+        None,
+        "zero-height chat area must not produce a goal"
+    );
+}
+
+/// The transcript profile must keep an explicit pinned-pane aspect when one is
+/// set (inline + pane share a single cached PNG), and only fall back to the
+/// inline goal otherwise. Side-panel/pinned call sites set their own profile
+/// directly and are unaffected by the inline goal.
+#[test]
+fn transcript_profile_keeps_pinned_pane_aspect_when_present() {
+    let pane_aspect = Some(0.5);
+    let combined = crate::transcript_preferred_aspect_ratio_with_font(
+        pane_aspect,
+        120,
+        40,
+        Some((8, 16)),
+    );
+    assert_eq!(
+        combined, pane_aspect,
+        "pinned pane aspect must win over the inline goal"
+    );
+
+    let fallback =
+        crate::transcript_preferred_aspect_ratio_with_font(None, 120, 40, Some((8, 16)));
+    assert_eq!(fallback, Some(1.75), "no pane -> inline goal");
+
+    let no_geometry = crate::transcript_preferred_aspect_ratio_with_font(None, 120, 40, None);
+    assert_eq!(no_geometry, None, "no pane + no geometry -> None");
+}

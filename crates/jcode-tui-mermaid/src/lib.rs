@@ -237,8 +237,11 @@ pub use content_render::terminal_theme;
 pub use content_render::{
     INLINE_DIAGRAM_MAX_ROWS, INLINE_FIT_MIN_ROWS, MermaidContent, diagram_placeholder_lines,
     error_to_lines, estimate_image_height, image_widget_placeholder_markdown, inline_fit_geometry,
-    inline_image_placeholder_lines, parse_image_placeholder, parse_inline_image_placeholder,
-    result_to_content, result_to_lines, write_video_export_marker,
+    inline_image_placeholder_lines, inline_transcript_aspect_goal,
+    inline_transcript_aspect_goal_with_font, parse_image_placeholder,
+    parse_inline_image_placeholder, result_to_content, result_to_lines,
+    transcript_preferred_aspect_ratio, transcript_preferred_aspect_ratio_with_font,
+    write_video_export_marker,
 };
 pub use inline_image::{
     inline_image_dims, inline_image_id, inline_image_is_materialized, materialize_inline_image,
