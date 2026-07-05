@@ -712,11 +712,10 @@ fn test_plan_scope_notification_stays_off_the_transcript() {
 }
 
 #[test]
-fn test_non_plan_swarm_message_between_plan_versions_stacks_second_plan_graph() {
-    // Wiring-audit claim 1: a non-plan-scope swarm chat card (e.g. a DM)
-    // landing between two SwarmPlan events breaks trailing coalescing, so a
-    // second "Plan graph · vN" diagram is appended instead of updating the
-    // first in place.
+fn test_non_plan_swarm_message_between_plan_versions_moves_plan_graph_to_bottom() {
+    // A non-plan-scope swarm chat card (e.g. a DM) landing between two
+    // SwarmPlan events must NOT stack a second diagram: the single plan-graph
+    // message is moved to the bottom of the transcript instead.
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -752,15 +751,25 @@ fn test_non_plan_swarm_message_between_plan_versions_stacks_second_plan_graph() 
     let titles = plan_graph_titles(&app);
     assert_eq!(
         titles,
-        vec!["Plan graph · v3".to_string(), "Plan graph · v4".to_string()],
-        "a swarm DM between plan versions breaks coalescing and stacks a second diagram: {titles:?}"
+        vec!["Plan graph · v4".to_string()],
+        "a swarm DM between plan versions must not stack a second diagram: {titles:?}"
+    );
+    // The single diagram moved BELOW the DM card (bottom of the transcript).
+    let last = app
+        .display_messages()
+        .last()
+        .expect("transcript should not be empty");
+    assert_eq!(
+        last.title.as_deref(),
+        Some("Plan graph · v4"),
+        "the plan graph must follow the transcript bottom"
     );
 }
 
 #[test]
-fn test_out_of_order_older_swarm_plan_version_overwrites_newer_plan_graph_in_place() {
-    // Wiring-audit claim 2: there is no version monotonicity guard, so an
-    // out-of-order (older) SwarmPlan event overwrites a newer diagram.
+fn test_out_of_order_older_swarm_plan_version_is_dropped() {
+    // A stale (older-version) SwarmPlan broadcast racing behind a newer one
+    // must be ignored: neither the diagram nor the snapshot state regresses.
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -781,14 +790,27 @@ fn test_out_of_order_older_swarm_plan_version_overwrites_newer_plan_graph_in_pla
     let titles = plan_graph_titles(&app);
     assert_eq!(
         titles,
-        vec!["Plan graph · v4".to_string()],
-        "an older plan version overwrites the newer trailing diagram in place (no monotonicity guard): {titles:?}"
+        vec!["Plan graph · v5".to_string()],
+        "an older plan version must not overwrite the newer diagram: {titles:?}"
     );
     assert_eq!(
         app.swarm_plan_version,
-        Some(4),
-        "snapshot state also regresses to the older version"
+        Some(5),
+        "snapshot state must not regress to the older version"
     );
+
+    // A recreated plan (version counter restarted) must still apply: low
+    // versions are exempt from the regression guard.
+    app.handle_server_event(
+        swarm_plan_event(1, vec![swarm_plan_graph_item("fresh-1", "fresh plan")]),
+        &mut remote,
+    );
+    assert_eq!(
+        app.swarm_plan_version,
+        Some(1),
+        "a recreated plan starting over at v1 still applies"
+    );
+    assert_eq!(plan_graph_titles(&app), vec!["Plan graph · v1".to_string()]);
 }
 
 #[test]
