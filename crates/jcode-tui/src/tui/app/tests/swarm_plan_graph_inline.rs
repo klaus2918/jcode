@@ -22,7 +22,10 @@ fn swarm_plan_graph_item(id: &str, content: &str) -> crate::plan::PlanItem {
     }
 }
 
-fn swarm_plan_event(version: u64, items: Vec<crate::plan::PlanItem>) -> crate::protocol::ServerEvent {
+fn swarm_plan_event(
+    version: u64,
+    items: Vec<crate::plan::PlanItem>,
+) -> crate::protocol::ServerEvent {
     crate::protocol::ServerEvent::SwarmPlan {
         swarm_id: "test-swarm".to_string(),
         version,
@@ -132,11 +135,8 @@ fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
     // Render through the real swarm-message markdown path (synchronous
     // mermaid render outside the deferred draw context) so the diagram
     // registers exactly like a transcript render would.
-    let lines = crate::tui::ui::render_swarm_message(
-        &v1_msg,
-        80,
-        crate::config::DiffDisplayMode::Inline,
-    );
+    let lines =
+        crate::tui::ui::render_swarm_message(&v1_msg, 80, crate::config::DiffDisplayMode::Inline);
     assert!(
         !rendered_lines_to_text(&lines).is_empty(),
         "swarm plan message should render"
@@ -165,12 +165,12 @@ fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
         .find(|m| m.role == "swarm")
         .expect("plan graph message")
         .clone();
-    assert_ne!(v1_msg.content, v2_msg.content, "status flip changes graph source");
-    let _ = crate::tui::ui::render_swarm_message(
-        &v2_msg,
-        80,
-        crate::config::DiffDisplayMode::Inline,
+    assert_ne!(
+        v1_msg.content, v2_msg.content,
+        "status flip changes graph source"
     );
+    let _ =
+        crate::tui::ui::render_swarm_message(&v2_msg, 80, crate::config::DiffDisplayMode::Inline);
 
     // ...but ACTIVE_DIAGRAMS now holds BOTH versions: nothing unregisters
     // the stale v1 diagram when its transcript message was overwritten.
@@ -180,7 +180,10 @@ fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
         2,
         "claim 1 CONFIRMED: in-place plan bump leaks a stale ACTIVE_DIAGRAMS entry"
     );
-    assert_ne!(diagrams[0].hash, v1_hash, "newest-first: index 0 is the v2 diagram");
+    assert_ne!(
+        diagrams[0].hash, v1_hash,
+        "newest-first: index 0 is the v2 diagram"
+    );
     assert_eq!(
         diagrams[1].hash, v1_hash,
         "the replaced v1 diagram is still registered (stale)"
@@ -189,7 +192,10 @@ fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
     // Ctrl+arrow cycling reaches the stale version and the counter reads 2.
     app.diagram_index = 0;
     app.cycle_diagram(1);
-    assert_eq!(app.diagram_index, 1, "cycling lands on the stale v1 diagram");
+    assert_eq!(
+        app.diagram_index, 1,
+        "cycling lands on the stale v1 diagram"
+    );
     assert_eq!(
         app.last_visible_diagram_hash,
         Some(v1_hash),
@@ -217,11 +223,8 @@ fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
         v2_msg.content, v3_msg.content,
         "version-only bump keeps identical graph content"
     );
-    let _ = crate::tui::ui::render_swarm_message(
-        &v3_msg,
-        80,
-        crate::config::DiffDisplayMode::Inline,
-    );
+    let _ =
+        crate::tui::ui::render_swarm_message(&v3_msg, 80, crate::config::DiffDisplayMode::Inline);
     assert_eq!(
         crate::tui::mermaid::active_diagram_count(),
         2,
@@ -272,7 +275,10 @@ fn test_new_registration_silently_shifts_parked_diagram_selection() {
     // index, so the silent shift persists (the fit-context sync then resets
     // the viewport because the hash under the index changed).
     app.normalize_diagram_state();
-    assert_eq!(app.diagram_index, 1, "index is kept, content under it changed");
+    assert_eq!(
+        app.diagram_index, 1,
+        "index is kept, content under it changed"
+    );
     assert_eq!(
         app.last_visible_diagram_hash,
         Some(0xC),
@@ -442,11 +448,8 @@ fn test_session_change_history_leaks_previous_session_active_diagram() {
         .find(|m| m.role == "swarm")
         .expect("plan graph message")
         .clone();
-    let _ = crate::tui::ui::render_swarm_message(
-        &plan_msg,
-        80,
-        crate::config::DiffDisplayMode::Inline,
-    );
+    let _ =
+        crate::tui::ui::render_swarm_message(&plan_msg, 80, crate::config::DiffDisplayMode::Inline);
     assert_eq!(
         crate::tui::mermaid::active_diagram_count(),
         1,
@@ -500,6 +503,30 @@ fn test_session_change_history_leaks_previous_session_active_diagram() {
     );
 
     crate::tui::mermaid::clear_active_diagrams();
+}
+
+fn history_event_for_session_with_messages(
+    session_id: &str,
+    messages: Vec<crate::protocol::HistoryMessage>,
+) -> crate::protocol::ServerEvent {
+    let mut event = history_event_for_session(session_id);
+    if let crate::protocol::ServerEvent::History {
+        messages: event_messages,
+        ..
+    } = &mut event
+    {
+        *event_messages = messages;
+    }
+    event
+}
+
+fn user_history_message(content: &str) -> crate::protocol::HistoryMessage {
+    crate::protocol::HistoryMessage {
+        role: "user".to_string(),
+        content: content.to_string(),
+        tool_calls: None,
+        tool_data: None,
+    }
 }
 
 fn history_event_for_session(session_id: &str) -> crate::protocol::ServerEvent {
@@ -618,13 +645,19 @@ fn test_swarm_plan_event_pushes_inline_plan_graph_message() {
                     .is_some_and(|t| t.starts_with("Plan graph · "))
         })
         .count();
-    assert_eq!(graph_count, 1, "only one trailing plan graph message expected");
+    assert_eq!(
+        graph_count, 1,
+        "only one trailing plan graph message expected"
+    );
     let latest = app
         .display_messages()
         .iter()
         .find(|m| m.title.as_deref() == Some("Plan graph · v4"))
         .expect("trailing graph message should carry the new version");
-    assert!(latest.content.contains(":::done"), "updated status should recolor the node");
+    assert!(
+        latest.content.contains(":::done"),
+        "updated status should recolor the node"
+    );
 }
 
 #[test]
@@ -751,7 +784,11 @@ fn test_out_of_order_older_swarm_plan_version_overwrites_newer_plan_graph_in_pla
         vec!["Plan graph · v4".to_string()],
         "an older plan version overwrites the newer trailing diagram in place (no monotonicity guard): {titles:?}"
     );
-    assert_eq!(app.swarm_plan_version, Some(4), "snapshot state also regresses to the older version");
+    assert_eq!(
+        app.swarm_plan_version,
+        Some(4),
+        "snapshot state also regresses to the older version"
+    );
 }
 
 #[test]
@@ -885,7 +922,10 @@ fn seed_rendered_plan_graph(
         1,
         "seed: plan render registers exactly one active diagram"
     );
-    assert!(!app.swarm_plan_items.is_empty(), "seed: plan snapshot applied");
+    assert!(
+        !app.swarm_plan_items.is_empty(),
+        "seed: plan snapshot applied"
+    );
     crate::tui::mermaid::get_active_diagrams()[0].hash
 }
 
@@ -999,7 +1039,10 @@ fn test_local_rewind_and_undo_leave_stale_active_diagram_and_swarm_plan_state() 
     let stale_hash = seed_rendered_plan_graph(&mut app, &mut remote);
 
     // Truncating rewind (commands.rs ~2004).
-    assert!(super::commands::handle_session_command(&mut app, "/rewind 1"));
+    assert!(super::commands::handle_session_command(
+        &mut app,
+        "/rewind 1"
+    ));
     assert_transcript_clear_leaks_diagram_and_plan_state(&mut app, stale_hash, "local /rewind N");
 
     // Rewind undo (commands.rs ~1933) restores the transcript from the
@@ -1146,7 +1189,11 @@ fn test_info_widget_diagram_list_populated_only_in_margin_mode() {
     app.diagram_mode = crate::config::DiagramDisplayMode::Margin;
     let margin_data = crate::tui::TuiState::info_widget_data(&app);
     assert_eq!(
-        margin_data.diagrams.iter().map(|d| d.hash).collect::<Vec<_>>(),
+        margin_data
+            .diagrams
+            .iter()
+            .map(|d| d.hash)
+            .collect::<Vec<_>>(),
         vec![0xA2, 0xA1],
         "Margin mode copies the registry (newest-first) into the info widget"
     );
@@ -1222,7 +1269,10 @@ fn test_margin_mode_plan_bump_accumulates_stale_diagram_in_info_widget_list() {
         .find(|m| m.role == "swarm")
         .expect("plan graph message")
         .clone();
-    assert_ne!(v1_msg.content, v2_msg.content, "status flip changes graph source");
+    assert_ne!(
+        v1_msg.content, v2_msg.content,
+        "status flip changes graph source"
+    );
     let _ =
         crate::tui::ui::render_swarm_message(&v2_msg, 80, crate::config::DiffDisplayMode::Inline);
 
@@ -1310,8 +1360,14 @@ fn test_margin_mode_has_no_diagram_selection_and_always_shows_newest() {
     app.diagram_scroll_x = 5;
     app.diagram_scroll_y = 7;
     app.normalize_diagram_state();
-    assert_eq!(app.diagram_index, 0, "non-Pinned normalize resets the index");
-    assert!(!app.diagram_focus, "non-Pinned normalize drops diagram focus");
+    assert_eq!(
+        app.diagram_index, 0,
+        "non-Pinned normalize resets the index"
+    );
+    assert!(
+        !app.diagram_focus,
+        "non-Pinned normalize drops diagram focus"
+    );
     assert_eq!(app.diagram_scroll_x, 0);
     assert_eq!(app.diagram_scroll_y, 0);
     assert_eq!(
@@ -1374,6 +1430,290 @@ fn test_margin_mode_session_switch_keeps_orphaned_diagram_in_info_widget() {
         diagrams[0].hash, stale_hash,
         "the margin widget would render exactly the orphaned session-A plan graph"
     );
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+// ---------------------------------------------------------------------------
+// wiring-audit.compaction-rewind-clear-verify: transcript-REPLACEMENT paths
+// that bypass `clear_display_messages` entirely.
+//
+//   A. `apply_compacted_history_window` (state_ui_messages.rs:404) assigns
+//      `self.display_messages = messages` wholesale. The window is built from
+//      server-side session storage, which never contains the client-only
+//      "Plan graph · vN" message, so the coalesced diagram message is DROPPED
+//      from the transcript while ACTIVE_DIAGRAMS and the swarm_plan_* snapshot
+//      leak (the function touches neither).
+//   B. Server-driven remote `/rewind N` / `/rewind undo`: `remote.rewind()`
+//      (backend.rs:608) flips `has_loaded_history=false` and the server
+//      responds with a fresh History payload for the SAME session id, so
+//      `session_changed` (server_events.rs:1585) is FALSE and the plan-state
+//      clearing block (server_events.rs:1637-1639) never runs. The transcript
+//      is replaced via `replace_display_messages` (dropping the plan graph),
+//      while ACTIVE_DIAGRAMS and swarm_plan_* leak.
+//   C. Local (non-remote) session picker `/resume` current-terminal switch:
+//      `handle_session_picker_current_terminal_selection`
+//      (inline_interactive.rs:2128) only queues the target on
+//      `workspace_client.queue_resume_session`; the queued resume is consumed
+//      exclusively by remote::handle_tick (app/remote.rs:136). local::handle_tick
+//      (app/local.rs:63-118) never takes it, so in local mode the switch is a
+//      silent no-op: no transcript clear ever happens and the plan graph,
+//      plan snapshot, and registered diagram all persist trivially.
+// ---------------------------------------------------------------------------
+
+/// Path A: a CompactedHistory window replaces the transcript wholesale
+/// (`apply_compacted_history_window` bypasses `clear_display_messages`). The
+/// server-built window cannot contain the client-only plan-graph message, so
+/// the coalesced "Plan graph · vN" message is dropped, while the process-global
+/// ACTIVE_DIAGRAMS entry and the swarm plan snapshot fields survive untouched.
+#[test]
+fn test_compacted_history_window_drops_plan_graph_but_leaks_diagram_and_plan_state() {
+    let _render_lock = scroll_render_test_lock();
+    let _mode_guard = DiagramModeOverrideGuard::pinned();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    // CompactedHistory is dropped for inactive sessions, so the app must be
+    // attached to the same session the event names (server_events.rs ~1968).
+    app.remote_session_id = Some("session_same".to_string());
+    let stale_hash = seed_rendered_plan_graph(&mut app, &mut remote);
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::CompactedHistory {
+            id: 42,
+            session_id: "session_same".to_string(),
+            messages: vec![
+                user_history_message("older prompt 1"),
+                user_history_message("older prompt 2"),
+            ],
+            images: vec![],
+            compacted_total: 2,
+            compacted_visible: 2,
+            compacted_remaining: 0,
+            compacted_hidden_prompts: 0,
+        },
+        &mut remote,
+    );
+
+    // The window landed: transcript is exactly the server-built message list.
+    assert_eq!(
+        app.display_messages().len(),
+        2,
+        "compacted window replaces the transcript wholesale"
+    );
+    assert_eq!(
+        crate::tui::TuiState::status_notice(&app).as_deref(),
+        Some("Loaded all 2 compacted messages"),
+        "apply_compacted_history_window ran"
+    );
+    // The coalesced plan-graph message did NOT survive the replacement: the
+    // window comes from server session storage, which never holds the
+    // client-side "Plan graph · vN" display message.
+    assert_transcript_clear_leaks_diagram_and_plan_state(
+        &mut app,
+        stale_hash,
+        "CompactedHistory window (apply_compacted_history_window)",
+    );
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+/// Path B: server-driven remote `/rewind N` and `/rewind undo`. Both flip
+/// `has_loaded_history=false` (backend.rs:608/622) and the server answers
+/// with a History payload for the SAME session, so `session_changed` is false
+/// and the swarm-plan clearing block (server_events.rs:1637-1639) is skipped.
+/// The truncated payload replaces the transcript (dropping the plan graph),
+/// while ACTIVE_DIAGRAMS and swarm_plan_* leak.
+#[test]
+fn test_remote_rewind_history_response_is_not_session_changed_and_leaks_plan_state() {
+    let _render_lock = scroll_render_test_lock();
+    let _mode_guard = DiagramModeOverrideGuard::pinned();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    app.is_remote = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+    remote.set_session_id("session_same".to_string());
+    app.remote_session_id = Some("session_same".to_string());
+
+    // `/rewind N` requires at least one rewindable (user/assistant) display
+    // message.
+    app.push_display_message(DisplayMessage::user("hello"));
+    let stale_hash = seed_rendered_plan_graph(&mut app, &mut remote);
+
+    // --- /rewind 1 ---------------------------------------------------------
+    app.input = "/rewind 1".to_string();
+    app.cursor_pos = app.input.len();
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+        .expect("remote /rewind should succeed");
+    assert!(
+        !remote.has_loaded_history(),
+        "remote.rewind() must re-open the history gate so the server's \
+         truncated History payload can replace the display state"
+    );
+
+    // The server responds with a History payload for the SAME session id
+    // carrying the truncated message list.
+    app.handle_server_event(
+        history_event_for_session_with_messages(
+            "session_same",
+            vec![user_history_message("hello")],
+        ),
+        &mut remote,
+    );
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.content.starts_with("✓ Rewound to message 1")),
+        "rewind notice confirms the rewind History path executed"
+    );
+    // session_changed was false, so the plan-clearing block was skipped.
+    assert_transcript_clear_leaks_diagram_and_plan_state(
+        &mut app,
+        stale_hash,
+        "remote /rewind N (same-session History response)",
+    );
+
+    // --- /rewind undo ------------------------------------------------------
+    app.input = "/rewind undo".to_string();
+    app.cursor_pos = app.input.len();
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+        .expect("remote /rewind undo should succeed");
+    assert!(
+        !remote.has_loaded_history(),
+        "remote.rewind_undo() also re-opens the history gate"
+    );
+    app.handle_server_event(
+        history_event_for_session_with_messages(
+            "session_same",
+            vec![
+                user_history_message("hello"),
+                user_history_message("restored"),
+            ],
+        ),
+        &mut remote,
+    );
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.content.starts_with("✓ Undid rewind")),
+        "undo notice confirms the rewind-undo History path executed"
+    );
+    assert_transcript_clear_leaks_diagram_and_plan_state(
+        &mut app,
+        stale_hash,
+        "remote /rewind undo (same-session History response)",
+    );
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+/// Path C: local (non-remote) session picker current-terminal switch. Enter on
+/// a session queues the target via `workspace_client.queue_resume_session`
+/// (inline_interactive.rs:2128), but only remote::handle_tick (app/remote.rs:136)
+/// ever consumes that queue; local::handle_tick (app/local.rs:63-118) does not.
+/// So in local mode the "switch" never happens: no transcript clear, no
+/// History event, and the plan graph message, swarm plan snapshot, and
+/// registered diagram all persist. The stale state here is not a clear-path
+/// leak but the queued switch silently never executing.
+#[test]
+fn test_local_session_picker_switch_is_never_consumed_and_keeps_plan_graph_state() {
+    let _render_lock = scroll_render_test_lock();
+    let _mode_guard = DiagramModeOverrideGuard::pinned();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    assert!(!app.is_remote, "this pins the local (non-remote) mode path");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    let stale_hash = seed_rendered_plan_graph(&mut app, &mut remote);
+
+    // Open a picker with one target and select it in the current terminal.
+    app.session_picker_mode = SessionPickerMode::Resume;
+    app.session_picker_overlay = Some(RefCell::new(
+        crate::tui::session_picker::SessionPicker::new(vec![
+            crate::tui::session_picker::SessionInfo {
+                id: "session_target_456".to_string(),
+                parent_id: None,
+                short_name: "target".to_string(),
+                icon: "t".to_string(),
+                title: "Target".to_string(),
+                message_count: 1,
+                user_message_count: 1,
+                assistant_message_count: 0,
+                created_at: chrono::Utc::now(),
+                last_message_time: chrono::Utc::now(),
+                last_active_at: None,
+                working_dir: None,
+                model: None,
+                provider_key: None,
+                is_canary: false,
+                is_debug: false,
+                saved: false,
+                save_label: None,
+                status: crate::session::SessionStatus::Closed,
+                needs_catchup: false,
+                estimated_tokens: 0,
+                first_user_prompt: None,
+                messages_preview: Vec::new(),
+                search_index: "target".to_string(),
+                server_name: None,
+                server_icon: None,
+                source: crate::tui::session_picker::SessionSource::Jcode,
+                resume_target: crate::tui::session_picker::ResumeTarget::JcodeSession {
+                    session_id: "session_target_456".to_string(),
+                },
+                external_path: None,
+            },
+        ]),
+    ));
+    app.handle_session_picker_key(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::empty(),
+    )
+    .expect("session picker enter should succeed");
+    assert!(
+        app.session_picker_overlay.is_none(),
+        "picker closes and reports 'Switching → …'"
+    );
+
+    // The local tick loop never consumes the queued resume (only
+    // remote::handle_tick at app/remote.rs:136 does), so nothing switches.
+    let _ = crate::tui::app::local::handle_tick(&mut app);
+    let _ = crate::tui::app::local::handle_tick(&mut app);
+    assert_eq!(
+        app.workspace_client
+            .take_pending_resume_session()
+            .as_deref(),
+        Some("session_target_456"),
+        "CONFIRMED: local ticks leave the queued switch unconsumed \
+         (session switching is remote-only)"
+    );
+
+    // Because no switch (and therefore no transcript clear or History event)
+    // ever happens locally, the plan graph message, plan snapshot, and
+    // registered diagram all remain in place.
+    assert_eq!(
+        plan_graph_titles(&app),
+        vec!["Plan graph · v1".to_string()],
+        "no transcript clear happened, the plan graph message persists"
+    );
+    assert!(!app.swarm_plan_items.is_empty());
+    assert_eq!(app.swarm_plan_version, Some(1));
+    let diagrams = crate::tui::mermaid::get_active_diagrams();
+    assert_eq!(diagrams.len(), 1);
+    assert_eq!(diagrams[0].hash, stale_hash);
 
     crate::tui::mermaid::clear_active_diagrams();
 }
