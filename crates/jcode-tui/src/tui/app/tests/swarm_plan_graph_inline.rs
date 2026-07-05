@@ -1717,3 +1717,119 @@ fn test_local_session_picker_switch_is_never_consumed_and_keeps_plan_graph_state
 
     crate::tui::mermaid::clear_active_diagrams();
 }
+
+// ---------------------------------------------------------------------------
+// wiring-audit.margin-streaming-preview-verify.local-paths-preview-leak:
+// unlike ACTIVE_DIAGRAMS (whose survival across transcript clears is pinned
+// above as a known leak), the ephemeral STREAMING_PREVIEW_DIAGRAM slot
+// (mermaid_active.rs) must NOT survive local transcript mutations. The
+// typed-command paths (/clear, /rewind) are already protected in practice
+// because submit_input commits pending streaming text first
+// (input.rs commit_pending_streaming_assistant_message -> take_streaming_text
+// clears the slot), but direct dispatch must not rely on that: Ctrl+R
+// (recover_session_without_tools) is reachable mid-stream from the turn.rs
+// key loops with a live preview and no commit. These tests pin that all three
+// local transcript-mutation paths clear the preview slot themselves.
+// ---------------------------------------------------------------------------
+
+/// Simulates a mid-stream mermaid preview exactly like the streaming
+/// markdown renderer would create it (markdown_render_full.rs
+/// set_streaming_preview_diagram on a complete fenced block).
+fn seed_streaming_preview(app: &mut App, hash: u64) {
+    crate::tui::mermaid::clear_active_diagrams();
+    app.streaming.streaming_text = "```mermaid\ngraph TD; A-->B\n```".to_string();
+    app.is_processing = true;
+    crate::tui::mermaid::set_streaming_preview_diagram(hash, 320, 240, Some("preview".to_string()));
+    assert_eq!(
+        crate::tui::mermaid::get_active_diagrams()
+            .first()
+            .map(|d| d.hash),
+        Some(hash),
+        "seed: streaming preview occupies index 0 (what Margin mode draws)"
+    );
+}
+
+fn assert_streaming_preview_cleared(hash: u64, path: &str) {
+    assert!(
+        !crate::tui::mermaid::get_active_diagrams()
+            .iter()
+            .any(|d| d.hash == hash),
+        "{path}: streaming preview diagram must not survive the transcript mutation"
+    );
+}
+
+/// Local `/clear` -> reset_current_session (commands_review.rs) now clears
+/// the streaming render state, including the preview slot.
+#[test]
+fn test_local_clear_command_clears_streaming_preview_diagram() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    let hash: u64 = 0x517E_A11E_D_0001;
+    seed_streaming_preview(&mut app, hash);
+
+    assert!(super::commands::handle_session_command(&mut app, "/clear"));
+
+    assert_streaming_preview_cleared(hash, "local /clear");
+    assert!(
+        app.streaming.streaming_text.is_empty(),
+        "local /clear: in-flight streaming text is dropped with the transcript"
+    );
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+/// Local `/rewind N` and `/rewind undo` (commands.rs) rebuild the transcript;
+/// both must drop the streaming preview slot.
+#[test]
+fn test_local_rewind_and_undo_clear_streaming_preview_diagram() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+
+    app.session.replace_messages(Vec::new());
+    for idx in 1..=2 {
+        let text = format!("msg-{idx}");
+        app.add_provider_message(Message::user(&text));
+        app.session.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text,
+                cache_control: None,
+            }],
+        );
+    }
+
+    let hash: u64 = 0x517E_A11E_D_0002;
+    seed_streaming_preview(&mut app, hash);
+    assert!(super::commands::handle_session_command(
+        &mut app,
+        "/rewind 1"
+    ));
+    assert_streaming_preview_cleared(hash, "local /rewind N");
+
+    seed_streaming_preview(&mut app, hash);
+    assert!(super::commands::handle_session_command(
+        &mut app,
+        "/rewind undo"
+    ));
+    assert_streaming_preview_cleared(hash, "local /rewind undo");
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+/// Ctrl+R recovery (recover_session_without_tools, conversation_state.rs) is
+/// reachable mid-stream from the turn.rs key loops with a live preview and no
+/// prior commit, so it must clear the preview slot itself.
+#[test]
+fn test_recover_session_without_tools_clears_streaming_preview_diagram() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    let hash: u64 = 0x517E_A11E_D_0003;
+    seed_streaming_preview(&mut app, hash);
+
+    app.recover_session_without_tools();
+
+    assert_streaming_preview_cleared(hash, "local Ctrl+R recovery");
+    assert!(
+        app.streaming.streaming_text.is_empty(),
+        "recovery: in-flight streaming text is dropped with the transcript"
+    );
+    crate::tui::mermaid::clear_active_diagrams();
+}
