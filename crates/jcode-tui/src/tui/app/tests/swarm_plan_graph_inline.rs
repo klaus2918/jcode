@@ -74,6 +74,359 @@ fn plan_graph_titles(app: &App) -> Vec<String> {
         .collect()
 }
 
+fn rendered_lines_to_text(lines: &[ratatui::text::Line<'static>]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Restores the process-global markdown diagram-mode override on drop.
+struct DiagramModeOverrideGuard {
+    prev: Option<crate::config::DiagramDisplayMode>,
+}
+
+impl DiagramModeOverrideGuard {
+    fn pinned() -> Self {
+        let prev = crate::tui::markdown::get_diagram_mode_override();
+        crate::tui::markdown::set_diagram_mode_override(Some(
+            crate::config::DiagramDisplayMode::Pinned,
+        ));
+        Self { prev }
+    }
+}
+
+impl Drop for DiagramModeOverrideGuard {
+    fn drop(&mut self) {
+        crate::tui::markdown::set_diagram_mode_override(self.prev);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// wiring-audit.pinned-pane-verify: behavioral checks for the pinned diagram
+// pane vs. the upsert-in-place plan-graph message. ACTIVE_DIAGRAMS is a
+// process-global registry (mermaid_active.rs), so these tests serialize on
+// the same lock the other diagram-mutating tests use
+// (`scroll_render_test_lock`) plus this file's mermaid env lock.
+// ---------------------------------------------------------------------------
+
+/// Claims 1 + 2: replacing the trailing plan-graph message in place leaves
+/// the previously rendered diagram registered in ACTIVE_DIAGRAMS (no
+/// unregistration path), so the pinned pane count inflates and Ctrl+arrow
+/// cycling walks stale plan versions. Refinement of claim 1: accumulation is
+/// per distinct *mermaid content* hash, not per plan version number. A
+/// version bump whose items (and therefore graph source) are unchanged does
+/// NOT add an entry.
+#[test]
+fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
+    let _env_lock = swarm_plan_mermaid_env_lock();
+    let _render_lock = scroll_render_test_lock();
+    let _mode_guard = DiagramModeOverrideGuard::pinned();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    crate::tui::mermaid::clear_active_diagrams();
+
+    // v1: task running.
+    app.handle_server_event(
+        swarm_plan_event(1, vec![swarm_plan_graph_item("haiku-1", "write a haiku")]),
+        &mut remote,
+    );
+    let v1_msg = app
+        .display_messages()
+        .iter()
+        .rev()
+        .find(|m| m.role == "swarm")
+        .expect("plan graph message")
+        .clone();
+    // Render through the real swarm-message markdown path (synchronous
+    // mermaid render outside the deferred draw context) so the diagram
+    // registers exactly like a transcript render would.
+    let lines = crate::tui::ui::render_swarm_message(
+        &v1_msg,
+        80,
+        crate::config::DiffDisplayMode::Inline,
+    );
+    assert!(
+        !rendered_lines_to_text(&lines).is_empty(),
+        "swarm plan message should render"
+    );
+    assert_eq!(
+        crate::tui::mermaid::active_diagram_count(),
+        1,
+        "first plan render registers one active diagram"
+    );
+    let v1_hash = crate::tui::mermaid::get_active_diagrams()[0].hash;
+
+    // v2: same task flips to completed -> graph content changes -> the
+    // trailing message is replaced IN PLACE (one transcript message)...
+    let mut done = swarm_plan_graph_item("haiku-1", "write a haiku");
+    done.status = "completed".to_string();
+    app.handle_server_event(swarm_plan_event(2, vec![done.clone()]), &mut remote);
+    assert_eq!(
+        plan_graph_titles(&app),
+        vec!["Plan graph · v2".to_string()],
+        "upsert must keep a single transcript plan-graph message"
+    );
+    let v2_msg = app
+        .display_messages()
+        .iter()
+        .rev()
+        .find(|m| m.role == "swarm")
+        .expect("plan graph message")
+        .clone();
+    assert_ne!(v1_msg.content, v2_msg.content, "status flip changes graph source");
+    let _ = crate::tui::ui::render_swarm_message(
+        &v2_msg,
+        80,
+        crate::config::DiffDisplayMode::Inline,
+    );
+
+    // ...but ACTIVE_DIAGRAMS now holds BOTH versions: nothing unregisters
+    // the stale v1 diagram when its transcript message was overwritten.
+    let diagrams = crate::tui::mermaid::get_active_diagrams();
+    assert_eq!(
+        diagrams.len(),
+        2,
+        "claim 1 CONFIRMED: in-place plan bump leaks a stale ACTIVE_DIAGRAMS entry"
+    );
+    assert_ne!(diagrams[0].hash, v1_hash, "newest-first: index 0 is the v2 diagram");
+    assert_eq!(
+        diagrams[1].hash, v1_hash,
+        "the replaced v1 diagram is still registered (stale)"
+    );
+
+    // Ctrl+arrow cycling reaches the stale version and the counter reads 2.
+    app.diagram_index = 0;
+    app.cycle_diagram(1);
+    assert_eq!(app.diagram_index, 1, "cycling lands on the stale v1 diagram");
+    assert_eq!(
+        app.last_visible_diagram_hash,
+        Some(v1_hash),
+        "claim 2 CONFIRMED: the pane can show the outdated plan version"
+    );
+    let notice = crate::tui::TuiState::status_notice(&app);
+    assert_eq!(
+        notice.as_deref(),
+        Some("Diagram 2/2"),
+        "counter inflates to include the stale version"
+    );
+
+    // Refinement: a version bump with UNCHANGED items produces identical
+    // mermaid source, so it does NOT add a third entry (dedup is by content
+    // hash, `register_active_diagram` moves the entry to the fresh end).
+    app.handle_server_event(swarm_plan_event(3, vec![done]), &mut remote);
+    let v3_msg = app
+        .display_messages()
+        .iter()
+        .rev()
+        .find(|m| m.role == "swarm")
+        .expect("plan graph message")
+        .clone();
+    assert_eq!(
+        v2_msg.content, v3_msg.content,
+        "version-only bump keeps identical graph content"
+    );
+    let _ = crate::tui::ui::render_swarm_message(
+        &v3_msg,
+        80,
+        crate::config::DiffDisplayMode::Inline,
+    );
+    assert_eq!(
+        crate::tui::mermaid::active_diagram_count(),
+        2,
+        "claim 1 REFINED: accumulation is per distinct graph content, not per version"
+    );
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+/// Claim 3: `get_active_diagrams` returns newest-first (insertion order
+/// reversed), and `diagram_index` is positional, so a user parked at index
+/// k > 0 is silently shifted to a different diagram whenever a new diagram
+/// registers. Nothing re-anchors the selection by hash.
+#[test]
+fn test_new_registration_silently_shifts_parked_diagram_selection() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+
+    crate::tui::mermaid::clear_active_diagrams();
+    crate::tui::mermaid::register_active_diagram(0xA, 100, 80, None);
+    crate::tui::mermaid::register_active_diagram(0xB, 100, 80, None);
+    crate::tui::mermaid::register_active_diagram(0xC, 100, 80, None);
+
+    // Newest-first: [C, B, A]. Park the user on B (index 1).
+    let before = crate::tui::mermaid::get_active_diagrams();
+    assert_eq!(
+        before.iter().map(|d| d.hash).collect::<Vec<_>>(),
+        vec![0xC, 0xB, 0xA]
+    );
+    app.diagram_index = 1;
+    app.sync_diagram_fit_context();
+    assert_eq!(app.last_visible_diagram_hash, Some(0xB));
+
+    // A new diagram registers (e.g. a plan bump): everything shifts by one.
+    crate::tui::mermaid::register_active_diagram(0xD, 100, 80, None);
+    let after = crate::tui::mermaid::get_active_diagrams();
+    assert_eq!(
+        after.iter().map(|d| d.hash).collect::<Vec<_>>(),
+        vec![0xD, 0xC, 0xB, 0xA]
+    );
+    assert_eq!(
+        after[app.diagram_index].hash, 0xC,
+        "claim 3 CONFIRMED: index 1 now points at C, not the parked B"
+    );
+    // normalize_diagram_state does not re-anchor by hash; it only clamps the
+    // index, so the silent shift persists (the fit-context sync then resets
+    // the viewport because the hash under the index changed).
+    app.normalize_diagram_state();
+    assert_eq!(app.diagram_index, 1, "index is kept, content under it changed");
+    assert_eq!(
+        app.last_visible_diagram_hash,
+        Some(0xC),
+        "selection silently moved from B to C"
+    );
+
+    // Re-registering an EXISTING hash also reorders (moves it to front),
+    // which shifts a parked selection the same way.
+    app.diagram_index = 2; // parked on B in [D, C, B, A]
+    app.sync_diagram_fit_context();
+    assert_eq!(app.last_visible_diagram_hash, Some(0xB));
+    crate::tui::mermaid::register_active_diagram(0xA, 100, 80, None);
+    let reordered = crate::tui::mermaid::get_active_diagrams();
+    assert_eq!(
+        reordered.iter().map(|d| d.hash).collect::<Vec<_>>(),
+        vec![0xA, 0xD, 0xC, 0xB],
+        "re-registration moves an existing hash to the fresh end"
+    );
+    assert_eq!(
+        reordered[app.diagram_index].hash, 0xC,
+        "parked index 2 shifted from B to C without any user action"
+    );
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+/// Claim 5: when the 129th distinct diagram registers, ACTIVE_DIAGRAMS_MAX
+/// eviction drops the oldest entry. If the pane was showing that entry, the
+/// index silently lands on a different diagram (no crash, no reset: the
+/// count stays at the cap so `normalize_diagram_state` never clamps).
+#[test]
+fn test_active_diagrams_cap_eviction_swaps_currently_shown_diagram() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+
+    crate::tui::mermaid::clear_active_diagrams();
+    for i in 1..=128u64 {
+        crate::tui::mermaid::register_active_diagram(i, 100, 80, None);
+    }
+    assert_eq!(crate::tui::mermaid::active_diagram_count(), 128);
+
+    // Park on the OLDEST diagram (hash 1, last position in newest-first
+    // order).
+    app.diagram_index = 127;
+    app.sync_diagram_fit_context();
+    assert_eq!(app.last_visible_diagram_hash, Some(1));
+
+    // The 129th diagram evicts hash 1 (the one being shown).
+    crate::tui::mermaid::register_active_diagram(129, 100, 80, None);
+    let diagrams = crate::tui::mermaid::get_active_diagrams();
+    assert_eq!(diagrams.len(), 128, "cap holds at ACTIVE_DIAGRAMS_MAX");
+    assert!(
+        !diagrams.iter().any(|d| d.hash == 1),
+        "the shown diagram was evicted from the registry"
+    );
+
+    // Count stayed at the cap, so index 127 is still in range: no clamp, no
+    // reset, the pane just shows a different diagram.
+    app.normalize_diagram_state();
+    assert_eq!(app.diagram_index, 127);
+    assert_eq!(
+        app.last_visible_diagram_hash,
+        Some(2),
+        "claim 5 CONFIRMED: eviction silently swaps the shown diagram (1 -> 2)"
+    );
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
+/// Claim 4: the chat body prepare path renders EVERY display message at full
+/// fidelity regardless of scroll position (`prepare_body` does not take the
+/// scroll offset; viewport windowing only slices already-prepared lines in
+/// `draw_messages`). So a plan-graph message scrolled far off-screen still
+/// goes through the mermaid pipeline and registers in ACTIVE_DIAGRAMS.
+/// (`render_markdown_lazy`'s visible-range skipping is not used by the chat
+/// body path, and even that function renders mermaid blocks unconditionally.)
+#[test]
+fn test_offscreen_plan_graph_message_still_registers_active_diagram() {
+    let _env_lock = swarm_plan_mermaid_env_lock();
+    let _render_lock = scroll_render_test_lock();
+    let _mode_guard = DiagramModeOverrideGuard::pinned();
+    let mut app = create_test_app();
+    app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    app.diagram_pane_enabled = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    crate::tui::mermaid::clear_active_diagrams();
+
+    // Plan graph message lands first...
+    app.handle_server_event(
+        swarm_plan_event(7, vec![swarm_plan_graph_item("haiku-1", "write a haiku")]),
+        &mut remote,
+    );
+    // ...then enough transcript follows to push it far above a 24-row
+    // viewport (tail-follow keeps the view at the bottom).
+    for i in 0..80 {
+        app.push_display_message(DisplayMessage::system(format!("filler line {i}")));
+    }
+
+    // Full-frame draw through the real UI entry point (TestBackend). The
+    // draw wraps rendering in the deferred mermaid context; an uncached
+    // diagram is queued to the background worker, so poll for registration.
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|f| crate::tui::ui::draw(f, &app))
+        .expect("draw failed");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut registered = crate::tui::mermaid::active_diagram_count();
+    while registered == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        // Redraw so a completed deferred render (epoch bump) re-runs the
+        // message render and registers via the now-warm cache.
+        terminal
+            .draw(|f| crate::tui::ui::draw(f, &app))
+            .expect("draw failed");
+        registered = crate::tui::mermaid::active_diagram_count();
+    }
+    assert!(
+        registered >= 1,
+        "claim 4 RESOLVED: off-screen plan-graph messages DO register \
+         (body prepare renders all messages; windowing only slices lines)"
+    );
+
+    crate::tui::mermaid::clear_active_diagrams();
+}
+
 fn history_event_for_session(session_id: &str) -> crate::protocol::ServerEvent {
     crate::protocol::ServerEvent::History {
         id: 1,
