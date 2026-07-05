@@ -2,11 +2,170 @@ let cachedEventColumns = null;
 let cachedSessionDetailColumns = null;
 let cachedTurnDetailColumns = null;
 
+// ---------------------------------------------------------------------------
+// Self-defense against the D1 size cap.
+//
+// D1 hard-caps database size (500 MB class on the free plan). When the cap is
+// hit, every insert fails and telemetry silently stops being recorded (this
+// happened in June 2026; ~3 days of events were lost and the file was left at
+// its ~491.5 MB high-water mark). SQLite files never shrink on DELETE - the
+// nightly prune frees pages *inside* the file and the day's inserts recycle
+// them - so the steady state is "file at high-water mark, internal free-page
+// pool cycling". Two triggers defend the pool:
+//
+// 1. Size growth: every D1 result carries `meta.size_after`. If the file
+//    grows past the soft limit (just above the high-water mark), the free
+//    pool is exhausted and real growth has resumed; run an emergency prune.
+// 2. Full-error: if an insert fails with a full/limit error, prune
+//    immediately. This bounds a June-style outage to minutes instead of days.
+//
+// Emergency prunes use halved retention windows and are rate-limited per
+// isolate.
+// ---------------------------------------------------------------------------
+const D1_SOFT_LIMIT_BYTES = 493_000_000;
+const EMERGENCY_PRUNE_COOLDOWN_MS = 10 * 60 * 1000;
+// Best-effort per-isolate state (resets on isolate recycle, which is fine:
+// the next request re-observes the size from its own insert result).
+let lastObservedDbSizeBytes = 0;
+let lastEmergencyPruneAtMs = 0;
+
+// ---------------------------------------------------------------------------
+// Workers Analytics Engine firehose.
+//
+// Every event is written to the FIREHOSE dataset before the D1 insert. AE is
+// a time-series store with no database size cap (~90-day retention, adaptive
+// sampling on reads), so it is the primary store for high-volume raw analysis
+// (turn_end / session_start / onboarding_step), while D1 remains the durable
+// relational store for identity anchors, lifecycle rows, and the
+// daily_active_users rollup. Because the firehose write happens first,
+// telemetry keeps recording even if D1 hits its size cap.
+//
+// AE columns are positional (blob1..blob20, double1..double20, index1). This
+// schema defines the mapping; treat it as append-only (never reorder or
+// repurpose a position, or historical queries silently read the wrong field).
+// ---------------------------------------------------------------------------
+const FIREHOSE_SCHEMA = {
+  // blob1..blob20 (strings)
+  blobs: [
+    "event",
+    "version",
+    "os",
+    "arch",
+    "build_channel",
+    "event_id",
+    "session_id",
+    "step",
+    "auth_provider",
+    "auth_method",
+    "auth_failure_reason",
+    "provider_start",
+    "provider_end",
+    "model_start",
+    "model_end",
+    "agent_role",
+    "session_stop_reason",
+    "end_reason",
+    "turn_end_reason",
+    "from_version",
+  ],
+  // double1..double20 (numbers)
+  doubles: [
+    "is_ci",
+    "is_git_checkout",
+    "ran_from_cargo",
+    "turn_index",
+    "duration_secs",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "tool_calls",
+    "executed_tool_calls",
+    "tool_failures",
+    "file_write_calls",
+    "tests_run",
+    "tests_passed",
+    "error_auth_failed",
+    "error_rate_limited",
+    "error_provider_timeout",
+    "turn_success",
+    "turns",
+    "milestone_elapsed_ms",
+  ],
+  // index1 (sampling key): telemetry_id, so adaptive sampling stays accurate
+  // per user rather than per event shape.
+  indexes: ["telemetry_id"],
+};
+
+function writeFirehose(env, body) {
+  if (!env.FIREHOSE || typeof env.FIREHOSE.writeDataPoint !== "function") {
+    return false;
+  }
+  const errors = body.errors || {};
+  const boolFields = new Set([
+    "is_ci",
+    "is_git_checkout",
+    "ran_from_cargo",
+    "turn_success",
+  ]);
+  const errorFields = {
+    error_auth_failed: "auth_failed",
+    error_rate_limited: "rate_limited",
+    error_provider_timeout: "provider_timeout",
+  };
+  try {
+    env.FIREHOSE.writeDataPoint({
+      indexes: [String(body.id || "").slice(0, 96)],
+      blobs: FIREHOSE_SCHEMA.blobs.map((name) => {
+        const value = body[name];
+        // Cap each blob defensively: AE limits total blob bytes per point.
+        return value == null ? "" : String(value).slice(0, 200);
+      }),
+      doubles: FIREHOSE_SCHEMA.doubles.map((name) => {
+        if (boolFields.has(name)) {
+          return boolToInt(body[name]);
+        }
+        if (name in errorFields) {
+          const value = errors[errorFields[name]] ?? body[name];
+          return Number(value) || 0;
+        }
+        return Number(body[name]) || 0;
+      }),
+    });
+    return true;
+  } catch (err) {
+    console.warn("firehose write failed", err?.message || err);
+    return false;
+  }
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: corsHeaders(),
+      });
+    }
+
+    const url = new URL(request.url);
+
+    // Monitoring endpoint: database size vs the soft limit, so cap pressure
+    // is observable before inserts start failing.
+    if (request.method === "GET" && url.pathname === "/v1/health") {
+      try {
+        const probe = await env.DB.prepare("SELECT 1").run();
+        observeDbSize(probe);
+      } catch (err) {
+        return jsonResponse(
+          { ok: false, error: "d1 probe failed", detail: String(err?.message || err) },
+          500,
+        );
+      }
+      return jsonResponse({
+        ok: true,
+        db_size_bytes: lastObservedDbSizeBytes,
+        db_soft_limit_bytes: D1_SOFT_LIMIT_BYTES,
+        over_soft_limit: lastObservedDbSizeBytes >= D1_SOFT_LIMIT_BYTES,
+        last_emergency_prune_at_ms: lastEmergencyPruneAtMs || null,
       });
     }
 
@@ -14,7 +173,6 @@ export default {
       return jsonResponse({ error: "Method not allowed" }, 405);
     }
 
-    const url = new URL(request.url);
     if (url.pathname !== "/v1/event") {
       return jsonResponse({ error: "Not found" }, 404);
     }
@@ -44,13 +202,37 @@ export default {
       return jsonResponse({ error: "Unknown event type" }, 400);
     }
 
+    // Firehose first: even if D1 is at its size cap, the raw event is
+    // recorded in Analytics Engine and the day is reconstructable.
+    const firehoseOk = writeFirehose(env, body);
+
+    let durableOk = true;
     try {
       await insertEvent(env, body);
-
-      return jsonResponse({ ok: true });
     } catch (err) {
+      durableOk = false;
+      console.error(
+        `d1 insert failed for ${body.event} (db_size=${lastObservedDbSizeBytes})`,
+        err?.message || err,
+      );
+      // A full/limit failure means the internal free-page pool is exhausted
+      // (June 2026 failure mode). Prune NOW so telemetry recovers within
+      // minutes instead of staying dead until someone notices.
+      if (isDbFullError(err) && ctx && typeof ctx.waitUntil === "function") {
+        const now = Date.now();
+        if (now - lastEmergencyPruneAtMs >= EMERGENCY_PRUNE_COOLDOWN_MS) {
+          lastEmergencyPruneAtMs = now;
+          ctx.waitUntil(emergencyPrune(env));
+        }
+      }
+    }
+
+    maybeScheduleEmergencyPrune(env, ctx);
+
+    if (!durableOk && !firehoseOk) {
       return jsonResponse({ error: "Internal error" }, 500);
     }
+    return jsonResponse({ ok: true, durable: durableOk, firehose: firehoseOk });
   },
 
   // Nightly retention pruning. D1 hard-caps databases at 500 MB; without this
@@ -59,9 +241,69 @@ export default {
   // are pruned on a schedule while aggregate signal is preserved in the
   // daily_active_users rollup and in long-retention lifecycle events.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(pruneOldEvents(env));
+    ctx.waitUntil(
+      (async () => {
+        await pruneOldEvents(env);
+        // If the normal prune did not free enough headroom, escalate with the
+        // emergency (halved) retention windows instead of waiting for inserts
+        // to start failing mid-day.
+        try {
+          const probe = await env.DB.prepare("SELECT 1").run();
+          observeDbSize(probe);
+        } catch {
+          // ignore: size stays at last observation
+        }
+        if (lastObservedDbSizeBytes >= D1_SOFT_LIMIT_BYTES) {
+          await emergencyPrune(env);
+        }
+      })(),
+    );
   },
 };
+
+function observeDbSize(result) {
+  const size = result?.meta?.size_after;
+  if (typeof size === "number" && size > 0) {
+    lastObservedDbSizeBytes = size;
+  }
+  return lastObservedDbSizeBytes;
+}
+
+function isDbFullError(err) {
+  const message = String(err?.message || err || "").toLowerCase();
+  // D1 surfaces the cap as SQLITE_FULL ("database or disk is full") or an
+  // explicit size-limit message. Keep this narrow: a false positive triggers
+  // an unnecessary (rate-limited) prune, but matching e.g. "LIMIT" in SQL
+  // syntax errors would prune on every malformed query.
+  return (
+    message.includes("sqlite_full")
+    || message.includes("disk is full")
+    || message.includes("database is full")
+    || message.includes("exceeds the maximum size")
+    || message.includes("maximum database size")
+  );
+}
+
+function maybeScheduleEmergencyPrune(env, ctx) {
+  if (lastObservedDbSizeBytes < D1_SOFT_LIMIT_BYTES) {
+    return;
+  }
+  const now = Date.now();
+  if (now - lastEmergencyPruneAtMs < EMERGENCY_PRUNE_COOLDOWN_MS) {
+    return;
+  }
+  lastEmergencyPruneAtMs = now;
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(emergencyPrune(env));
+  }
+}
+
+async function emergencyPrune(env) {
+  console.error(
+    `EMERGENCY PRUNE: db size ${lastObservedDbSizeBytes} bytes >= soft limit ${D1_SOFT_LIMIT_BYTES}; pruning with halved retention windows`,
+  );
+  await pruneOldEvents(env, { retentionScale: 0.5, maxBatches: 24 });
+}
 
 // Retention windows, in days, per event type. Children (turn_details /
 // session_details) are deleted before their parent events rows to satisfy the
@@ -88,11 +330,14 @@ const RETENTION_DAYS = {
 const PRUNE_BATCH_LIMIT = 10000;
 const PRUNE_MAX_BATCHES_PER_RUN = 12;
 
-async function pruneOldEvents(env) {
+async function pruneOldEvents(env, options = {}) {
+  const retentionScale = options.retentionScale ?? 1;
+  const maxBatches = options.maxBatches ?? PRUNE_MAX_BATCHES_PER_RUN;
   let batchesUsed = 0;
   for (const [eventType, days] of Object.entries(RETENTION_DAYS)) {
-    const cutoff = `-${days} days`;
-    while (batchesUsed < PRUNE_MAX_BATCHES_PER_RUN) {
+    const scaledDays = Math.max(1, Math.round(days * retentionScale));
+    const cutoff = `-${scaledDays} days`;
+    while (batchesUsed < maxBatches) {
       batchesUsed += 1;
       try {
         // Delete detail children first so the events FK never blocks the prune.
@@ -114,6 +359,7 @@ async function pruneOldEvents(env) {
              WHERE event = ? AND created_at < datetime('now', ?)
              LIMIT ?)`
         ).bind(eventType, cutoff, PRUNE_BATCH_LIMIT).run();
+        observeDbSize(result);
         const changes = result?.meta?.changes ?? result?.changes ?? 0;
         if (changes < PRUNE_BATCH_LIMIT) {
           break;
@@ -671,7 +917,9 @@ async function insertDynamic(env, table, entries) {
   const placeholders = columns.map(() => "?").join(", ");
   const sql = `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
   const values = entries.map(([, value]) => value);
-  return env.DB.prepare(sql).bind(...values).run();
+  const result = await env.DB.prepare(sql).bind(...values).run();
+  observeDbSize(result);
+  return result;
 }
 
 function boolToInt(value) {

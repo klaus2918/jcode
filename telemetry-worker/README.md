@@ -9,6 +9,60 @@ ever installed jcode OR did meaningful work in it. Run it with:
 wrangler d1 execute jcode-telemetry --remote --file=users.sql
 ```
 
+## Storage architecture
+
+Events are dual-written to two stores with different jobs:
+
+1. **Workers Analytics Engine firehose** (`jcode_telemetry_firehose` dataset):
+   every event, written first. Time-series store with no database size cap and
+   ~90-day retention (adaptive sampling on reads; `index1` is the
+   `telemetry_id`, so per-user sampling stays accurate). This is the primary
+   store for high-volume raw analysis (`turn_end`, `session_start`,
+   `onboarding_step` volume) and the safety net: telemetry keeps recording
+   even when D1 is full. Column mapping lives in `FIREHOSE_SCHEMA` in
+   `src/worker.js` and is **append-only** (never reorder or repurpose a
+   position). Query it via the [Analytics Engine SQL API](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/):
+   ```bash
+   # Requires an API token with Account Analytics read. Example: auth failure
+   # reasons over the last 7 days (blob9=auth_provider, blob11=auth_failure_reason).
+   curl -s "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/analytics_engine/sql" \
+     -H "Authorization: Bearer $CF_ANALYTICS_TOKEN" \
+     -d "SELECT blob9 AS provider, blob11 AS reason, SUM(_sample_interval) AS n
+         FROM jcode_telemetry_firehose
+         WHERE blob1 = 'onboarding_step' AND blob8 = 'auth_failed'
+           AND timestamp > NOW() - INTERVAL '7' DAY
+         GROUP BY provider, reason ORDER BY n DESC"
+   ```
+2. **D1** (`jcode-telemetry` database): the durable relational store for
+   identity anchors (`install`, `feedback`), auth/lifecycle events, the
+   `daily_active_users` rollup, and a retention-pruned raw tail of the
+   high-volume events (see `RETENTION_DAYS`). All the dashboard SQL in this
+   repo (`users.sql`, `dau.sql`, `health.sql`) reads D1.
+
+### D1 size self-defense
+
+D1 hard-caps databases at 500 MB on the free plan; at the cap every insert
+500s and telemetry silently stops (June 2026: ~3 days lost). Defenses, in
+order:
+
+- The worker observes `meta.size_after` on every D1 write. Past the soft
+  limit (`D1_SOFT_LIMIT_BYTES`, just above the file's high-water mark) it
+  triggers an **emergency prune** (halved retention windows, rate-limited to
+  one per 10 minutes per isolate) instead of waiting for the nightly cron.
+- If an insert fails with a SQLITE_FULL-class error, the emergency prune runs
+  immediately, bounding a June-style outage to minutes instead of days.
+- The nightly cron re-checks size after the normal prune and escalates to the
+  emergency prune if still over the soft limit.
+- If a D1 insert still fails, the request returns `{ok, durable:false,
+  firehose:true}` instead of a 500, because the event was captured in the
+  firehose.
+- `GET /v1/health` reports `db_size_bytes` vs the soft limit for external
+  monitoring.
+
+Note: D1 has no `VACUUM`, so the file never shrinks; deletes only free pages
+internally for reuse. If bloat itself becomes the problem, rotate to a fresh
+database (create new D1 DB, copy live rows, repoint `wrangler.toml`).
+
 ## Setup
 
 1. Install wrangler: `npm install`
