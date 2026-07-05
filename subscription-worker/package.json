@@ -1,0 +1,17 @@
+{
+  "name": "subscription-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "test": "node --test test/worker.test.mjs",
+    "deploy": "npx wrangler deploy",
+    "migrate": "npx wrangler d1 execute jcode-subscriptions --remote --file=schema.sql",
+    "migrate:local": "npx wrangler d1 execute jcode-subscriptions --local --file=schema.sql",
+    "health": "curl -s https://subscription-api.jeremyhuang55555.workers.dev/v1/health"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

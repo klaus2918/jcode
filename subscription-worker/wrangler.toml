@@ -1,0 +1,29 @@
+name = "subscription-api"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "jcode-subscriptions"
+# Fill in after `wrangler d1 create jcode-subscriptions`
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Custom domain routing. Uncomment once the api.solosystems.dev zone/DNS is
+# ready in the Cloudflare dashboard; until then the worker is reachable at
+# subscription-api.<account>.workers.dev.
+#[[routes]]
+#pattern = "api.solosystems.dev/*"
+#custom_domain = true
+
+[vars]
+# Stripe price IDs mapped to tiers. Non-secret, safe to keep in vars.
+PRICE_ID_PLUS = "price_REPLACE_PLUS"
+PRICE_ID_FLAGSHIP = "price_REPLACE_FLAGSHIP"
+# Base URL used in magic-link emails (GET /v1/auth/verify lives under it).
+PUBLIC_BASE_URL = "https://subscription-api.jeremyhuang55555.workers.dev"
+
+# Secrets (set via `wrangler secret put <NAME>`):
+#   RESEND_API_KEY        - Resend HTTP API key (magic-link emails)
+#   STRIPE_WEBHOOK_SECRET - Stripe webhook signing secret (whsec_...)
+#   ANTHROPIC_API_KEY     - upstream key for claude-* models
+#   OPENAI_API_KEY        - upstream key for gpt-* models
