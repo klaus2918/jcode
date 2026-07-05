@@ -124,7 +124,14 @@ npm run deploy
 
 1. Create two recurring prices (Plus, Flagship) in the Stripe dashboard and
    put their `price_...` ids into `PRICE_ID_PLUS` / `PRICE_ID_FLAGSHIP` in
-   `wrangler.toml`.
+   `wrangler.toml`. The current test-mode IDs (sandbox
+   `acct_1TpkGjDDRk0ghBLm`) are:
+
+   ```toml
+   PRICE_ID_PLUS = "price_1TpkQYDdPoMy1kBxXlfk6HfN"
+   PRICE_ID_FLAGSHIP = "price_1TpkQYDdPoMy1kBxjyBQPOZt"
+   ```
+
 2. Add a webhook endpoint pointing at
    `https://<worker-host>/v1/stripe/webhook` subscribed to:
    `checkout.session.completed`, `customer.subscription.updated`,
@@ -134,6 +141,40 @@ npm run deploy
 4. Sell via Checkout / Payment Links using the customer's email; the
    `checkout.session.completed` event links (or creates) the account by
    email, and the subscription events set tier/status.
+
+#### Stripe API best practices
+
+- **Production keys**: use a Stripe restricted key (`rk_live_...`) scoped to
+  only Checkout Sessions, Subscriptions, and Customers rather than a full
+  secret key (`sk_live_...`). Never commit any Stripe key.
+- **API version pinning**: pin `Stripe-Version: 2026-06-24.dahlia` on all
+  direct Stripe API calls so dashboard version upgrades cannot silently
+  change response shapes.
+- **Checkout Sessions**: any Checkout Session creation must use
+  `mode='subscription'` and must NOT pass `payment_method_types` (let Stripe
+  Dashboard payment-method settings and dynamic payment methods decide).
+  Example:
+
+  ```bash
+  curl https://api.stripe.com/v1/checkout/sessions \
+    -u "$STRIPE_RESTRICTED_KEY:" \
+    -H "Stripe-Version: 2026-06-24.dahlia" \
+    -d mode=subscription \
+    -d "line_items[0][price]"=price_1TpkQYDdPoMy1kBxXlfk6HfN \
+    -d "line_items[0][quantity]"=1 \
+    -d customer_email="user@example.com" \
+    -d success_url="https://jcode.dev/thanks" \
+    -d cancel_url="https://jcode.dev/pricing"
+  ```
+
+- **Local webhook testing**: forward events to the local dev worker with
+
+  ```bash
+  stripe listen --forward-to localhost:8787/v1/stripe/webhook
+  ```
+
+  and use the `whsec_...` it prints as `STRIPE_WEBHOOK_SECRET` for the local
+  run.
 
 ### Resend setup
 

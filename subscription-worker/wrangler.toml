@@ -17,8 +17,10 @@ database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
 [vars]
 # Stripe price IDs mapped to tiers. Non-secret, safe to keep in vars.
-PRICE_ID_PLUS = "price_REPLACE_PLUS"
-PRICE_ID_FLAGSHIP = "price_REPLACE_FLAGSHIP"
+# Test-mode price IDs (Stripe sandbox acct_1TpkGjDDRk0ghBLm). Swap for the
+# live-mode price IDs when going to production.
+PRICE_ID_PLUS = "price_1TpkQYDdPoMy1kBxXlfk6HfN"
+PRICE_ID_FLAGSHIP = "price_1TpkQYDdPoMy1kBxjyBQPOZt"
 # Base URL used in magic-link emails (GET /v1/auth/verify lives under it).
 PUBLIC_BASE_URL = "https://subscription-api.jeremyhuang55555.workers.dev"
 
