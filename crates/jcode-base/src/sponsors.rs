@@ -23,8 +23,7 @@ pub const SPONSORED_DISCOVERY_URL: &str = "https://solosystems.dev/sponsored-dis
 pub const SPONSORED_DISCOVERY_TAG: &str = "[sponsored discovery]";
 
 /// First-use-per-session disclosure line rendered in the TUI.
-pub const SPONSORED_DISCOVERY_NOTICE: &str =
-    "sponsored discovery: sponsors make tools discoverable, never recommended \
+pub const SPONSORED_DISCOVERY_NOTICE: &str = "sponsored discovery: sponsors make tools discoverable, never recommended \
      (solosystems.dev/sponsored-discovery)";
 
 /// Categories in which discoverable tools exist. Shipped as a constant so the

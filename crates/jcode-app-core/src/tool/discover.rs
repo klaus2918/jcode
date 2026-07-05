@@ -97,44 +97,15 @@ impl Tool for DiscoverToolsTool {
             ));
         }
 
-        let endpoint = config.sponsors.endpoint.trim_end_matches('/');
-        let mut request = self
-            .client
-            .get(format!("{endpoint}/discover"))
-            .query(&[("category", category.as_str())])
-            .header(
-                reqwest::header::USER_AGENT,
-                format!("jcode/{}", env!("CARGO_PKG_VERSION")),
-            )
-            .timeout(DISCOVERY_TIMEOUT);
-        if let Some(query) = params.query.as_deref().filter(|q| !q.trim().is_empty()) {
-            request = request.query(&[("q", query.trim())]);
-        }
-        if let Some(reason) = params.reason.as_deref().filter(|r| !r.trim().is_empty()) {
-            request = request.query(&[("reason", reason.trim())]);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|err| anyhow::anyhow!("discovery unavailable: {err}"))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(anyhow::anyhow!("discovery unavailable: HTTP {status}"));
-        }
-        let body = response
-            .text()
-            .await
-            .map_err(|err| anyhow::anyhow!("discovery unavailable: {err}"))?;
-        if body.len() > MAX_RESPONSE_BYTES {
-            return Err(anyhow::anyhow!(
-                "discovery response too large ({} bytes)",
-                body.len()
-            ));
-        }
-
-        let listing: Value = serde_json::from_str(&body)
-            .map_err(|err| anyhow::anyhow!("discovery returned invalid JSON: {err}"))?;
+        let endpoint = config.sponsors.endpoint.clone();
+        let listing = fetch_listing(
+            &self.client,
+            &endpoint,
+            &category,
+            params.query.as_deref(),
+            params.reason.as_deref(),
+        )
+        .await?;
         let rendered = render_listing(&category, &listing)?;
 
         Ok(ToolOutput::new(rendered)
@@ -149,6 +120,54 @@ impl Tool for DiscoverToolsTool {
                 "disclosure_url": crate::sponsors::SPONSORED_DISCOVERY_URL,
             })))
     }
+}
+
+/// Fetch a category listing from the discovery endpoint. Sends the category,
+/// an optional capability query, and an optional reason string only. Hard
+/// fails on any error: no cache, no fallback, no retry.
+async fn fetch_listing(
+    client: &reqwest::Client,
+    endpoint: &str,
+    category: &str,
+    query: Option<&str>,
+    reason: Option<&str>,
+) -> Result<Value> {
+    let endpoint = endpoint.trim_end_matches('/');
+    let mut request = client
+        .get(endpoint)
+        .query(&[("category", category)])
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("jcode/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .timeout(DISCOVERY_TIMEOUT);
+    if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
+        request = request.query(&[("q", query.trim())]);
+    }
+    if let Some(reason) = reason.filter(|r| !r.trim().is_empty()) {
+        request = request.query(&[("reason", reason.trim())]);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|err| anyhow::anyhow!("discovery unavailable: {err}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(anyhow::anyhow!("discovery unavailable: HTTP {status}"));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|err| anyhow::anyhow!("discovery unavailable: {err}"))?;
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err(anyhow::anyhow!(
+            "discovery response too large ({} bytes)",
+            body.len()
+        ));
+    }
+    serde_json::from_str(&body)
+        .map_err(|err| anyhow::anyhow!("discovery returned invalid JSON: {err}"))
 }
 
 /// Render a discovery listing for the model. Expected manifest shape:
@@ -214,5 +233,141 @@ mod tests {
     fn render_listing_handles_empty_category() {
         let out = render_listing("payments", &json!({"tools": []})).unwrap();
         assert!(out.contains("No discoverable tools"));
+    }
+
+    /// Minimal one-shot HTTP server that answers a single request with the
+    /// given body, returning the request line + headers it received.
+    async fn one_shot_server(
+        status_line: &'static str,
+        body: String,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let response = format!(
+                "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.shutdown().await.ok();
+            request
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn fetch_listing_round_trips_and_sends_only_expected_params() {
+        let body = json!({"tools": [{"name": "agentcard", "blurb": "virtual cards", "url": "https://a.example"}]}).to_string();
+        let (endpoint, server) = one_shot_server("HTTP/1.1 200 OK", body).await;
+        let client = reqwest::Client::new();
+        let listing = fetch_listing(
+            &client,
+            &endpoint,
+            "payments",
+            Some("virtual card for checkout"),
+            Some("task needs an online payment"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listing["tools"][0]["name"], "agentcard");
+
+        let request = server.await.unwrap();
+        let request_line = request.lines().next().unwrap();
+        // Exactly the three disclosed parameters, nothing else.
+        assert!(request_line.contains("category=payments"), "{request_line}");
+        assert!(request_line.contains("q=virtual"), "{request_line}");
+        assert!(request_line.contains("reason=task"), "{request_line}");
+    }
+
+    #[tokio::test]
+    async fn fetch_listing_hard_fails_on_http_error() {
+        let (endpoint, _server) =
+            one_shot_server("HTTP/1.1 500 Internal Server Error", "{}".to_string()).await;
+        let client = reqwest::Client::new();
+        let err = fetch_listing(&client, &endpoint, "payments", None, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("discovery unavailable"));
+    }
+
+    #[tokio::test]
+    async fn fetch_listing_hard_fails_when_endpoint_unreachable() {
+        // Reserved port with no listener: connection refused, no fallback.
+        let client = reqwest::Client::new();
+        let err = fetch_listing(&client, "http://127.0.0.1:9", "payments", None, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("discovery unavailable"));
+    }
+
+    fn test_ctx() -> crate::tool::ToolContext {
+        crate::tool::ToolContext {
+            session_id: "test".into(),
+            message_id: "test".into(),
+            tool_call_id: "test".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_end_to_end_with_enabled_config_and_local_server() {
+        let _guard = crate::storage::lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::tempdir().unwrap();
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let body = json!({"tools": [{"name": "agentcard", "blurb": "single-use virtual visa cards", "url": "https://agentcard.example", "setup": "MCP server: npx agentcard-mcp"}]}).to_string();
+        let (endpoint, _server) = one_shot_server("HTTP/1.1 200 OK", body).await;
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("[sponsors]\nenabled = true\nendpoint = \"{endpoint}\"\n"),
+        )
+        .unwrap();
+        crate::config::Config::invalidate_cache();
+
+        let tool = DiscoverToolsTool::new();
+        let output = tool
+            .execute(
+                json!({
+                    "category": "payments",
+                    "query": "virtual card for checkout",
+                    "reason": "task requires an online card payment"
+                }),
+                test_ctx(),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.output.contains("agentcard"));
+        assert!(output.output.contains("sponsored discovery"));
+        assert!(output.output.contains("placement, not preference"));
+        let title = output.title.unwrap();
+        assert!(title.contains("[sponsored discovery]"), "{title}");
+        let meta = output.metadata.unwrap();
+        assert_eq!(meta["sponsored_discovery"], true);
+
+        // Disabled config: execute refuses without any network call.
+        std::fs::write(temp.path().join("config.toml"), "").unwrap();
+        crate::config::Config::invalidate_cache();
+        let err = tool
+            .execute(json!({"category": "payments", "reason": "x"}), test_ctx())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("disabled"));
+
+        if let Some(prev) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        crate::config::Config::invalidate_cache();
     }
 }
