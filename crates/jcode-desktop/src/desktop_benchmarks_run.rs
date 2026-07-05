@@ -758,11 +758,12 @@ pub(crate) fn run_desktop_stream_end_to_end_benchmark(
     let raw_events = raw_events.max(1);
     let (tx, rx) = mpsc::channel();
     for index in 0..raw_events {
-        tx.send(session_launch::DesktopSessionEvent::TextDelta(format!(
+        // Receiver lives until after the loop; send cannot fail, and a
+        // benchmark shouldn't panic even if it somehow did.
+        let _ = tx.send(session_launch::DesktopSessionEvent::TextDelta(format!(
             "{} ",
             index + 1
-        )))
-        .unwrap();
+        )));
     }
     drop(tx);
 

@@ -1764,7 +1764,7 @@ fn assert_streaming_preview_cleared(hash: u64, path: &str) {
 fn test_local_clear_command_clears_streaming_preview_diagram() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
-    let hash: u64 = 0x517E_A11E_D_0001;
+    let hash: u64 = 0x0005_17EA_11ED_0001;
     seed_streaming_preview(&mut app, hash);
 
     assert!(super::commands::handle_session_command(&mut app, "/clear"));
@@ -1797,7 +1797,7 @@ fn test_local_rewind_and_undo_clear_streaming_preview_diagram() {
         );
     }
 
-    let hash: u64 = 0x517E_A11E_D_0002;
+    let hash: u64 = 0x0005_17EA_11ED_0002;
     seed_streaming_preview(&mut app, hash);
     assert!(super::commands::handle_session_command(
         &mut app,
@@ -1821,7 +1821,7 @@ fn test_local_rewind_and_undo_clear_streaming_preview_diagram() {
 fn test_recover_session_without_tools_clears_streaming_preview_diagram() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
-    let hash: u64 = 0x517E_A11E_D_0003;
+    let hash: u64 = 0x0005_17EA_11ED_0003;
     seed_streaming_preview(&mut app, hash);
 
     app.recover_session_without_tools();

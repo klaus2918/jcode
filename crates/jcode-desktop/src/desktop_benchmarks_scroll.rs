@@ -773,10 +773,11 @@ pub(crate) fn run_scroll_render_benchmark(frames: usize) -> Result<()> {
         benchmark_phase(frames, |frame| {
             let (tx, rx) = mpsc::channel();
             for offset in 0..(BACKEND_EVENT_FORWARD_MAX_RAW_EVENTS * 3) {
-                tx.send(session_launch::DesktopSessionEvent::TextDelta(
+                // Receiver lives for the whole closure; ignore the
+                // impossible-error instead of panicking in a benchmark.
+                let _ = tx.send(session_launch::DesktopSessionEvent::TextDelta(
                     benchmark_typing_char(frame + offset).to_string(),
-                ))
-                .unwrap();
+                ));
             }
             let batch = collect_desktop_session_event_batch(
                 session_launch::DesktopSessionEvent::TextDelta(

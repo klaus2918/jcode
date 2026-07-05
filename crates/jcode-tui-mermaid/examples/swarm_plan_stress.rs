@@ -165,21 +165,22 @@ fn probe(name: &str, src: &str) -> bool {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ok = true;
 
     // (a) real plan fixture (35 items at snapshot time, so it also exercises
     // real truncation) + (a23) the original 23-item shape.
     let fixture = include_str!("swarm_plan_fixture.json");
-    let real: Vec<PlanItem> = serde_json::from_str(fixture).expect("fixture parses");
+    let real: Vec<PlanItem> = serde_json::from_str(fixture)?;
     println!("fixture items: {}", real.len());
-    let src_a = swarm_plan_mermaid(&real).expect("graph");
+    let src_a = swarm_plan_mermaid(&real).ok_or("graph render returned None")?;
     println!(
         "--- (a) real plan mermaid ({} lines) ---\n{src_a}",
         src_a.lines().count()
     );
     ok &= probe("a-real-plan-full", &src_a);
-    let src_a23 = swarm_plan_mermaid(&real[..real.len().min(23)]).expect("graph");
+    let src_a23 =
+        swarm_plan_mermaid(&real[..real.len().min(23)]).ok_or("graph render returned None")?;
     ok &= probe("a23-real-plan-23", &src_a23);
 
     // (b) truncation: 40 nodes, chain deps, disconnected 'more' summary node.
@@ -195,7 +196,7 @@ fn main() {
             )
         })
         .collect();
-    let src_b = swarm_plan_mermaid(&items_b).expect("graph");
+    let src_b = swarm_plan_mermaid(&items_b).ok_or("graph render returned None")?;
     assert!(src_b.contains("…and 10 more tasks"), "summary node missing");
     ok &= probe("b-truncation-40", &src_b);
 
@@ -216,7 +217,7 @@ fn main() {
         item("uni-exact", &exact, "running", &[]),
         item("uni-over", &over, "queued", &["uni-exact"]),
     ];
-    let src_c = swarm_plan_mermaid(&items_c).expect("graph");
+    let src_c = swarm_plan_mermaid(&items_c).ok_or("graph render returned None")?;
     println!("--- (c) unicode mermaid ---\n{src_c}");
     assert!(src_c.lines().next().is_some(), "unreachable");
     ok &= probe("c-unicode-max-label", &src_c);
@@ -234,7 +235,7 @@ fn main() {
             &["h3"],
         ),
     ];
-    let src_d = swarm_plan_mermaid(&items_d).expect("graph");
+    let src_d = swarm_plan_mermaid(&items_d).ok_or("graph render returned None")?;
     println!("--- (d) hostile-label mermaid ---\n{src_d}");
     ok &= probe("d-hostile-labels", &src_d);
 
@@ -253,7 +254,7 @@ fn main() {
         ("percent-directive", "%%{init: {'theme':'dark'}}%%"),
     ] {
         let its = vec![item("only", s, "queued", &[])];
-        let src = swarm_plan_mermaid(&its).expect("graph");
+        let src = swarm_plan_mermaid(&its).ok_or("graph render returned None")?;
         ok &= probe(&format!("d2-{tag}"), &src);
     }
 
@@ -264,7 +265,7 @@ fn main() {
         item("a_1", "second flavor of a1", "running", &["a-1"]),
         item("b", "depends on both", "queued", &["a-1", "a_1"]),
     ];
-    let src_e = swarm_plan_mermaid(&items_e).expect("graph");
+    let src_e = swarm_plan_mermaid(&items_e).ok_or("graph render returned None")?;
     println!("--- (e) duplicate-id + self-dep mermaid ---\n{src_e}");
     let decl_count = src_e
         .lines()
@@ -293,7 +294,7 @@ fn main() {
             &[],
         ));
     }
-    let src_f = swarm_plan_mermaid(&items_f).expect("graph");
+    let src_f = swarm_plan_mermaid(&items_f).ok_or("graph render returned None")?;
     assert!(src_f.contains("t_more["), "prefixed more node missing");
     assert!(src_f.contains("\n    more["), "summary more node missing");
     ok &= probe("f-more-id-collision", &src_f);
