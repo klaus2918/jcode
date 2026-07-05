@@ -1,41 +1,13 @@
 // Tests for the SwarmPlan -> inline chat plan-graph pipeline and the
 // plan-scope notification quieting (status line only, no chat card).
-
-// The SwarmPlan handler reads the process-global JCODE_ENABLE_MERMAID env
-// var, so every test in this file serializes on one lock and the env-mutating
-// test restores the previous value via a drop guard.
-static SWARM_PLAN_MERMAID_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn swarm_plan_mermaid_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    SWARM_PLAN_MERMAID_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-struct MermaidEnvGuard {
-    prev: Option<std::ffi::OsString>,
-}
-
-impl MermaidEnvGuard {
-    fn set(value: &str) -> Self {
-        let prev = std::env::var_os("JCODE_ENABLE_MERMAID");
-        // SAFETY: guarded by SWARM_PLAN_MERMAID_ENV_LOCK held by the caller
-        // for the guard's whole lifetime, so no concurrent env access races
-        // with this write within the tests that consult this variable.
-        unsafe { std::env::set_var("JCODE_ENABLE_MERMAID", value) };
-        Self { prev }
-    }
-}
-
-impl Drop for MermaidEnvGuard {
-    fn drop(&mut self) {
-        match self.prev.take() {
-            // SAFETY: see MermaidEnvGuard::set.
-            Some(prev) => unsafe { std::env::set_var("JCODE_ENABLE_MERMAID", prev) },
-            None => unsafe { std::env::remove_var("JCODE_ENABLE_MERMAID") },
-        }
-    }
-}
+//
+// Mermaid enablement is consulted through
+// `crate::tui::markdown::mermaid_rendering_enabled()`, which supports a
+// scoped thread-local test override
+// (`with_mermaid_rendering_override`). Tests here must NOT mutate the
+// process-global JCODE_ENABLE_MERMAID env var: doing so races every other
+// test thread that consults the same gate (e.g. the side-panel
+// placeholder-mode tests in ui_pinned_tests.rs).
 
 fn swarm_plan_graph_item(id: &str, content: &str) -> crate::plan::PlanItem {
     crate::plan::PlanItem {
@@ -133,7 +105,6 @@ impl Drop for DiagramModeOverrideGuard {
 /// NOT add an entry.
 #[test]
 fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
     let mut app = create_test_app();
@@ -382,7 +353,6 @@ fn test_active_diagrams_cap_eviction_swaps_currently_shown_diagram() {
 /// body path, and even that function renders mermaid blocks unconditionally.)
 #[test]
 fn test_offscreen_plan_graph_message_still_registers_active_diagram() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
     let mut app = create_test_app();
@@ -446,7 +416,6 @@ fn test_offscreen_plan_graph_message_still_registers_active_diagram() {
 /// transcript message is gone.
 #[test]
 fn test_session_change_history_leaks_previous_session_active_diagram() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
     let mut app = create_test_app();
@@ -573,7 +542,6 @@ fn history_event_for_session(session_id: &str) -> crate::protocol::ServerEvent {
 
 #[test]
 fn test_swarm_plan_event_pushes_inline_plan_graph_message() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -661,7 +629,6 @@ fn test_swarm_plan_event_pushes_inline_plan_graph_message() {
 
 #[test]
 fn test_plan_scope_notification_stays_off_the_transcript() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -717,7 +684,6 @@ fn test_non_plan_swarm_message_between_plan_versions_stacks_second_plan_graph() 
     // landing between two SwarmPlan events breaks trailing coalescing, so a
     // second "Plan graph · vN" diagram is appended instead of updating the
     // first in place.
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -762,7 +728,6 @@ fn test_non_plan_swarm_message_between_plan_versions_stacks_second_plan_graph() 
 fn test_out_of_order_older_swarm_plan_version_overwrites_newer_plan_graph_in_place() {
     // Wiring-audit claim 2: there is no version monotonicity guard, so an
     // out-of-order (older) SwarmPlan event overwrites a newer diagram.
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -794,7 +759,6 @@ fn test_history_session_change_clears_swarm_plan_state_and_plan_graph_does_not_r
     // Wiring-audit claim 3: the History server event clears swarm_plan_items
     // (server_events.rs ~1637) on session change and the plan-graph chat
     // message does not reappear from the restored history.
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -840,11 +804,11 @@ fn test_history_session_change_clears_swarm_plan_state_and_plan_graph_does_not_r
 
 #[test]
 fn test_swarm_plan_pushes_no_plan_graph_message_when_mermaid_disabled() {
-    // Wiring-audit claim 4: with JCODE_ENABLE_MERMAID=0 the SwarmPlan handler
-    // pushes no inline plan-graph message (raw mermaid source would be noise),
-    // while the plan snapshot state is still applied.
-    let _env_lock = swarm_plan_mermaid_env_lock();
-    let _env_guard = MermaidEnvGuard::set("0");
+    // Wiring-audit claim 4: with mermaid rendering disabled (opt-out, e.g.
+    // JCODE_ENABLE_MERMAID=0) the SwarmPlan handler pushes no inline
+    // plan-graph message (raw mermaid source would be noise), while the plan
+    // snapshot state is still applied. Uses the scoped thread-local override
+    // instead of mutating the process env, which would race parallel tests.
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -852,15 +816,17 @@ fn test_swarm_plan_pushes_no_plan_graph_message_when_mermaid_disabled() {
     remote.mark_history_loaded();
 
     let count_before = app.display_messages().len();
-    app.handle_server_event(
-        swarm_plan_event(7, vec![swarm_plan_graph_item("haiku-1", "write a haiku")]),
-        &mut remote,
-    );
+    crate::tui::markdown::with_mermaid_rendering_override(Some(false), || {
+        app.handle_server_event(
+            swarm_plan_event(7, vec![swarm_plan_graph_item("haiku-1", "write a haiku")]),
+            &mut remote,
+        );
+    });
 
     assert_eq!(
         app.display_messages().len(),
         count_before,
-        "JCODE_ENABLE_MERMAID=0 must suppress the inline plan graph message"
+        "disabled mermaid rendering must suppress the inline plan graph message"
     );
     assert!(plan_graph_titles(&app).is_empty());
     assert_eq!(
@@ -977,7 +943,6 @@ fn assert_transcript_clear_leaks_diagram_and_plan_state(
 /// the swarm plan snapshot fields.
 #[test]
 fn test_local_clear_command_leaves_stale_active_diagram_and_swarm_plan_state() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
     let mut app = create_test_app();
@@ -1007,7 +972,6 @@ fn test_local_clear_command_leaves_stale_active_diagram_and_swarm_plan_state() {
 /// diagram nor resets the swarm plan snapshot.
 #[test]
 fn test_local_rewind_and_undo_leave_stale_active_diagram_and_swarm_plan_state() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
     let mut app = create_test_app();
@@ -1060,7 +1024,6 @@ fn test_local_rewind_and_undo_leave_stale_active_diagram_and_swarm_plan_state() 
 /// same way.
 #[test]
 fn test_recover_session_without_tools_leaves_stale_active_diagram_and_swarm_plan_state() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
     let mut app = create_test_app();
@@ -1089,7 +1052,6 @@ fn test_recover_session_without_tools_leaves_stale_active_diagram_and_swarm_plan
 /// the remote clear command wipes provider/display messages only.
 #[test]
 fn test_remote_clear_command_leaves_stale_active_diagram_and_swarm_plan_state() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
     let mut app = create_test_app();
@@ -1126,7 +1088,6 @@ fn test_remote_clear_command_leaves_stale_active_diagram_and_swarm_plan_state() 
 /// transcript clear.)
 #[test]
 fn test_disconnected_ctrl_l_clear_leaves_stale_active_diagram_and_swarm_plan_state() {
-    let _env_lock = swarm_plan_mermaid_env_lock();
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
     let mut app = create_test_app();
