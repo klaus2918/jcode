@@ -42,8 +42,6 @@ pub use activity::{
     get_activity, pipeline_start, pipeline_update, record_injected_prompt, set_state,
 };
 use cache::{cache_graph, cached_graph};
-#[cfg(test)]
-use pending::{backdate_injected_memory_for_test, insert_pending_memory_for_test};
 pub use pending::{
     PendingMemory, clear_all_injected_memories, clear_all_pending_memory, clear_injected_memories,
     clear_pending_memory, has_any_pending_memory, has_pending_memory, is_memory_injected,
@@ -51,6 +49,8 @@ pub use pending::{
     set_pending_memory_with_ids, set_pending_memory_with_ids_and_display, sync_injected_memories,
     take_pending_memory,
 };
+#[cfg(test)]
+use pending::{backdate_injected_memory_for_test, insert_pending_memory_for_test};
 use pending::{begin_memory_check, finish_memory_check};
 pub(crate) use prompt_support::format_context_for_extraction;
 pub use prompt_support::{
