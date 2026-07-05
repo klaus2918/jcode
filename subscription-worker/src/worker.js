@@ -712,6 +712,12 @@ async function consumeAnthropicStream(stream, parser, translator, decoder) {
 
 async function proxyOpenAI(env, ctx, body, requestId, meter) {
   const upstreamBody = { ...body };
+  // Current OpenAI models reject legacy `max_tokens`; translate it. Clients
+  // sending either field get a working request, matching the Anthropic path.
+  if (upstreamBody.max_tokens != null && upstreamBody.max_completion_tokens == null) {
+    upstreamBody.max_completion_tokens = upstreamBody.max_tokens;
+  }
+  delete upstreamBody.max_tokens;
   if (upstreamBody.stream) {
     // Ensure the final chunk carries usage so we can meter from the tail.
     upstreamBody.stream_options = { ...(upstreamBody.stream_options || {}), include_usage: true };
