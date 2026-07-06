@@ -354,8 +354,12 @@ mod tests {
         let meta = output.metadata.unwrap();
         assert_eq!(meta["sponsored_discovery"], true);
 
-        // Disabled config: execute refuses without any network call.
-        std::fs::write(temp.path().join("config.toml"), "").unwrap();
+        // Opted-out config: execute refuses without any network call.
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "[sponsors]\nenabled = false\n",
+        )
+        .unwrap();
         crate::config::Config::invalidate_cache();
         let err = tool
             .execute(json!({"category": "payments", "reason": "x"}), test_ctx())

@@ -8,6 +8,8 @@
 //!
 //! Design constraints (see the sponsored-discovery page for the public
 //! version of this policy):
+//! - Discovery is on by default and can be opted out of with
+//!   `[sponsors] enabled = false` in config.toml.
 //! - The category list below is a shipped constant, so building the system
 //!   prompt never requires a network request.
 //! - Tools within a category live server-side and are fetched on demand by
@@ -70,11 +72,11 @@ mod tests {
     }
 
     #[test]
-    fn prompt_section_is_none_by_default() {
-        // sponsors.enabled defaults to false; the default config must not
-        // advertise discovery.
+    fn prompt_section_enabled_by_default() {
+        // sponsors.enabled defaults to true (opt-out); the default config
+        // advertises discovery.
         let config = crate::config::Config::default();
-        assert!(!config.sponsors.enabled);
+        assert!(config.sponsors.enabled);
     }
 
     #[test]
