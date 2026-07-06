@@ -3,7 +3,7 @@
 //! Sponsored discovery makes third-party developer tools discoverable to the
 //! agent through the `discover_tools` tool, backed by a hosted manifest.
 //! Sponsors buy placement (discoverability), never recommendations. The
-//! policy is disclosed in the UI with a `[sponsored discovery]` tag whose
+//! policy is disclosed in the UI with a `(sponsored discovery)` tag whose
 //! definition lives at <https://solosystems.dev/sponsored-discovery>.
 //!
 //! Design constraints (see the sponsored-discovery page for the public
@@ -20,11 +20,11 @@
 pub const SPONSORED_DISCOVERY_URL: &str = "https://solosystems.dev/sponsored-discovery";
 
 /// Disclosure tag rendered in the UI whenever discovery is used.
-pub const SPONSORED_DISCOVERY_TAG: &str = "[sponsored discovery]";
+pub const SPONSORED_DISCOVERY_TAG: &str = "(sponsored discovery)";
 
 /// First-use-per-session disclosure line rendered in the TUI.
-pub const SPONSORED_DISCOVERY_NOTICE: &str = "sponsored discovery: sponsors make tools discoverable, never recommended \
-     (solosystems.dev/sponsored-discovery)";
+pub const SPONSORED_DISCOVERY_NOTICE: &str = "sponsors make tools discoverable, never recommended \
+     \u{b7} solosystems.dev/sponsored-discovery";
 
 /// Categories in which discoverable tools exist. Shipped as a constant so the
 /// prompt never depends on the network. The tools within each category are

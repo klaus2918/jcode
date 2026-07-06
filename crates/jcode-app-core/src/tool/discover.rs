@@ -16,7 +16,7 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 ///
 /// Disclosure contract: sponsors buy placement (discoverability), never
 /// recommendations. Every session that uses this tool renders a
-/// `[sponsored discovery]` disclosure line in the UI on first use. The
+/// `(sponsored discovery)` disclosure line in the UI on first use. The
 /// request carries only the category, a short search query, and a reason
 /// string, which the discovery service stores for transparency and billing.
 /// It must never include session content or private information.
@@ -350,7 +350,7 @@ mod tests {
         assert!(output.output.contains("sponsored discovery"));
         assert!(output.output.contains("placement, not preference"));
         let title = output.title.unwrap();
-        assert!(title.contains("[sponsored discovery]"), "{title}");
+        assert!(title.contains("(sponsored discovery)"), "{title}");
         let meta = output.metadata.unwrap();
         assert_eq!(meta["sponsored_discovery"], true);
 

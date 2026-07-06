@@ -1,7 +1,7 @@
 //! Sponsored discovery disclosure line.
 //!
 //! Whenever a session first uses the `discover_tools` tool, we render a
-//! persistent `[sponsored discovery]` system line in the transcript. This is
+//! persistent `(sponsored discovery)` system line in the transcript. This is
 //! a disclosure, not a teaching hint: unlike `swarm_hint` it has no lifetime
 //! cap and fires once per session, every session, as long as sponsored
 //! discovery is used. The line links to the public policy page so users can
@@ -15,7 +15,7 @@ pub(super) const DISCOVERY_TOOL_NAME: &str = "discover_tools";
 /// The disclosure line shown in the transcript.
 pub(super) fn disclosure_message() -> String {
     format!(
-        "\u{1f4e2} {} {}",
+        "{} {}",
         crate::sponsors::SPONSORED_DISCOVERY_TAG,
         crate::sponsors::SPONSORED_DISCOVERY_NOTICE
     )
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn disclosure_names_the_policy_and_links_it() {
         let message = disclosure_message();
-        assert!(message.contains("[sponsored discovery]"));
+        assert!(message.contains("(sponsored discovery)"));
         assert!(message.contains("never recommended"));
         assert!(message.contains("solosystems.dev/sponsored-discovery"));
     }
