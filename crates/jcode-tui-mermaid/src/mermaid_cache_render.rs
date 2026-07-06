@@ -146,6 +146,23 @@ impl MermaidCache {
         Some(existing)
     }
 
+    /// In-memory-only lookup for `hash` under ANY render profile (most
+    /// recently used wins). Still no filesystem access. Needed by the inline
+    /// draw path: a transcript mermaid render lands under an aspect-tagged
+    /// profile, while the draw thread runs outside that aspect scope, so an
+    /// exact-profile lookup would never find it.
+    fn get_in_memory_any_profile(&mut self, hash: u64) -> Option<CachedDiagram> {
+        let key = self
+            .order
+            .iter()
+            .rev()
+            .find(|(entry_hash, _)| *entry_hash == hash)
+            .copied()?;
+        let existing = self.entries.get(&key).cloned()?;
+        self.touch(key);
+        Some(existing)
+    }
+
     pub(super) fn insert(&mut self, hash: u64, profile: RenderProfile, diagram: CachedDiagram) {
         let key = (hash, profile);
         if let std::collections::hash_map::Entry::Occupied(mut entry) = self.entries.entry(key) {
@@ -538,6 +555,34 @@ pub(super) fn evict_render_cache_for_test(hash: u64) {
     evict_render_cache_by_hash(hash);
 }
 
+/// Test-only: insert a render-cache entry under the CURRENT render profile
+/// (so a test can simulate a transcript render inside an aspect scope).
+#[cfg(test)]
+pub(super) fn insert_render_cache_entry_for_test(
+    hash: u64,
+    path: PathBuf,
+    width: u32,
+    height: u32,
+) {
+    if let Ok(mut cache) = RENDER_CACHE.lock() {
+        cache.insert(
+            hash,
+            current_render_profile(),
+            CachedDiagram {
+                path,
+                width,
+                height,
+            },
+        );
+    }
+}
+
+/// Test-only view of the hot-path in-memory lookup.
+#[cfg(test)]
+pub(super) fn get_cached_diagram_in_memory_for_test(hash: u64) -> Option<CachedDiagram> {
+    get_cached_diagram_in_memory(hash)
+}
+
 fn evict_render_cache_by_hash(hash: u64) {
     let mut cache = RENDER_CACHE
         .lock()
@@ -596,6 +641,10 @@ pub(super) fn get_cached_diagram_in_memory(hash: u64) -> Option<CachedDiagram> {
     cache
         .get_in_memory(hash, profile)
         .or_else(|| cache.get_in_memory(hash, RenderProfile::default()))
+        // Transcript mermaid diagrams are rendered under an aspect-tagged
+        // profile, but the draw path calls this outside that aspect scope.
+        // Any cached PNG for the hash beats a permanently blank placeholder.
+        .or_else(|| cache.get_in_memory_any_profile(hash))
 }
 
 fn get_cached_diagram_for_profile(

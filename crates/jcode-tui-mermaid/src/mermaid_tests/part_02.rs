@@ -620,3 +620,40 @@ fn streaming_preview_then_final_registration_does_not_double_count() {
     super::clear_active_diagrams();
     super::restore_active_diagrams(saved);
 }
+
+/// Regression: a mermaid diagram rendered under an aspect-tagged profile
+/// (the transcript render path wraps `with_preferred_aspect_ratio`) must be
+/// visible to the profile-agnostic draw/probe paths that run OUTSIDE that
+/// aspect scope. Before the fix, `inline_image_is_materialized` only checked
+/// the default profile key and `get_cached_diagram_in_memory` only checked
+/// current+default profiles, so the plan-graph placeholder stayed blank
+/// forever: the prewarm worker kept "succeeding" without ever making the
+/// probe true.
+#[test]
+fn aspect_profile_cache_entry_is_visible_to_profile_agnostic_probes() {
+    const HASH: u64 = 0x51AB_1E5C_AFE0_0001;
+    // Insert an entry under an aspect-tagged (non-default) profile, exactly
+    // like a deferred transcript render with an inline aspect goal does.
+    super::with_preferred_aspect_ratio(Some(1.333), || {
+        super::cache_render::insert_render_cache_entry_for_test(
+            HASH,
+            std::path::PathBuf::from("/nonexistent/aspect_profile_probe.png"),
+            1560,
+            1170,
+        );
+    });
+
+    assert!(
+        super::inline_image_is_materialized(HASH),
+        "materialization probe must see the aspect-profile cache entry"
+    );
+    let cached = super::cache_render::get_cached_diagram_in_memory_for_test(HASH);
+    assert!(
+        cached.is_some(),
+        "in-memory draw-path lookup must find the aspect-profile entry \
+         even outside the aspect render scope"
+    );
+
+    super::cache_render::evict_render_cache_for_test(HASH);
+    assert!(!super::inline_image_is_materialized(HASH));
+}

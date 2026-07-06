@@ -116,13 +116,20 @@ pub fn materialize_inline_image(media_type: &str, data_b64: &str) -> Option<(u64
 }
 
 /// Cheap presence probe: is this inline image already registered in the
-/// in-memory render cache? One mutex lock + map lookup; no payload hashing,
-/// no payload clone, no filesystem access. Used by the per-frame draw path so
-/// steady-state scrolling never touches the multi-megabyte payload.
+/// in-memory render cache? One mutex lock + bounded key scan; no payload
+/// hashing, no payload clone, no filesystem access. Used by the per-frame
+/// draw path so steady-state scrolling never touches the multi-megabyte
+/// payload.
+///
+/// Matches ANY render profile for the hash, not just the default: mermaid
+/// diagrams rendered toward an inline aspect goal are cached under an
+/// aspect-tagged profile key, and a default-only probe would report them as
+/// missing forever (the draw path would then spin on prewarms that succeed
+/// without ever flipping this probe, leaving a permanently blank placeholder).
 pub fn inline_image_is_materialized(id: u64) -> bool {
     RENDER_CACHE
         .lock()
-        .map(|cache| cache.entries.contains_key(&(id, RenderProfile::default())))
+        .map(|cache| cache.entries.keys().any(|(hash, _)| *hash == id))
         .unwrap_or(false)
 }
 
