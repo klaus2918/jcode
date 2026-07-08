@@ -256,6 +256,22 @@ test("web_pageview is normalized and stored in events + web_details", async () =
   assert.ok(detailInsert.values.includes("hn"));
 });
 
+test("web_pageview without event_id mints one so web_details still lands", async () => {
+  // The real beacon (jcode-website public/beacon.js) does not send event_id;
+  // web_details joins on it, so the worker must mint one server-side.
+  const db = makeDb();
+  const ctx = makeCtx();
+
+  const body = makeWebBody();
+  delete body.event_id;
+  const response = await worker.fetch(postRequest(body), { DB: db }, ctx);
+  assert.equal(response.status, 200);
+
+  const detailInsert = db.executed.find(({ sql }) => /INSERT OR IGNORE INTO web_details/.test(sql));
+  assert.ok(detailInsert, "web_details row inserted despite missing event_id");
+  assert.ok(detailInsert.values.includes("/pricing"));
+});
+
 test("web_pageview without visitor_id is rejected", async () => {
   const db = makeDb();
   const response = await worker.fetch(

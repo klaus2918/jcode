@@ -1133,6 +1133,9 @@ function normalizeWebEvent(body) {
   }
   body.visitor_id = body.visitor_id.slice(0, 96);
   body.id = body.id || body.visitor_id;
+  // The beacon does not send an event_id, but web_details rows join on it.
+  // Mint one server-side so path/referrer/utm/cta are actually persisted.
+  body.event_id = body.event_id || crypto.randomUUID();
   body.version = body.version || "web";
   body.os = body.os || "web";
   body.arch = body.arch || "web";
