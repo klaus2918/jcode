@@ -35,9 +35,35 @@ jobs:
         working-directory: ios
         run: swift test
 
+  compile-check:
+    name: xcodebuild (simulator, unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build app target for iOS simulator (no signing)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project JCodeMobile.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tail -60
+
   build-and-upload:
     name: Build, sign, upload to TestFlight
-    needs: test
+    needs: [test, compile-check]
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
