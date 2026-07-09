@@ -25,7 +25,9 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::logging;
 mod auth;
 mod registry;
-use auth::{WsAuth, WsAuthSource, extract_ws_auth, ws_error_response};
+use auth::{
+    AuthorizedDevice, WsAuth, WsAuthSource, authorize_ws_device, extract_ws_auth, ws_error_response,
+};
 #[cfg(test)]
 pub(crate) use auth::{is_valid_hex_token, parse_bearer_token, parse_query_token};
 pub use jcode_gateway_types::{PairedDevice, PairingCode};
@@ -144,7 +146,10 @@ async fn handle_ws_connection(
 ) -> Result<()> {
     // Perform WebSocket handshake with a callback to inspect headers.
     // Prefer Authorization headers, but continue accepting ?token= for browser clients.
-    let auth = Arc::new(std::sync::Mutex::new(None::<WsAuth>));
+    // Token validation happens HERE, before the handshake completes, so
+    // revoked/unknown tokens receive a proper 401 instead of a silent
+    // accept-then-drop (which clients cannot distinguish from network flakes).
+    let auth = Arc::new(std::sync::Mutex::new(None::<(WsAuth, AuthorizedDevice)>));
     let auth_cb = Arc::clone(&auth);
 
     let ws_stream = tokio_tungstenite::accept_hdr_async(
@@ -160,22 +165,24 @@ async fn handle_ws_connection(
             }
 
             let ws_auth = extract_ws_auth(request)?;
+            // Reload from disk to pick up newly paired or revoked devices.
+            let device = authorize_ws_device(&DeviceRegistry::load(), &ws_auth.token)?;
             let mut guard = auth_cb
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *guard = Some(ws_auth);
+            *guard = Some((ws_auth, device));
             Ok(response)
         },
     )
     .await?;
 
-    // Validate auth token
-    let auth = auth
+    let (auth, device) = auth
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take()
         .ok_or_else(|| anyhow::anyhow!("No auth token provided"))?;
     let token = auth.token;
+    let (device_name, device_id) = (device.name, device.id);
 
     if auth.source == WsAuthSource::Query {
         logging::info(&format!(
@@ -184,22 +191,12 @@ async fn handle_ws_connection(
         ));
     }
 
-    let (device_name, device_id) = {
+    {
         let mut reg = registry.write().await;
-        // Reload from disk to pick up newly paired devices
+        // Reload from disk so the shared registry matches what we validated.
         *reg = DeviceRegistry::load();
-        match reg.validate_token(&token) {
-            Some(device) => {
-                let name = device.name.clone();
-                let id = device.id.clone();
-                reg.touch_device(&token);
-                (name, id)
-            }
-            None => {
-                anyhow::bail!("Invalid auth token from {}", peer_addr);
-            }
-        }
-    };
+        reg.touch_device(&token);
+    }
 
     logging::info(&format!(
         "Gateway: {} connected (device: {}, addr: {})",
