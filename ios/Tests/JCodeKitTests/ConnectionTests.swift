@@ -8,6 +8,7 @@ actor FakeTransport: WebSocketTransport {
     enum Behavior {
         case succeed
         case failConnect
+        case unauthorized
     }
 
     let behavior: Behavior
@@ -23,6 +24,9 @@ actor FakeTransport: WebSocketTransport {
     func connect(url: URL, authToken: String) async throws {
         if behavior == .failConnect {
             throw TransportError.notConnected
+        }
+        if behavior == .unauthorized {
+            throw TransportError.unauthorized
         }
     }
 
@@ -231,6 +235,31 @@ private func makeConnection(transport: FakeTransport) -> Connection {
     }
     #expect(phases.contains(.reconnecting(attempt: 1)))
     #expect(phases.last == .connected)
+
+    await connection.stop()
+}
+
+@Test func unauthorizedStopsReconnectingAndAsksForRePair() async throws {
+    let transport = FakeTransport(behavior: .unauthorized)
+    let connection = Connection(
+        configuration: .init(
+            gateway: Gateway(host: "test.local"),
+            authToken: "tok",
+            maxReconnectAttempts: nil,  // would retry forever without the 401 short-circuit
+            baseBackoffSeconds: 0.01
+        ),
+        makeTransport: { transport }
+    )
+    let stream = await connection.start()
+
+    var iterator = stream.makeAsyncIterator()
+    #expect(await iterator.next() == .phase(.connecting))
+    let final = await iterator.next()
+    guard case .phase(.failed(let reason))? = final else {
+        Issue.record("expected .failed phase, got \(String(describing: final))")
+        return
+    }
+    #expect(reason.contains("Re-pair"))
 
     await connection.stop()
 }

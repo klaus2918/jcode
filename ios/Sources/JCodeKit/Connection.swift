@@ -136,6 +136,17 @@ public actor Connection {
                 // Clean close: fall through to reconnect.
             } catch {
                 if Task.isCancelled || stopped { break }
+                if case TransportError.unauthorized = error {
+                    // Retrying with the same token can never succeed.
+                    self.transport = nil
+                    yield(
+                        .phase(
+                            .failed(
+                                reason:
+                                    "This device is no longer paired with the server. Re-pair to reconnect."
+                            )))
+                    return
+                }
             }
             self.transport = nil
             if Task.isCancelled || stopped { break }

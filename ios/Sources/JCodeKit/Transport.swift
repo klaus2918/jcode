@@ -30,14 +30,24 @@ public actor URLSessionWebSocketTransport: WebSocketTransport {
         self.task = task
         // Force the handshake to complete (and surface auth failures) by
         // sending a WebSocket-level ping before declaring success.
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            task.sendPing { error in
-                if let error {
-                    cont.resume(throwing: error)
-                } else {
-                    cont.resume()
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                task.sendPing { error in
+                    if let error {
+                        cont.resume(throwing: error)
+                    } else {
+                        cont.resume()
+                    }
                 }
             }
+        } catch {
+            // The gateway rejects unknown/revoked tokens at the upgrade with
+            // 401. Surface that distinctly so the connection loop can stop
+            // retrying and prompt a re-pair instead of backing off forever.
+            if let http = task.response as? HTTPURLResponse, http.statusCode == 401 {
+                throw TransportError.unauthorized
+            }
+            throw error
         }
     }
 
@@ -81,4 +91,8 @@ public actor URLSessionWebSocketTransport: WebSocketTransport {
 
 public enum TransportError: Error, Equatable {
     case notConnected
+    /// The server rejected the WebSocket upgrade as unauthorized (401):
+    /// the pairing token is unknown or was revoked. Reconnecting with the
+    /// same token cannot succeed; the device must re-pair.
+    case unauthorized
 }
