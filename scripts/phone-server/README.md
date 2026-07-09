@@ -71,6 +71,13 @@ Stopped instance cost ≈ $6/mo (EBS 30GB + idle Elastic IP).
   bearer token minted at pairing. Tokens stored hashed server-side.
 - Wake/pair lambda endpoints require the query token; wrong token = 403.
 - SSH is key-only. Ports open: 22, 7643, 7644.
+- **Tailscale**: the instance is on the tailnet as `jcode-phone`
+  (100.109.78.41, `tailscale set --hostname jcode-phone`, tailscale-ssh off).
+  Phones running Tailscale can pair/connect via the tailnet IP instead of the
+  public Elastic IP, which wraps the plain `ws://` protocol in WireGuard.
+  Hardening option (not enabled): remove 7643/7644 from the security group to
+  go tailnet-only; this breaks the wake page's pair button (Lambda is not on
+  the tailnet) but the wake/stop lifecycle still works via EC2 APIs.
 - IAM: instance role has `AmazonBedrockFullAccess` only. Waker lambda:
   start/describe EC2 + logs. Breaker lambda: stop/describe EC2 + SNS publish.
 
