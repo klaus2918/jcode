@@ -17,6 +17,8 @@
 //! memory agent (depends only on `Sidecar` + `MemoryEntry`).
 
 use std::collections::HashSet;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::memory_types::MemoryEntry;
 use crate::sidecar::Sidecar;
@@ -26,6 +28,54 @@ pub const LLM_RERANK_SYSTEM: &str = "You re-rank stored MEMORIES by how useful e
 Order them best-first: a memory ranks high if a competent engineer would say knowing it specifically helps respond here (a relevant fact, preference, correction, or procedure). \
 Off-topic, generic, or keyword-only matches rank low. \
 Reply with ONLY a JSON array of candidate numbers, best first, e.g. [3,1,7]. Include only clearly useful candidates; omit ones that are not relevant. No prose.";
+
+const TRANSIENT_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
+const AUTH_FAILURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
+static FAILURE_BACKOFF_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn failure_backoff_active() -> bool {
+    let Ok(mut guard) = FAILURE_BACKOFF_UNTIL.lock() else {
+        return false;
+    };
+    match *guard {
+        Some(until) if until > Instant::now() => true,
+        Some(_) => {
+            *guard = None;
+            false
+        }
+        None => false,
+    }
+}
+
+fn record_failure_backoff(error: &anyhow::Error) {
+    let error = error.to_string().to_ascii_lowercase();
+    let permanent_auth_failure = error.contains("401")
+        || error.contains("unauthorized")
+        || error.contains("authentication_error")
+        || error.contains("invalid authentication credentials")
+        || error.contains("invalid_grant");
+    let duration = if permanent_auth_failure {
+        AUTH_FAILURE_BACKOFF
+    } else {
+        TRANSIENT_FAILURE_BACKOFF
+    };
+    if let Ok(mut guard) = FAILURE_BACKOFF_UNTIL.lock() {
+        let candidate = Instant::now() + duration;
+        if match *guard {
+            Some(existing) => existing < candidate,
+            None => true,
+        } {
+            *guard = Some(candidate);
+        }
+    }
+}
+
+/// Clear the process-wide judge circuit breaker after real auth state changes.
+pub(crate) fn clear_failure_backoff() {
+    if let Ok(mut guard) = FAILURE_BACKOFF_UNTIL.lock() {
+        *guard = None;
+    }
+}
 
 /// Cap the query length fed to the reranker. The query should already be the
 /// focused (noise-stripped) view; this is a defensive bound. We keep the TAIL,
@@ -199,6 +249,16 @@ pub async fn rerank_candidates_consensus_attributed(
     votes: usize,
     min_agree: usize,
 ) -> (Vec<MemoryEntry>, RerankOutcome) {
+    if failure_backoff_active() {
+        crate::logging::event_rate_limited(
+            crate::logging::LogLevel::Info,
+            "memory_consensus_judge_backoff",
+            Duration::from_secs(60),
+            "Memory consensus judge circuit breaker active; skipping LLM calls",
+            Vec::<(&str, String)>::new(),
+        );
+        return (Vec::new(), RerankOutcome::AllJudgesFailed);
+    }
     let votes = votes.max(1);
     let min_agree = min_agree.clamp(1, votes);
     if votes == 1 {
@@ -232,7 +292,14 @@ pub async fn rerank_candidates_consensus_attributed(
             match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
                 Ok(resp) => extract_ranking(&resp, n), // Some([]) = nothing relevant
                 Err(e) => {
-                    crate::logging::info(&format!("Memory consensus judge failed: {e}"));
+                    record_failure_backoff(&e);
+                    crate::logging::event_rate_limited(
+                        crate::logging::LogLevel::Warn,
+                        "memory_consensus_judge_failed",
+                        Duration::from_secs(60),
+                        "Memory consensus judge failed; circuit breaker armed",
+                        vec![("error", e.to_string())],
+                    );
                     None // transport error = no vote
                 }
             }
@@ -537,5 +604,17 @@ mod tests {
     fn tally_consensus_empty_when_no_votes() {
         let ballots = vec![Some(vec![]), Some(vec![])];
         assert!(tally_consensus(&ballots, 3, 1).is_empty());
+    }
+
+    #[test]
+    fn judge_failure_backoff_arms_and_auth_invalidation_clears_it() {
+        clear_failure_backoff();
+        assert!(!failure_backoff_active());
+        record_failure_backoff(&anyhow::anyhow!(
+            "Claude API error (401 Unauthorized): invalid authentication credentials"
+        ));
+        assert!(failure_backoff_active());
+        clear_failure_backoff();
+        assert!(!failure_backoff_active());
     }
 }

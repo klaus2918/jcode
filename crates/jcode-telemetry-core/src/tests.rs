@@ -18,6 +18,17 @@ fn global_test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[test]
+fn permanent_telemetry_statuses_trip_the_process_breaker() {
+    assert!(telemetry_status_is_permanent(400));
+    assert!(telemetry_status_is_permanent(401));
+    assert!(telemetry_status_is_permanent(404));
+    assert!(!telemetry_status_is_permanent(408));
+    assert!(!telemetry_status_is_permanent(425));
+    assert!(!telemetry_status_is_permanent(429));
+    assert!(!telemetry_status_is_permanent(500));
+}
+
 fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
     global_test_lock()
 }

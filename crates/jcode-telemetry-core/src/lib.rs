@@ -17,7 +17,8 @@ use lifecycle::emit_lifecycle_event;
 use serde_json::Value;
 use state_support::*;
 use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const TELEMETRY_ENDPOINT: &str = "https://jcode-telemetry.jeremyhuang55555.workers.dev/v1/event";
@@ -26,6 +27,8 @@ const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
 const BLOCKING_LIFECYCLE_TIMEOUT: Duration = Duration::from_millis(800);
 const TELEMETRY_SCHEMA_VERSION: u32 = 5;
 const DEFAULT_DISCOVERY_ENDPOINT: &str = "https://api.solosystems.dev/v1/discovery";
+static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
+static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryTelemetry<'a> {
@@ -926,25 +929,36 @@ pub fn record_command_family(command: &str) {
 }
 
 fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
-    let client = match reqwest::blocking::Client::builder()
-        .user_agent(jcode_provider_core::JCODE_USER_AGENT)
+    if TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
+        return false;
+    }
+    let client = TELEMETRY_HTTP_CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .user_agent(jcode_provider_core::JCODE_USER_AGENT)
+            .build()
+            .expect("telemetry HTTP client should build")
+    });
+    match client
+        .post(TELEMETRY_ENDPOINT)
         .timeout(timeout)
-        .build()
+        .json(&payload)
+        .send()
     {
-        Ok(client) => client,
-        Err(err) => {
-            logging::error(&format!("failed to build telemetry HTTP client: {err}"));
-            return false;
-        }
-    };
-    match client.post(TELEMETRY_ENDPOINT).json(&payload).send() {
-        Ok(response) => match response.error_for_status() {
-            Ok(_) => true,
-            Err(err) => {
-                logging::warn(&format!("telemetry endpoint rejected payload: {err}"));
-                false
+        Ok(response) if response.status().is_success() => true,
+        Ok(response) => {
+            let status = response.status();
+            if telemetry_status_is_permanent(status.as_u16()) {
+                TELEMETRY_PERMANENTLY_REJECTED.store(true, Ordering::Relaxed);
+                logging::warn(&format!(
+                    "telemetry endpoint permanently rejected payload with HTTP {status}; suppressing telemetry delivery for this process"
+                ));
+            } else {
+                logging::warn(&format!(
+                    "telemetry endpoint temporarily rejected payload with HTTP {status}"
+                ));
             }
-        },
+            false
+        }
         Err(err) => {
             logging::warn(&format!("telemetry payload send failed: {err}"));
             false
@@ -952,9 +966,16 @@ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     }
 }
 
+fn telemetry_status_is_permanent(status: u16) -> bool {
+    (400..500).contains(&status) && !matches!(status, 408 | 425 | 429)
+}
+
 fn send_payload(payload: serde_json::Value, mode: DeliveryMode) -> bool {
     match mode {
         DeliveryMode::Background => {
+            if TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
+                return false;
+            }
             logging::debug("queueing telemetry payload for background delivery");
             std::thread::spawn(move || {
                 let _ = post_payload(payload, ASYNC_SEND_TIMEOUT);

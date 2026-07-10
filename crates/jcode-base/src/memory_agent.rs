@@ -727,6 +727,11 @@ impl MemoryAgent {
                 let agents = &crate::config::config().agents;
                 let votes = agents.memory_rerank_votes.max(1);
                 let min_agree = agents.memory_rerank_min_agree.clamp(1, votes);
+                // Record the attempt before awaiting the judge. Failed attempts
+                // still obey the configured cadence instead of retrying on every
+                // subsequent context update.
+                let attempt_turn = self.session_state(session_id).turn_count;
+                self.session_state(session_id).last_rerank_turn = Some(attempt_turn);
                 let (reranked, outcome) =
                     crate::memory_rerank::rerank_candidates_consensus_attributed(
                         &sidecar,
@@ -748,26 +753,30 @@ impl MemoryAgent {
                 if outcome == crate::memory_rerank::RerankOutcome::Judged {
                     // Real judge verdict: surface it and remember it as the new
                     // verified set for future cadence/failure carries.
-                    let turn = self.session_state(session_id).turn_count;
                     let result: Vec<_> = reranked.into_iter().take(MAX_MEMORIES_PER_TURN).collect();
                     {
                         let ss = self.session_state(session_id);
-                        ss.last_rerank_turn = Some(turn);
                         ss.last_verified_ids = result.iter().map(|e| e.id.clone()).collect();
                     }
                     result
                 } else {
                     // Judge FAILED this turn (rerank returned empty). Do NOT inject
                     // unvetted hybrid order; carry the last judge-verified set so
-                    // everything surfaced stays judge-backed. Don't advance
-                    // last_rerank_turn, so the next eligible turn retries the judge.
+                    // everything surfaced stays judge-backed. The failed attempt still
+                    // advances the cadence, while the global circuit breaker suppresses
+                    // cross-session retry storms.
                     let carried = self.carry_verified(session_id, new_candidates);
-                    crate::logging::info(&format!(
-                        "[{}] Memory judge failed ({:?}); carrying {} previously verified memories (no hybrid fallback)",
-                        session_id,
-                        outcome,
-                        carried.len()
-                    ));
+                    crate::logging::event_rate_limited(
+                        crate::logging::LogLevel::Info,
+                        "memory_judge_failed_carry",
+                        std::time::Duration::from_secs(60),
+                        "Memory judge unavailable; carrying previously verified memories",
+                        vec![
+                            ("session_id", session_id.to_string()),
+                            ("outcome", format!("{outcome:?}")),
+                            ("carried", carried.len().to_string()),
+                        ],
+                    );
                     carried
                 }
             } else {
