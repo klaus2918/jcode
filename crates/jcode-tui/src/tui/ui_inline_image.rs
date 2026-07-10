@@ -607,6 +607,7 @@ fn fit_rows(width: u32, height: u32, chat_width: u16, viewport_height: u16) -> u
 /// (see `inline_image_body_target_from_screen`).
 pub(crate) fn image_label_line(
     item: &InlineImageItem,
+    width: u16,
     images_visible: bool,
     _level: ImageExpandLevel,
 ) -> Line<'static> {
@@ -617,22 +618,25 @@ pub(crate) fn image_label_line(
         format!("{}  {}", item.label, dims)
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let mut spans = vec![
-        Span::styled("  ", dim),
-        Span::styled(label, dim),
+    let prefix = Line::from(vec![Span::styled("  ", dim), Span::styled(label, dim)]);
+    let mut suffix = vec![
         Span::raw("  "),
         Span::styled(super::viewport::copy_badge_alt_badge(), dim),
         Span::styled(" [⇧] [I] ", dim),
     ];
     if images_visible {
-        spans.push(Span::styled("hide", dim));
+        suffix.push(Span::styled("hide", dim));
     } else {
-        spans.push(Span::styled(
+        suffix.push(Span::styled(
             "show image",
             Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
         ));
     }
-    Line::from(spans)
+    jcode_tui_render::truncate_line_preserving_suffix_to_width(
+        &prefix,
+        &Line::from(suffix),
+        width as usize,
+    )
 }
 
 /// Lines for images anchored at a transcript message: per image, a leading
@@ -651,7 +655,7 @@ pub(crate) fn anchored_image_lines(
     for item in items {
         let level = levels.expand_level(item.id);
         lines.push(Line::from(""));
-        lines.push(image_label_line(item, images_visible, level));
+        lines.push(image_label_line(item, width, images_visible, level));
         if images_visible {
             let (rows, cols) = fit_geometry_anchored(item.width, item.height, width, level);
             lines.extend(mermaid::inline_image_placeholder_lines(item.id, rows, cols));
@@ -688,7 +692,7 @@ pub(crate) fn build_section(
 
     for item in items {
         let level = levels.expand_level(item.id);
-        lines.push(image_label_line(item, images_visible, level));
+        lines.push(image_label_line(item, width, images_visible, level));
 
         if images_visible {
             // The bottom (unanchored) section is rebuilt every frame, not body
@@ -941,10 +945,33 @@ mod tests {
 
     #[test]
     fn visible_label_line_advertises_hide_badge() {
-        let line = image_label_line(&item(600, 400), true, ImageExpandLevel::Fit);
+        let line = image_label_line(&item(600, 400), 80, true, ImageExpandLevel::Fit);
         let text = jcode_tui_render::line_plain_text(&line);
         assert!(text.contains("[⇧] [I]"), "badge keys missing: {text:?}");
         assert!(text.contains("hide"), "hide hint missing: {text:?}");
+    }
+
+    #[test]
+    fn generated_image_label_is_truncated_to_one_terminal_row() {
+        let mut generated = item(1536, 864);
+        generated.label = "/home/jeremy/jcode/.jcode/generated-images/1783707839145-ig_0c5e377de871aba5016a51388779588196944d98eff2c7aa30.png".to_string();
+
+        let line = image_label_line(&generated, 52, true, ImageExpandLevel::Fit);
+        let text = jcode_tui_render::line_plain_text(&line);
+
+        assert!(line.width() <= 52, "label exceeded chat width: {text:?}");
+        assert!(
+            text.contains('…'),
+            "truncated label needs an ellipsis: {text:?}"
+        );
+        assert!(
+            text.ends_with("hide"),
+            "toggle suffix must remain visible: {text:?}"
+        );
+        assert!(
+            !text.contains('\n'),
+            "label must remain one logical line: {text:?}"
+        );
     }
 
     #[test]
@@ -971,7 +998,7 @@ mod tests {
     #[test]
     fn visible_label_line_stays_single_purpose_without_expand_badge() {
         // The label must stay a short single line: no expand badge, no dots.
-        let line = image_label_line(&item(600, 400), true, ImageExpandLevel::Fit);
+        let line = image_label_line(&item(600, 400), 80, true, ImageExpandLevel::Fit);
         let text = jcode_tui_render::line_plain_text(&line);
         assert!(
             !text.contains("expand") && !text.contains('○') && !text.contains('●'),
@@ -981,7 +1008,7 @@ mod tests {
 
     #[test]
     fn hidden_label_line_omits_expand_badge() {
-        let line = image_label_line(&item(600, 400), false, ImageExpandLevel::Fit);
+        let line = image_label_line(&item(600, 400), 80, false, ImageExpandLevel::Fit);
         let text = jcode_tui_render::line_plain_text(&line);
         assert!(text.contains("show image"), "show badge missing: {text:?}");
         assert!(
