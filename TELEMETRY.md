@@ -55,6 +55,34 @@ Recent telemetry additions also include: coarse onboarding steps, explicit thumb
 | `feedback_rating` | `"up"` / `"down"` | Legacy explicit product sentiment, if present |
 | `feedback_reason` | `"slow"` | Legacy optional coarse reason bucket, if present |
 
+### Sponsored Discovery Event
+
+One event is sent after each `discover_tools` attempt. A random per-request ID
+is also sent to the discovery API as the `x-jcode-discovery-request-id` header,
+allowing client reliability telemetry to be correlated with server request logs
+without exposing prompts or a persistent telemetry identifier to that service.
+
+| Field | Example | Purpose |
+|-------|---------|----------|
+| `event` | `"discovery"` | Event type |
+| `request_id` | `"9a23..."` | Random correlation ID scoped to one request |
+| `phase` | `"browse"` / `"select"` / `"unknown"` | Discovery funnel stage |
+| `category` | `"payments"` | Fixed discovery category, when valid |
+| `selected_tool` | `"agentcard"` | Public catalog tool name in the select phase |
+| `outcome` | `"success"` / `"failure"` | Attempt result |
+| `failure_reason` | `"timeout"` | Allowlisted coarse failure class only |
+| `http_status` | `200` | Discovery service response status, if received |
+| `latency_ms` | `125` | End-to-end client attempt latency |
+| `response_bytes` | `2048` | Response payload size, if received |
+| `result_count` | `3` | Number of browse results, or one for selection |
+| `query_present` / `reason_present` | `true` / `true` | Presence flags only |
+| `custom_endpoint` | `false` | Whether a non-default discovery endpoint was configured |
+
+The query text, selection-reason text, endpoint URL, prompts, transcript, file
+paths, and tool setup instructions are **not** included in telemetry. The
+backend rejects unknown phase, outcome, and failure labels rather than storing
+arbitrary strings.
+
 ### Session Start Event
 
 | Field | Example | Purpose |

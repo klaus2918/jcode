@@ -26,6 +26,28 @@ function makeBody(overrides = {}) {
   };
 }
 
+function makeDiscoveryBody(overrides = {}) {
+  return makeBody({
+    event: "discovery",
+    event_id: "discovery-event-1",
+    session_id: "session-1",
+    request_id: "11111111-2222-4333-8444-555555555555",
+    phase: "browse",
+    category: "payments",
+    selected_tool: null,
+    outcome: "success",
+    failure_reason: null,
+    http_status: 200,
+    latency_ms: 125,
+    response_bytes: 2048,
+    result_count: 3,
+    query_present: true,
+    reason_present: true,
+    custom_endpoint: false,
+    ...overrides,
+  });
+}
+
 function postRequest(body, url = EVENT_URL) {
   return new Request(url, {
     method: "POST",
@@ -70,6 +92,16 @@ function makeDb(plan = {}) {
               results: [
                 "event_id", "path", "referrer", "visitor_id", "utm_source",
                 "utm_medium", "utm_campaign", "cta",
+              ].map((name) => ({ name })),
+            };
+          }
+          if (/table_info\(discovery_details\)/.test(sql)) {
+            return {
+              results: [
+                "event_id", "request_id", "phase", "category", "selected_tool",
+                "outcome", "failure_reason", "http_status", "latency_ms",
+                "response_bytes", "result_count", "query_present",
+                "reason_present", "custom_endpoint",
               ].map((name) => ({ name })),
             };
           }
@@ -137,6 +169,46 @@ test("event is dual-written: firehose point + D1 insert", async () => {
   assert.equal(point.doubles.length, 20);
 
   assert.ok(db.executed.some(({ sql }) => /INSERT OR IGNORE INTO events/.test(sql)));
+});
+
+test("discovery event is validated, firehosed, and persisted to details", async () => {
+  const db = makeDb();
+  const discoveryFirehose = makeFirehose();
+  const response = await worker.fetch(
+    postRequest(makeDiscoveryBody()),
+    { DB: db, FIREHOSE_DISCOVERY: discoveryFirehose },
+    makeCtx(),
+  );
+  const json = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(json.ok, true);
+  assert.equal(json.firehose, true);
+  assert.equal(discoveryFirehose.points.length, 1);
+  const point = discoveryFirehose.points[0];
+  assert.equal(point.blobs[7], "11111111-2222-4333-8444-555555555555");
+  assert.equal(point.blobs[8], "browse");
+  assert.equal(point.blobs[9], "payments");
+  assert.equal(point.blobs[11], "success");
+  assert.equal(point.doubles[3], 200);
+  assert.equal(point.doubles[4], 125);
+  assert.equal(point.doubles[7], 1);
+
+  const detailInsert = db.executed.find(({ sql }) => /INSERT OR IGNORE INTO discovery_details/.test(sql));
+  assert.ok(detailInsert);
+  assert.ok(detailInsert.values.includes("11111111-2222-4333-8444-555555555555"));
+  assert.ok(detailInsert.values.includes("payments"));
+  assert.ok(!detailInsert.values.some((value) => String(value).includes("virtual card")));
+});
+
+test("discovery event rejects unknown failure classifications", async () => {
+  const response = await worker.fetch(
+    postRequest(makeDiscoveryBody({ outcome: "failure", failure_reason: "raw secret error" })),
+    { DB: makeDb(), FIREHOSE_DISCOVERY: makeFirehose() },
+    makeCtx(),
+  );
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /failure_reason/);
 });
 
 test("D1 failure with firehose success degrades to durable:false instead of 500", async () => {

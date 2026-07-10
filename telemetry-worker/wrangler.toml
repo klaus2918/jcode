@@ -46,5 +46,11 @@ dataset = "jcode_telemetry_firehose"
 binding = "FIREHOSE_WEB"
 dataset = "jcode_web_firehose"
 
+# Privacy-safe sponsored-discovery funnel and reliability telemetry. A separate
+# dataset avoids repurposing the full main firehose schema.
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_DISCOVERY"
+dataset = "jcode_discovery_firehose"
+
 [vars]
 ALLOWED_ORIGIN = "*"

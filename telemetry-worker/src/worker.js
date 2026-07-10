@@ -2,6 +2,7 @@ let cachedEventColumns = null;
 let cachedSessionDetailColumns = null;
 let cachedTurnDetailColumns = null;
 let cachedWebDetailColumns = null;
+let cachedDiscoveryDetailColumns = null;
 
 // Website beacon events (anonymous visitor_id minted in localStorage). Their
 // web-only fields live in the web_details table (see migration 0016): the
@@ -29,6 +30,7 @@ const CLI_EVENTS = [
   "turn_end",
   "session_end",
   "session_crash",
+  "discovery",
 ];
 
 const KNOWN_EVENTS = [...CLI_EVENTS, ...WEB_EVENTS, ...SUBSCRIPTION_EVENTS];
@@ -173,7 +175,26 @@ const FIREHOSE_WEB_SCHEMA = {
   indexes: ["visitor_id_or_telemetry_id"],
 };
 
+// Sponsored discovery gets a dedicated dataset. The main CLI firehose is at
+// Analytics Engine's 20 blob / 20 double limit, and discovery dimensions need
+// to remain independently queryable for reliability and funnel analysis.
+const FIREHOSE_DISCOVERY_SCHEMA = {
+  blobs: [
+    "event", "version", "os", "arch", "build_channel", "event_id",
+    "session_id", "request_id", "phase", "category", "selected_tool",
+    "outcome", "failure_reason",
+  ],
+  doubles: [
+    "is_ci", "is_git_checkout", "ran_from_cargo", "http_status",
+    "latency_ms", "response_bytes", "result_count", "query_present",
+    "reason_present", "custom_endpoint",
+  ],
+};
+
 function writeFirehose(env, body) {
+  if (body.event === "discovery") {
+    return writeDiscoveryFirehose(env, body);
+  }
   if (WEB_EVENTS.includes(body.event) || SUBSCRIPTION_EVENTS.includes(body.event)) {
     return writeWebFirehose(env, body);
   }
@@ -214,6 +235,33 @@ function writeFirehose(env, body) {
     return true;
   } catch (err) {
     console.warn("firehose write failed", err?.message || err);
+    return false;
+  }
+}
+
+function writeDiscoveryFirehose(env, body) {
+  const sink = env.FIREHOSE_DISCOVERY;
+  if (!sink || typeof sink.writeDataPoint !== "function") {
+    return false;
+  }
+  const boolFields = new Set([
+    "is_ci", "is_git_checkout", "ran_from_cargo", "query_present",
+    "reason_present", "custom_endpoint",
+  ]);
+  try {
+    sink.writeDataPoint({
+      indexes: [String(body.id || "").slice(0, 96)],
+      blobs: FIREHOSE_DISCOVERY_SCHEMA.blobs.map((name) => {
+        const value = body[name];
+        return value == null ? "" : String(value).slice(0, 200);
+      }),
+      doubles: FIREHOSE_DISCOVERY_SCHEMA.doubles.map((name) => (
+        boolFields.has(name) ? boolToInt(body[name]) : Number(body[name]) || 0
+      )),
+    });
+    return true;
+  } catch (err) {
+    console.warn("discovery firehose write failed", err?.message || err);
     return false;
   }
 }
@@ -312,6 +360,13 @@ export default {
 
     if (SUBSCRIPTION_EVENTS.includes(body.event)) {
       const problem = normalizeSubscriptionEvent(body);
+      if (problem) {
+        return jsonResponse({ error: problem }, 400, cors);
+      }
+    }
+
+    if (body.event === "discovery") {
+      const problem = normalizeDiscoveryEvent(body);
       if (problem) {
         return jsonResponse({ error: problem }, 400, cors);
       }
@@ -517,6 +572,22 @@ async function insertEvent(env, body) {
   const sessionDetailColumns = await getSessionDetailColumns(env);
   const turnDetailColumns = await getTurnDetailColumns(env);
   const common = commonEventEntries(body, columns);
+
+  if (body.event === "discovery") {
+    const values = [
+      ["telemetry_id", body.id],
+      ["event", body.event],
+      ["version", body.version],
+      ["os", body.os],
+      ["arch", body.arch],
+      ...common,
+    ].filter(([name]) => columns.has(name));
+    const inserted = await insertEventRow(env, body, values);
+    if (inserted) {
+      await insertDiscoveryDetails(env, body, await getDiscoveryDetailColumns(env));
+    }
+    return;
+  }
 
   if (WEB_EVENTS.includes(body.event)) {
     const values = [
@@ -1097,6 +1168,44 @@ async function getWebDetailColumns(env) {
   return cachedWebDetailColumns;
 }
 
+async function getDiscoveryDetailColumns(env) {
+  if (cachedDiscoveryDetailColumns) {
+    return cachedDiscoveryDetailColumns;
+  }
+  try {
+    const result = await env.DB.prepare("PRAGMA table_info(discovery_details)").all();
+    cachedDiscoveryDetailColumns = new Set((result.results || []).map((row) => row.name));
+  } catch {
+    cachedDiscoveryDetailColumns = new Set();
+  }
+  return cachedDiscoveryDetailColumns;
+}
+
+async function insertDiscoveryDetails(env, body, columns) {
+  if (!columns || columns.size === 0 || !body.event_id || !columns.has("event_id")) {
+    return;
+  }
+  const values = [
+    ["event_id", body.event_id],
+    ["request_id", body.request_id],
+    ["phase", body.phase],
+    ["category", body.category || null],
+    ["selected_tool", body.selected_tool || null],
+    ["outcome", body.outcome],
+    ["failure_reason", body.failure_reason || null],
+    ["http_status", body.http_status ?? null],
+    ["latency_ms", body.latency_ms || 0],
+    ["response_bytes", body.response_bytes ?? null],
+    ["result_count", body.result_count ?? null],
+    ["query_present", boolToInt(body.query_present)],
+    ["reason_present", boolToInt(body.reason_present)],
+    ["custom_endpoint", boolToInt(body.custom_endpoint)],
+  ].filter(([name]) => columns.has(name));
+  if (values.length > 1) {
+    await insertDynamic(env, "discovery_details", values);
+  }
+}
+
 async function insertWebDetails(env, body, columns) {
   if (!columns || columns.size === 0 || !body.event_id || !columns.has("event_id")) {
     return;
@@ -1160,6 +1269,48 @@ function normalizeSubscriptionEvent(body) {
       body[field] = String(body[field]).slice(0, 200);
     }
   }
+  return null;
+}
+
+function normalizeDiscoveryEvent(body) {
+  const phases = new Set(["browse", "select", "unknown"]);
+  const outcomes = new Set(["success", "failure"]);
+  const failures = new Set([
+    "disabled", "invalid_input", "invalid_category", "timeout",
+    "connect_error", "transport_error", "http_error", "body_error",
+    "response_too_large", "invalid_json", "invalid_response",
+  ]);
+  if (typeof body.request_id !== "string" || body.request_id.length === 0) {
+    return "Missing request_id";
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.request_id)) {
+    return "Invalid request_id";
+  }
+  if (!phases.has(body.phase)) {
+    return "Invalid discovery phase";
+  }
+  if (!outcomes.has(body.outcome)) {
+    return "Invalid discovery outcome";
+  }
+  if (body.outcome === "failure" && !failures.has(body.failure_reason)) {
+    return "Invalid discovery failure_reason";
+  }
+  if (body.outcome === "success") {
+    body.failure_reason = null;
+  }
+  body.request_id = body.request_id.slice(0, 96);
+  for (const field of ["category", "selected_tool"]) {
+    if (body[field] != null) {
+      body[field] = String(body[field]).slice(0, 100);
+      if (!/^[a-z0-9][a-z0-9 ._+\/-]{0,99}$/i.test(body[field])) {
+        return `Invalid discovery ${field}`;
+      }
+    }
+  }
+  body.http_status = body.http_status == null ? null : Math.max(100, Math.min(599, Number(body.http_status) || 0));
+  body.latency_ms = Math.max(0, Math.min(300_000, Number(body.latency_ms) || 0));
+  body.response_bytes = body.response_bytes == null ? null : Math.max(0, Math.min(1_048_576, Number(body.response_bytes) || 0));
+  body.result_count = body.result_count == null ? null : Math.max(0, Math.min(10_000, Number(body.result_count) || 0));
   return null;
 }
 
