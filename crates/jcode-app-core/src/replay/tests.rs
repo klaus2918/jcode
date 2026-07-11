@@ -256,6 +256,7 @@ fn test_export_timeline_includes_persisted_swarm_replay_events() {
                     report_back_to_session_id: None,
                     todo_progress: None,
                     todo_items: Vec::new(),
+                    runtime: crate::protocol::SwarmMemberRuntime::default(),
                 }],
             },
         },
@@ -328,6 +329,7 @@ fn test_timeline_to_replay_events_converts_swarm_replay_events() {
                     report_back_to_session_id: None,
                     todo_progress: None,
                     todo_items: Vec::new(),
+                    runtime: crate::protocol::SwarmMemberRuntime::default(),
                 }],
             },
         },
@@ -397,6 +399,7 @@ fn test_load_swarm_sessions_discovers_related_sessions() {
         report_back_to_session_id: None,
         todo_progress: None,
         todo_items: Vec::new(),
+        runtime: crate::protocol::SwarmMemberRuntime::default(),
     }]);
     seed.save().unwrap();
 
