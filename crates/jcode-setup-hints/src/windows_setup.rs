@@ -250,8 +250,7 @@ pub(super) fn windows_launch_hotkeys_notice(state: &SetupHintsState) -> Option<S
         .into_iter()
         .filter(|hk| windows_hotkeys::chord_to_win32(&hk.chord).is_some())
         .map(|hk| {
-            let cwd =
-                crate::launch_hotkeys::resolve_target_dir(&hk.dir, &last_dir, &last_repo);
+            let cwd = crate::launch_hotkeys::resolve_target_dir(&hk.dir, &last_dir, &last_repo);
             super::LaunchHotkeyRow {
                 chord: hk.chord.canonical(),
                 display: windows_hotkeys::display_windows(&hk.chord),

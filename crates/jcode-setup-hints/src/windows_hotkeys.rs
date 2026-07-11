@@ -66,17 +66,17 @@ pub(crate) fn chord_to_win32(chord: &KeyChord) -> Option<(u32, u32)> {
 /// Translate a canonical jcode key token into a Win32 virtual-key code.
 fn key_to_vk(key: &str) -> Option<u32> {
     let vk = match key {
-        ";" => 0xBA,   // VK_OEM_1
-        "=" => 0xBB,   // VK_OEM_PLUS
-        "," => 0xBC,   // VK_OEM_COMMA
-        "-" => 0xBD,   // VK_OEM_MINUS
-        "." => 0xBE,   // VK_OEM_PERIOD
-        "/" => 0xBF,   // VK_OEM_2
-        "`" => 0xC0,   // VK_OEM_3
-        "[" => 0xDB,   // VK_OEM_4
-        "\\" => 0xDC,  // VK_OEM_5
-        "]" => 0xDD,   // VK_OEM_6
-        "'" => 0xDE,   // VK_OEM_7
+        ";" => 0xBA,  // VK_OEM_1
+        "=" => 0xBB,  // VK_OEM_PLUS
+        "," => 0xBC,  // VK_OEM_COMMA
+        "-" => 0xBD,  // VK_OEM_MINUS
+        "." => 0xBE,  // VK_OEM_PERIOD
+        "/" => 0xBF,  // VK_OEM_2
+        "`" => 0xC0,  // VK_OEM_3
+        "[" => 0xDB,  // VK_OEM_4
+        "\\" => 0xDC, // VK_OEM_5
+        "]" => 0xDD,  // VK_OEM_6
+        "'" => 0xDE,  // VK_OEM_7
         "space" => 0x20,
         "left" => 0x25,
         "up" => 0x26,
@@ -364,7 +364,10 @@ mod tests {
             hk("cmd+;", "$HOME", "home", false),
         ];
         let script = render_windows_listener_ps1(&entries, "wt.exe", args_for, "", "").unwrap();
-        assert!(script.contains("-Id 0x4A01"), "kept entry keeps its slot id");
+        assert!(
+            script.contains("-Id 0x4A01"),
+            "kept entry keeps its slot id"
+        );
         assert!(!script.contains("-Id 0x4A00"));
     }
 

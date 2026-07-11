@@ -1289,7 +1289,11 @@ fn flat_compositor_config_path(comp: linux_env::LinuxCompositor) -> Option<PathB
                 return Some(xdg);
             }
             let legacy = dirs::home_dir()?.join(".i3").join("config");
-            if legacy.exists() { Some(legacy) } else { Some(xdg) }
+            if legacy.exists() {
+                Some(legacy)
+            } else {
+                Some(xdg)
+            }
         }
         LinuxCompositor::Gnome
         | LinuxCompositor::Kde
@@ -1359,11 +1363,11 @@ fn linux_hotkeys_installed(comp: linux_env::LinuxCompositor) -> bool {
     match comp {
         LinuxCompositor::Gnome => gnome_keybinding_list().contains("/jcode-launch-"),
         LinuxCompositor::Cinnamon => {
-            dconf_read("/org/cinnamon/desktop/keybindings/custom-list")
-                .contains("jcode-launch-")
+            dconf_read("/org/cinnamon/desktop/keybindings/custom-list").contains("jcode-launch-")
         }
-        LinuxCompositor::Mate => dconf_list("/org/mate/desktop/keybindings/")
-            .contains("jcode-launch-"),
+        LinuxCompositor::Mate => {
+            dconf_list("/org/mate/desktop/keybindings/").contains("jcode-launch-")
+        }
         LinuxCompositor::Xfce => xfce_shortcut_commands_text().contains("/launch_jcode_"),
         LinuxCompositor::Kde => kde_globalshortcutsrc_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
@@ -1664,10 +1668,14 @@ fn install_gnome_launch_hotkeys() -> Result<bool> {
 
     for kb in &keybindings {
         changed |= dconf_write_checked(&format!("{}name", kb.path), &gvariant_string(&kb.name))?;
-        changed |=
-            dconf_write_checked(&format!("{}command", kb.path), &gvariant_string(&kb.command))?;
-        changed |=
-            dconf_write_checked(&format!("{}binding", kb.path), &gvariant_string(&kb.binding))?;
+        changed |= dconf_write_checked(
+            &format!("{}command", kb.path),
+            &gvariant_string(&kb.command),
+        )?;
+        changed |= dconf_write_checked(
+            &format!("{}binding", kb.path),
+            &gvariant_string(&kb.binding),
+        )?;
     }
 
     jcode_logging::info(&format!(

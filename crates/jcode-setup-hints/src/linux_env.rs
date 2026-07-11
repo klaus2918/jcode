@@ -250,9 +250,7 @@ pub(crate) fn render_sway_bind_line(bind: &ScriptBind) -> Option<String> {
     parts.push(key);
     let combo = parts.join("+");
     let script = bind.script.replace('\\', "\\\\").replace('"', "\\\"");
-    Some(format!(
-        "bindsym {combo} exec --no-startup-id \"{script}\""
-    ))
+    Some(format!("bindsym {combo} exec --no-startup-id \"{script}\""))
 }
 
 /// Render the full managed block for a flat `#`-commented config. `render_line`
@@ -352,7 +350,9 @@ pub(crate) fn gnome_binding(chord: &KeyChord) -> Option<String> {
 /// The dconf path for jcode's Nth GNOME custom keybinding. Slot-stable so
 /// re-installs overwrite rather than accumulate.
 pub(crate) fn gnome_keybinding_path(index: usize) -> String {
-    format!("/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/jcode-launch-{index}/")
+    format!(
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/jcode-launch-{index}/"
+    )
 }
 
 /// One GNOME custom keybinding ready to apply via gsettings.
@@ -677,7 +677,10 @@ mod tests {
     #[test]
     fn detects_compositors_from_sockets_and_desktop_names() {
         let cases: Vec<(Vec<(&str, &str)>, Option<LinuxCompositor>)> = vec![
-            (vec![("NIRI_SOCKET", "/run/niri.sock")], Some(LinuxCompositor::Niri)),
+            (
+                vec![("NIRI_SOCKET", "/run/niri.sock")],
+                Some(LinuxCompositor::Niri),
+            ),
             (
                 vec![("HYPRLAND_INSTANCE_SIGNATURE", "abc123")],
                 Some(LinuxCompositor::Hyprland),
@@ -687,10 +690,19 @@ mod tests {
                 vec![("XDG_CURRENT_DESKTOP", "Hyprland")],
                 Some(LinuxCompositor::Hyprland),
             ),
-            (vec![("SWAYSOCK", "/run/sway.sock")], Some(LinuxCompositor::Sway)),
-            (vec![("XDG_CURRENT_DESKTOP", "sway")], Some(LinuxCompositor::Sway)),
+            (
+                vec![("SWAYSOCK", "/run/sway.sock")],
+                Some(LinuxCompositor::Sway),
+            ),
+            (
+                vec![("XDG_CURRENT_DESKTOP", "sway")],
+                Some(LinuxCompositor::Sway),
+            ),
             (vec![("I3SOCK", "/run/i3.sock")], Some(LinuxCompositor::I3)),
-            (vec![("XDG_SESSION_DESKTOP", "i3")], Some(LinuxCompositor::I3)),
+            (
+                vec![("XDG_SESSION_DESKTOP", "i3")],
+                Some(LinuxCompositor::I3),
+            ),
             (
                 vec![("BSPWM_SOCKET", "/tmp/bspwm-socket")],
                 Some(LinuxCompositor::Bspwm),
@@ -700,16 +712,31 @@ mod tests {
                 vec![("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")],
                 Some(LinuxCompositor::Gnome),
             ),
-            (vec![("XDG_CURRENT_DESKTOP", "GNOME")], Some(LinuxCompositor::Gnome)),
-            (vec![("XDG_CURRENT_DESKTOP", "KDE")], Some(LinuxCompositor::Kde)),
-            (vec![("KDE_FULL_SESSION", "true")], Some(LinuxCompositor::Kde)),
+            (
+                vec![("XDG_CURRENT_DESKTOP", "GNOME")],
+                Some(LinuxCompositor::Gnome),
+            ),
+            (
+                vec![("XDG_CURRENT_DESKTOP", "KDE")],
+                Some(LinuxCompositor::Kde),
+            ),
+            (
+                vec![("KDE_FULL_SESSION", "true")],
+                Some(LinuxCompositor::Kde),
+            ),
             // Mint Cinnamon reports X-Cinnamon.
             (
                 vec![("XDG_CURRENT_DESKTOP", "X-Cinnamon")],
                 Some(LinuxCompositor::Cinnamon),
             ),
-            (vec![("XDG_CURRENT_DESKTOP", "MATE")], Some(LinuxCompositor::Mate)),
-            (vec![("XDG_CURRENT_DESKTOP", "XFCE")], Some(LinuxCompositor::Xfce)),
+            (
+                vec![("XDG_CURRENT_DESKTOP", "MATE")],
+                Some(LinuxCompositor::Mate),
+            ),
+            (
+                vec![("XDG_CURRENT_DESKTOP", "XFCE")],
+                Some(LinuxCompositor::Xfce),
+            ),
             // Budgie reports "Budgie:GNOME" and uses GNOME's settings daemon.
             (
                 vec![("XDG_CURRENT_DESKTOP", "Budgie:GNOME")],
@@ -754,10 +781,7 @@ mod tests {
 
     #[test]
     fn gnome_bindings_use_angle_bracket_modifiers_and_stable_slots() {
-        assert_eq!(
-            gnome_binding(&chord("cmd+;")).unwrap(),
-            "<Super>semicolon"
-        );
+        assert_eq!(gnome_binding(&chord("cmd+;")).unwrap(), "<Super>semicolon");
         assert_eq!(
             gnome_binding(&chord("cmd+shift+'")).unwrap(),
             "<Super><Shift>apostrophe"
@@ -854,7 +878,12 @@ mod tests {
         let updated = upsert_kde_shortcut_sections(current, &scs);
         assert!(updated.contains("[services][firefox.desktop]"));
         assert!(updated.contains("_launch=Meta+F"));
-        assert_eq!(updated.matches("[services][jcode-launch-0.desktop]").count(), 1);
+        assert_eq!(
+            updated
+                .matches("[services][jcode-launch-0.desktop]")
+                .count(),
+            1
+        );
         assert!(updated.contains("_launch=Meta+;"));
         assert!(!updated.contains("Meta+X"));
         assert!(!updated.contains("jcode-launch-9"));
@@ -897,7 +926,10 @@ mod tests {
     #[test]
     fn sway_bind_line_maps_cmd_to_mod4_and_alt_to_mod1() {
         let line = render_sway_bind_line(&bind("cmd+;", "/s.sh", "jcode", false)).unwrap();
-        assert_eq!(line, "bindsym Mod4+semicolon exec --no-startup-id \"/s.sh\"");
+        assert_eq!(
+            line,
+            "bindsym Mod4+semicolon exec --no-startup-id \"/s.sh\""
+        );
 
         let alt = render_sway_bind_line(&bind("alt+shift+[", "/s.sh", "x", false)).unwrap();
         assert_eq!(
@@ -938,9 +970,7 @@ mod tests {
     #[test]
     fn render_returns_none_when_nothing_renderable() {
         assert!(render_hyprland_block(&[]).is_none());
-        assert!(
-            render_hyprland_block(&[bind("cmd+scrolllock", "/a.sh", "a", false)]).is_none()
-        );
+        assert!(render_hyprland_block(&[bind("cmd+scrolllock", "/a.sh", "a", false)]).is_none());
     }
 
     #[test]
