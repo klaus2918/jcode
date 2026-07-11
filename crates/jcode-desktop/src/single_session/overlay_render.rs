@@ -458,32 +458,13 @@ pub(crate) fn session_card_search_text(session: &workspace::SessionCard) -> Stri
     text.to_lowercase()
 }
 
-pub(crate) fn session_switcher_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
+pub(crate) fn session_switcher_fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     let needle = needle.trim();
     if needle.is_empty() {
         return Some(0);
     }
 
-    haystack
-        .split_whitespace()
-        .filter_map(|token| session_switcher_token_fuzzy_score(needle, token))
-        .min()
-}
-
-pub(crate) fn session_switcher_token_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
-    let mut score = 0usize;
-    let mut position = 0usize;
-    for ch in needle.chars() {
-        let offset = haystack[position..].find(ch)?;
-        score += offset;
-        position += offset + ch.len_utf8();
-    }
-
-    if needle.len() > 1 && score > needle.len() * 6 {
-        return None;
-    }
-
-    Some(score)
+    jcode_fuzzy::fuzzy_score_tokens(needle, haystack)
 }
 
 pub(crate) fn session_info_inline_styled_lines(
@@ -979,64 +960,17 @@ pub(crate) fn model_choice_search_text(choice: &DesktopModelChoice) -> String {
     .to_lowercase()
 }
 
-pub(crate) fn model_picker_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
+pub(crate) fn model_picker_fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     let needle = needle.trim();
     if needle.is_empty() {
         return Some(0);
     }
 
-    haystack
-        .split_whitespace()
-        .filter_map(|token| model_picker_token_fuzzy_score(needle, token))
-        .min()
+    jcode_fuzzy::fuzzy_score_tokens(needle, haystack)
 }
 
-pub(crate) fn model_picker_token_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
-    let mut score = 0usize;
-    let mut position = 0usize;
-    for ch in needle.chars() {
-        let offset = haystack[position..].find(ch)?;
-        score += offset;
-        position += offset + ch.len_utf8();
-    }
-
-    if needle.len() > 1 && score > needle.len() * 6 {
-        return None;
-    }
-
-    Some(score)
-}
-
-pub(crate) fn desktop_slash_fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-
-    let needle = needle.strip_prefix('/').unwrap_or(needle);
-    let haystack = haystack.strip_prefix('/').unwrap_or(haystack);
-    if needle.is_empty() {
-        return Some(0);
-    }
-
-    if let Some(first_char) = needle.chars().next()
-        && !haystack.starts_with(&needle[..first_char.len_utf8()])
-    {
-        return None;
-    }
-
-    let mut score = 0usize;
-    let mut position = 0usize;
-    for ch in needle.chars() {
-        let offset = haystack[position..].find(ch)?;
-        score += offset;
-        position += offset + ch.len_utf8();
-    }
-
-    if needle.len() > 1 && score > needle.len() * 3 {
-        return None;
-    }
-
-    Some(score)
+pub(crate) fn desktop_slash_fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
+    jcode_fuzzy::command_fuzzy_score(needle, haystack)
 }
 
 pub(crate) fn dedupe_model_choices(choices: Vec<DesktopModelChoice>) -> Vec<DesktopModelChoice> {

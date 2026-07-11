@@ -1731,7 +1731,7 @@ fn complete_slash_command(
         [only] => *only,
         _ => longest_common_prefix(&matches)?,
     };
-    if completion.len() <= prefix.len() {
+    if completion.eq_ignore_ascii_case(prefix) {
         return None;
     }
     let mut completed = completion.to_string();
@@ -1748,7 +1748,7 @@ fn fuzzy_slash_completion(needle: &str, completions: &[&'static str]) -> Option<
         })
         .collect::<Vec<_>>();
     matches.sort_by(|a, b| {
-        a.0.cmp(&b.0)
+        b.0.cmp(&a.0)
             .then_with(|| a.1.cmp(&b.1))
             .then_with(|| a.2.cmp(b.2))
     });

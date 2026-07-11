@@ -180,7 +180,7 @@ impl ModelPickerState {
             }
         }
         fuzzy_matches.sort_by(|a, b| {
-            a.0.cmp(&b.0)
+            b.0.cmp(&a.0)
                 .then_with(|| a.1.cmp(&b.1))
                 .then_with(|| a.2.cmp(&b.2))
         });
@@ -419,7 +419,7 @@ impl SessionSwitcherState {
             }
         }
         fuzzy_matches.sort_by(|a, b| {
-            a.0.cmp(&b.0)
+            b.0.cmp(&a.0)
                 .then_with(|| a.1.cmp(&b.1))
                 .then_with(|| a.2.cmp(&b.2))
         });

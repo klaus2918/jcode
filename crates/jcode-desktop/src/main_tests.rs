@@ -7026,6 +7026,44 @@ fn single_session_model_picker_filter_supports_fuzzy_abbreviations() {
 }
 
 #[test]
+fn single_session_model_picker_filter_tolerates_transposed_typo() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenModelPicker),
+        KeyOutcome::LoadModelCatalog
+    );
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: None,
+        provider_name: Some("OpenAI".to_string()),
+        models: vec![
+            session_launch::DesktopModelChoice {
+                model: "gpt-5-codex".to_string(),
+                provider: Some("openai".to_string()),
+                api_method: Some("responses".to_string()),
+                detail: Some("coding model".to_string()),
+                available: true,
+            },
+            session_launch::DesktopModelChoice {
+                model: "claude-opus-4-5".to_string(),
+                provider: Some("Anthropic".to_string()),
+                api_method: Some("claude-oauth".to_string()),
+                detail: Some("premium".to_string()),
+                available: true,
+            },
+        ],
+        reasoning_effort: None,
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("codxe".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.model_picker.filtered_indices(), &[0]);
+}
+
+#[test]
 fn single_session_model_picker_filter_finds_synthetic_current_choice() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(
@@ -7486,6 +7524,25 @@ fn single_session_session_switcher_filter_supports_fuzzy_abbreviations() {
     assert!(switcher.contains("filter: tkw"), "{switcher}");
     assert!(switcher.contains("ticket-workspace"), "{switcher}");
     assert!(!switcher.contains("alpha-notes"), "{switcher}");
+}
+
+#[test]
+fn single_session_session_switcher_filter_tolerates_transposed_typo() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenSessionSwitcher),
+        KeyOutcome::LoadSessionSwitcher
+    );
+    app.apply_session_switcher_cards(vec![
+        test_session_card("session_alpha", "alpha-notes", "active"),
+        test_session_card("session_ticket", "ticket-workspace", "closed"),
+    ]);
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("tikcet".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.session_switcher.filtered_indices(), &[1]);
 }
 
 #[test]

@@ -1089,7 +1089,7 @@ impl SingleSessionApp {
         let prefix = prefix.to_ascii_lowercase();
 
         let mut prefix_matches = Vec::new();
-        let mut fuzzy_matches: Vec<(usize, usize, &'static str, &'static str)> = Vec::new();
+        let mut fuzzy_matches: Vec<(i32, usize, &'static str, &'static str)> = Vec::new();
         for (usage, description) in DESKTOP_SLASH_COMMANDS.iter().copied() {
             let command = usage.split_whitespace().next().unwrap_or(usage);
             let command_lower = command.to_ascii_lowercase();
@@ -1101,7 +1101,7 @@ impl SingleSessionApp {
         }
 
         fuzzy_matches.sort_by(|a, b| {
-            a.0.cmp(&b.0)
+            b.0.cmp(&a.0)
                 .then_with(|| a.1.cmp(&b.1))
                 .then_with(|| a.2.cmp(b.2))
         });
