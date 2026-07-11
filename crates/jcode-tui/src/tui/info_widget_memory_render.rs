@@ -7,23 +7,18 @@ pub(super) fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Li
     if inner.width == 0 || inner.height == 0 {
         return Vec::new();
     }
-    if info.total_count == 0 && info.activity.is_none() {
+    if !info.should_render() {
         return Vec::new();
     }
 
     let mut lines: Vec<Line> = Vec::new();
     let max_width = inner.width as usize;
     let activity = info.activity.as_ref();
+    let show_activity = info.should_show_activity();
 
-    lines.push(render_memory_header_line(info, activity, max_width));
+    lines.push(render_memory_header_line(info, max_width));
 
-    if lines.len() < inner.height as usize
-        && let Some(count_line) = render_memory_count_line(info, max_width)
-    {
-        lines.push(count_line);
-    }
-
-    if let Some(activity) = activity {
+    if show_activity && let Some(activity) = activity {
         if lines.len() < inner.height as usize {
             lines.push(render_memory_status_line(activity, max_width));
         }
@@ -48,54 +43,15 @@ pub(super) fn render_memory_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Li
     lines
 }
 
-fn render_memory_header_line(
-    info: &MemoryInfo,
-    activity: Option<&MemoryActivity>,
-    max_width: usize,
-) -> Line<'static> {
-    let title = "Memory".to_string();
-    let (badge, badge_color) = if info.disabled {
-        ("DISABLED".to_string(), rgb(150, 120, 120))
-    } else {
-        memory_status_badge(activity)
-    };
-    let badge_text = format!(" {} ", badge);
-    let title_width = UnicodeWidthStr::width(title.as_str());
-    let badge_width = UnicodeWidthStr::width(badge_text.as_str());
-    let available_title = if max_width > badge_width + 2 {
-        max_width.saturating_sub(badge_width + 2)
-    } else {
-        max_width
-    };
-
-    let mut spans = vec![
+fn render_memory_header_line(info: &MemoryInfo, max_width: usize) -> Line<'static> {
+    let title = memory_count_label(info.total_count);
+    Line::from(vec![
         Span::styled("🧠 ", Style::default().fg(rgb(200, 150, 255))),
         Span::styled(
-            truncate_with_ellipsis(&title, available_title.max(6)),
+            truncate_with_ellipsis(&title, max_width.saturating_sub(3).max(6)),
             Style::default().fg(rgb(210, 210, 220)).bold(),
         ),
-    ];
-
-    if max_width >= title_width + badge_width + 2 {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            badge_text,
-            Style::default().fg(badge_color).bg(rgb(32, 32, 40)).bold(),
-        ));
-    }
-
-    Line::from(spans)
-}
-
-fn render_memory_count_line(info: &MemoryInfo, max_width: usize) -> Option<Line<'static>> {
-    if info.total_count == 0 {
-        return None;
-    }
-
-    Some(Line::from(vec![Span::styled(
-        truncate_with_ellipsis(&memory_count_label(info.total_count), max_width.max(8)),
-        Style::default().fg(rgb(160, 160, 170)).bold(),
-    )]))
+    ])
 }
 
 fn memory_count_label(total_count: usize) -> String {
@@ -566,19 +522,18 @@ fn memory_pipeline_progress_summary(pipeline: &PipelineState) -> String {
 }
 
 pub(super) fn render_memory_compact(info: &MemoryInfo, inner_width: u16) -> Vec<Line<'static>> {
+    if !info.should_render() {
+        return Vec::new();
+    }
+
     let max_width = inner_width.saturating_sub(2) as usize;
-    let title = if info.total_count > 0 {
-        memory_count_label(info.total_count)
-    } else {
-        "Memory".to_string()
-    };
+    let title = memory_count_label(info.total_count);
+    let show_activity = info.should_show_activity();
     let summary = memory_compact_summary(info);
 
     let title_width = UnicodeWidthStr::width(title.as_str());
     let summary_width = max_width.saturating_sub(title_width + 5);
-    let accent = if info.disabled {
-        rgb(150, 120, 120)
-    } else if let Some(activity) = info.activity.as_ref() {
+    let accent = if let Some(activity) = info.activity.as_ref() {
         memory_status_badge(Some(activity)).1
     } else if info.total_count > 0 {
         rgb(160, 160, 170)
@@ -586,34 +541,33 @@ pub(super) fn render_memory_compact(info: &MemoryInfo, inner_width: u16) -> Vec<
         rgb(140, 200, 255)
     };
 
-    vec![Line::from(vec![
+    let mut spans = vec![
         Span::styled("🧠 ", Style::default().fg(rgb(200, 150, 255))),
         Span::styled(title, Style::default().fg(rgb(180, 180, 190)).bold()),
-        Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))),
-        Span::styled(
+    ];
+    if show_activity {
+        spans.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
+        spans.push(Span::styled(
             truncate_with_ellipsis(&summary, summary_width.max(8)),
             Style::default().fg(accent),
-        ),
-    ])]
+        ));
+    }
+
+    vec![Line::from(spans)]
 }
 
 pub(super) fn render_memory_expanded(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> {
+    if !info.should_render() {
+        return Vec::new();
+    }
+
     let mut lines: Vec<Line> = Vec::new();
     let max_width = inner.width.saturating_sub(2) as usize;
+    let show_activity = info.should_show_activity();
 
-    lines.push(render_memory_header_line(
-        info,
-        info.activity.as_ref(),
-        max_width,
-    ));
-    if let Some(count_line) = render_memory_count_line(info, max_width) {
-        lines.push(count_line);
-    }
-    if let Some(activity) = &info.activity {
+    lines.push(render_memory_header_line(info, max_width));
+    if show_activity && let Some(activity) = &info.activity {
         lines.push(render_memory_status_line(activity, max_width));
-    }
-
-    if let Some(activity) = &info.activity {
         if memory_should_render_pipeline(activity) {
             lines.extend(render_memory_pipeline_display_lines(activity, max_width));
         }
