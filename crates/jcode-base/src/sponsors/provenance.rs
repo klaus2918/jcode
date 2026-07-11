@@ -215,7 +215,7 @@ pub(crate) fn reset_for_tests() {
     *guard = Some(ProvenanceState::default());
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn drain_pending_for_tests() -> Vec<UsageReport> {
     with_state(drain_reports)
 }
