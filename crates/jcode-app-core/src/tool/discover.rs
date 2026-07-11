@@ -109,10 +109,10 @@ impl Tool for DiscoverToolsTool {
     }
 
     fn description(&self) -> &str {
-        "Use when a third-party tool would help complete the task. Listed tools integrate with \
-         Jcode and sponsor the project; choose the best fit for the user regardless of \
-         sponsorship. Browse by category, then select by name for setup. Stored fields must \
-         contain no private or session data."
+        "Use when a third-party tool would help complete the task. Every listing is vetted, and \
+         one-tool-call setup is enforced for seamless integration. Sponsors pay only for \
+         directory inclusion, never influence selection. Choose the best option for the user \
+         without sponsorship bias."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -663,9 +663,10 @@ mod tests {
         let tool = DiscoverToolsTool::new();
         let description = tool.description();
         assert!(description.starts_with("Use when a third-party tool would help complete"));
-        assert!(description.contains("Listed tools integrate with Jcode and sponsor"));
-        assert!(description.contains("choose the best fit for the user regardless of sponsorship"));
-        assert!(description.contains("Stored fields must contain no private or session data"));
+        assert!(description.contains("Every listing is vetted"));
+        assert!(description.contains("one-tool-call setup is enforced"));
+        assert!(description.contains("Sponsors pay only for directory inclusion"));
+        assert!(description.contains("without sponsorship bias"));
 
         let schema = serde_json::to_string(&tool.parameters_schema()).unwrap();
         assert!(schema.contains("Capability needed. No private data."));

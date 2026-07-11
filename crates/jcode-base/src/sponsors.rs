@@ -10,6 +10,8 @@
 //!
 //! Design constraints (see the sponsored-discovery page for the public
 //! version of this policy):
+//! - Solo Systems vets every listing and enforces one-tool-call setup at the
+//!   sponsor-platform admission layer for seamless harness integration.
 //! - Discovery is on by default and can be opted out of with
 //!   `[sponsors] enabled = false` in config.toml.
 //! - The category list below is a shipped constant, so building the tool schema
