@@ -93,28 +93,22 @@ fn parse_env_bool(raw: &str) -> Option<bool> {
 /// * `probe_override` is the parsed value of `JCODE_MERMAID_PICKER_PROBE`
 ///   (`Some(true)`/`Some(false)` when set explicitly, `None` otherwise) and
 ///   always wins so users can force either behavior.
-/// * When the override is absent we trust env-based detection if it already
-///   identifies a graphics-capable terminal (no probe, instant startup).
-/// * Otherwise (env detection missed, e.g. inside a multiplexer that masks the
-///   outer terminal, or an unknown bare terminal) we probe stdio, which is the
-///   only authoritative way to learn the real capabilities. The probe is
-///   bounded by a timeout and safely falls back to halfblocks.
+/// * When the override is absent, startup stays on the environment-based fast
+///   path. The upstream stdio probe can block for two seconds when a terminal
+///   does not answer, which made an optional image capability dominate the TUI
+///   critical path. Users behind multiplexers that hide the outer terminal can
+///   still opt into the authoritative probe with
+///   `JCODE_MERMAID_PICKER_PROBE=1`.
 pub(super) fn decide_picker_init_mode(
     probe_override: Option<bool>,
-    env_protocol: Option<ProtocolType>,
+    _env_protocol: Option<ProtocolType>,
     _multiplexer: Multiplexer,
 ) -> PickerInitMode {
-    if let Some(force) = probe_override {
-        return if force {
-            PickerInitMode::Probe
-        } else {
-            PickerInitMode::Fast
-        };
+    if probe_override == Some(true) {
+        PickerInitMode::Probe
+    } else {
+        PickerInitMode::Fast
     }
-    if env_protocol.is_some() {
-        return PickerInitMode::Fast;
-    }
-    PickerInitMode::Probe
 }
 
 /// Parse only the explicit `JCODE_MERMAID_PICKER_PROBE` override into a mode,
@@ -262,13 +256,11 @@ pub(crate) fn prewarm_svg_font_db_async() {
 }
 
 /// Initialize the global picker.
-/// By default jcode trusts env-based detection when it already identifies a
-/// graphics-capable terminal (fast, no probing). When env detection misses
-/// (for example inside a multiplexer such as herdr/tmux/zellij/screen that
-/// masks the outer terminal, or an unknown bare terminal) it runs an
-/// authoritative stdio capability probe instead of silently degrading to blurry
-/// halfblocks. Set JCODE_MERMAID_PICKER_PROBE=1 to always probe or =0 to never
-/// probe. Also triggers cache eviction on first call.
+/// By default jcode uses environment-based detection and never blocks startup
+/// on terminal capability responses. Set JCODE_MERMAID_PICKER_PROBE=1 to run an
+/// authoritative stdio probe when a multiplexer masks the outer terminal, or
+/// =0 to explicitly retain the fast path. Also triggers cache eviction on first
+/// call.
 pub fn init_picker() {
     PICKER.get_or_init(|| {
         let env_protocol = infer_protocol_from_env(
@@ -593,21 +585,21 @@ mod tests {
     }
 
     #[test]
-    fn decide_mode_trusts_env_hit_and_probes_on_miss() {
+    fn decide_mode_defaults_to_fast_path() {
         // Env already identified a graphics terminal: stay fast.
         assert_eq!(
             decide_picker_init_mode(None, Some(ProtocolType::Kitty), Multiplexer::None),
             PickerInitMode::Fast
         );
-        // Env miss (bare terminal or masking multiplexer): probe stdio instead
-        // of silently degrading to halfblocks. This is the herdr/tmux fix.
+        // An env miss must not turn an optional capability query into a
+        // two-second startup stall. Multiplexer users can opt in explicitly.
         assert_eq!(
             decide_picker_init_mode(None, None, Multiplexer::Herdr),
-            PickerInitMode::Probe
+            PickerInitMode::Fast
         );
         assert_eq!(
             decide_picker_init_mode(None, None, Multiplexer::None),
-            PickerInitMode::Probe
+            PickerInitMode::Fast
         );
     }
 
