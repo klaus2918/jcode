@@ -41,6 +41,9 @@ const KNOWN_EVENTS = [...CLI_EVENTS, ...WEB_EVENTS, ...SUBSCRIPTION_EVENTS];
 // if ALLOWED_ORIGIN is ever narrowed.
 const WEB_ALLOWED_ORIGINS = new Set([
   "https://jcode.sh",
+  "https://www.jcode.sh",
+  "https://solosystems.dev",
+  "https://www.solosystems.dev",
   "https://solosystems.pages.dev",
 ]);
 

@@ -619,6 +619,19 @@ test("OPTIONS preflight from jcode.sh echoes the origin", async () => {
   assert.ok(/POST/.test(response.headers.get("Access-Control-Allow-Methods")));
 });
 
+test("OPTIONS preflight from the production website echoes the origin", async () => {
+  const response = await worker.fetch(
+    new Request(EVENT_URL, {
+      method: "OPTIONS",
+      headers: { Origin: "https://solosystems.dev" },
+    }),
+    { DB: makeDb(), ALLOWED_ORIGIN: "https://fallback.example" },
+    makeCtx(),
+  );
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://solosystems.dev");
+  assert.equal(response.headers.get("Vary"), "Origin");
+});
+
 test("OPTIONS preflight from pages.dev preview echoes the origin", async () => {
   const response = await worker.fetch(
     new Request(EVENT_URL, {
