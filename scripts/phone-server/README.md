@@ -34,6 +34,7 @@ CloudWatch alarms ──▶ SNS jcode-guard-stop ──▶ breaker lambda ──
 | `jcode-pair-service.py` | `/usr/local/bin/` | token-protected `GET /pair-code` → runs `jcode pair`, returns code + `jcode://` deep link. Token in `/etc/jcode-pair-token` |
 | `wake-lambda.py` | Lambda `jcode-phone-wake` (behind API Gateway `8c3wp4cbag`) | wake page: starts instance, polls health, pair button |
 | `breaker-lambda.py` | Lambda `jcode-guard-breaker` | stops the instance; subscribed to SNS `jcode-guard-stop` |
+| `IAM-LEAST-PRIVILEGE.md` | repository documentation | scoped runtime/deploy policies and lockout-safe `jade-deploy` rotation plan |
 
 ## Server config (instance)
 
