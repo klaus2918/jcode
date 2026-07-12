@@ -162,14 +162,28 @@ impl ModelPickerState {
             return;
         }
 
-        let substring_matches = self
+        let mut substring_matches = self
             .search_texts
             .iter()
             .enumerate()
-            .filter_map(|(index, search_text)| search_text.contains(&query).then_some(index))
+            .filter_map(|(index, search_text)| {
+                search_text.contains(&query).then_some((
+                    self.choices[index].model.eq_ignore_ascii_case(&query),
+                    search_text.len(),
+                    index,
+                ))
+            })
             .collect::<Vec<_>>();
         if !substring_matches.is_empty() {
-            self.visible_indices = substring_matches;
+            substring_matches.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| a.1.cmp(&b.1))
+                    .then_with(|| a.2.cmp(&b.2))
+            });
+            self.visible_indices = substring_matches
+                .into_iter()
+                .map(|(_, _, index)| index)
+                .collect();
             return;
         }
 

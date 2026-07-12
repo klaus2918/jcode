@@ -7064,6 +7064,44 @@ fn single_session_model_picker_filter_tolerates_transposed_typo() {
 }
 
 #[test]
+fn single_session_model_picker_exact_match_outranks_longer_prefix() {
+    let mut app = SingleSessionApp::new(None);
+    assert_eq!(
+        app.handle_key(KeyInput::OpenModelPicker),
+        KeyOutcome::LoadModelCatalog
+    );
+    app.apply_session_event(session_launch::DesktopSessionEvent::ModelCatalog {
+        current_model: None,
+        provider_name: Some("OpenAI".to_string()),
+        models: vec![
+            session_launch::DesktopModelChoice {
+                model: "gpt-5.5".to_string(),
+                provider: Some("openai".to_string()),
+                api_method: Some("responses".to_string()),
+                detail: None,
+                available: true,
+            },
+            session_launch::DesktopModelChoice {
+                model: "gpt-5".to_string(),
+                provider: Some("openai".to_string()),
+                api_method: Some("responses".to_string()),
+                detail: None,
+                available: true,
+            },
+        ],
+        reasoning_effort: None,
+        service_tier: None,
+        compaction_mode: None,
+    });
+
+    assert_eq!(
+        app.handle_key(KeyInput::Character("gpt-5".to_string())),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(app.model_picker.filtered_indices(), &[1, 0]);
+}
+
+#[test]
 fn single_session_model_picker_filter_finds_synthetic_current_choice() {
     let mut app = SingleSessionApp::new(None);
     assert_eq!(
