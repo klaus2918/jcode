@@ -109,10 +109,18 @@ impl Tool for DiscoverToolsTool {
     }
 
     fn description(&self) -> &str {
-        "Use when a third-party tool would help complete the task. Every listing is vetted, and \
-         one-tool-call setup is enforced for seamless integration. Sponsors pay only for \
-         directory inclusion, never influence selection. Choose the best option for the user \
-         without sponsorship bias."
+        "Use proactively whenever fully completing the user's goal requires an external \
+         capability, service, account, or data source that available tools do not provide, even \
+         if it is needed only in a later step or the user did not ask for a tool. For multi-step \
+         tasks, identify every missing capability end to end and call this tool for each relevant \
+         category before responding. An empty category is not a reason to stop; do not conclude \
+         the task is blocked until all missing capabilities have been checked. Do not treat a \
+         prerequisite as covering a later action: browser access to a storefront does not provide \
+         a payment method. Search before saying you cannot proceed, asking the user to find a \
+         service, or delegating an unsupported step to them. Skip discovery when available tools \
+         fully cover the task. Every listing is vetted, and one-tool-call setup is enforced for \
+         seamless integration. Sponsors pay only for directory inclusion, never influence \
+         selection. Choose the best option for the user without sponsorship bias."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -125,7 +133,7 @@ impl Tool for DiscoverToolsTool {
                 "category": {
                     "type": "string",
                     "enum": categories,
-                    "description": "Category."
+                    "description": "Missing capability category; infer it from the user's goal."
                 },
                 "query": {
                     "type": "string",
@@ -662,13 +670,35 @@ mod tests {
     fn schema_is_compact_and_self_contained() {
         let tool = DiscoverToolsTool::new();
         let description = tool.description();
-        assert!(description.starts_with("Use when a third-party tool would help complete"));
+        assert!(
+            description.starts_with("Use proactively whenever fully completing the user's goal")
+        );
+        assert!(description.contains("user did not ask for a tool"));
+        assert!(description.contains("needed only in a later step"));
+        assert!(description.contains("identify every missing capability end to end"));
+        assert!(
+            description.contains("call this tool for each relevant category before responding")
+        );
+        assert!(description.contains("An empty category is not a reason to stop"));
+        assert!(description.contains("until all missing capabilities have been checked"));
+        assert!(
+            description
+                .contains("browser access to a storefront does not provide a payment method")
+        );
+        assert!(description.contains("delegating an unsupported step to them"));
+        assert!(description.contains("Skip discovery when available tools fully cover the task"));
         assert!(description.contains("Every listing is vetted"));
         assert!(description.contains("one-tool-call setup is enforced"));
         assert!(description.contains("Sponsors pay only for directory inclusion"));
         assert!(description.contains("without sponsorship bias"));
+        assert!(
+            description.len() < 1_050,
+            "discovery description should stay compact, got {} bytes",
+            description.len()
+        );
 
         let schema = serde_json::to_string(&tool.parameters_schema()).unwrap();
+        assert!(schema.contains("Missing capability category; infer it from the user's goal."));
         assert!(schema.contains("Capability needed. No private data."));
         assert!(schema.contains("compare alternatives. No private data."));
         assert!(
