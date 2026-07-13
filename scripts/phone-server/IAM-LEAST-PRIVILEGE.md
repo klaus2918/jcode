@@ -4,7 +4,7 @@ Assessment date: 2026-07-12
 Account: `302154194530`
 Region: `us-east-1`
 
-This document is a design only. No AWS resources or IAM settings were changed.
+This document began as a design review. The live hardening described in `README.md` was subsequently applied and verified. The remaining deliberate gap is removal of `AdministratorAccess` from `jade-deploy`, which is blocked until an independent root/MFA recovery login is verified.
 
 ## Executive assessment
 
@@ -29,7 +29,7 @@ Repository evidence:
 - The rebuild instructions require EC2, EIP, security group, IAM instance profile, Lambda, API Gateway v2, SNS, CloudWatch alarms, and Budgets administration.
 - TestFlight automation is App Store Connect only and requires no AWS permission.
 
-During the assessment, a separate uncommitted working-tree change to `wake-lambda.py` appeared that replaces the public `:7644` pairing call with SSM Run Command. It was not part of the stated deployed design when inventory began and is not assumed live. If that variant is deployed, add the conditional SSM permissions below and update the resource inventory before removing the old role.
+The SSM-based wake implementation is now deployed. The Lambda generates pair codes through SSM Run Command, and the legacy public `:7644` path is disabled.
 
 Stated named resources:
 
@@ -41,15 +41,13 @@ Stated named resources:
 | Lambda | `jcode-guard-breaker` |
 | API Gateway v2 | `8c3wp4cbag` |
 | SNS | `jcode-guard-stop` and `jcode-guard-warn` |
-| CloudWatch alarms | `jcode-bedrock-tokens-warn`, `jcode-bedrock-tokens-stop`, `jcode-billing-warn-25`, `jcode-billing-stop-75` as stated in the README |
+| CloudWatch alarms | `jcode-bedrock-tokens-warn`, `jcode-bedrock-tokens-stop`; the ineffective billing alarms were replaced by the working Budget/SNS breaker path |
 | Budget | `jcode-dev-monthly-cost` |
 | Bedrock model route | `us.anthropic.claude-opus-4-6-v1` |
 
-### Live-state limitation
+### Live-state verification
 
-A read-only AWS check was attempted, but the configured AWS session returned `Your session has expired. Please reauthenticate using 'aws login'`. Therefore the repository's stated resources were assessed, but current role names, policy attachments, tags, EIP allocation ID, VPC/subnet/security-group IDs, Lambda execution-role ARNs, log-group retention, SNS subscription ARNs, and actual access-key ages were not independently confirmed.
-
-Before applying these policies, populate those identifiers using read-only inventory commands and compare them to this table.
+The account was subsequently inventoried through the `jcode-bedrock` profile. Runtime role names, Lambda roles, the EC2 instance and security group, the Elastic IP, Budget subscribers, CloudWatch alarms, log retention, API Gateway stage, S3/DynamoDB resources, and access-key metadata were verified directly. The wake Lambda now uses SSM pairing, all public EC2 ingress is closed, the root EBS volume is encrypted, CloudTrail and Access Analyzer are enabled, and the old deployment key is inactive.
 
 ## Target identity design
 

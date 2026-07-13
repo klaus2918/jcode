@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Token-protected HTTP service that generates jcode pairing codes.
 
-GET /pair-code?t=<token> -> {"code": "123456", "host": "54.196.207.97", "port": 7643, "uri": "jcode://pair?..."}
+GET /pair-code?t=<token> -> {"code": "123456", "host": "100.109.78.41", "port": 7643, "uri": "jcode://pair?..."}
 """
 import http.server, json, re, subprocess, os
 from urllib.parse import urlparse, parse_qs
 
 TOKEN = open('/etc/jcode-pair-token').read().strip()
-HOST = '54.196.207.97'
+HOST = '100.109.78.41'
 PORT = 7643
 
 class H(http.server.BaseHTTPRequestHandler):
