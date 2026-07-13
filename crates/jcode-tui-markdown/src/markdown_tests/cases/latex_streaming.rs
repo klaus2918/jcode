@@ -54,3 +54,20 @@ fn streaming_math_never_invokes_the_synchronous_image_toolchain() {
         "completed non-streaming Image mode should attempt the configured image renderer"
     );
 }
+
+#[test]
+fn multiline_relations_survive_blockquotes_and_promoted_delimiters() {
+    let source = concat!(
+        "> Blockquote display:\n> \\[\n> x^2\n> =\n> y^2\n> \\]\n\n",
+        "Standalone spelling:\n\\(\nx\n=\ny\n\\)",
+    );
+    let rendered = with_streaming_render_context(|| {
+        lines_to_string(&render_markdown_with_width(source, Some(90)))
+    });
+
+    assert_eq!(rendered.matches("┌─ math").count(), 2, "{rendered}");
+    assert!(rendered.contains("x² = y²"), "{rendered}");
+    assert!(rendered.contains("x = y"), "{rendered}");
+    assert!(!rendered.contains("{}="), "{rendered}");
+    assert!(!rendered.contains("$$"), "{rendered}");
+}
