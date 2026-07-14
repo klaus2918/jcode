@@ -144,9 +144,31 @@ The request query parameters are:
 | Parameter | Phase | Meaning |
 |-----------|-------|---------|
 | `category` | Both | Required category slug. |
-| `q` | Both | Optional short capability query. |
-| `reason` | Both | Agent-stated need or selection rationale. Store and handle it as potentially sensitive text even though the client instructs the agent not to include private data. |
+| `q` | Both | Required capability summary, 20-500 characters. It must be specific enough to describe the missing capability without copying user text. |
+| `reason` | Both | Required rationale, 40-2,000 characters. Browse explains why the capability is needed. Select explains why the chosen tool fits better than the listed alternatives. |
 | `tool` | Select | Canonical name chosen from a previous browse response. Its presence selects the second phase. |
+
+The model-facing schema explicitly says that `q` and `reason` are sent to the
+Discovery service and relevant sponsors for demand and selection reporting. It
+also tells the model to write a fresh summary, not copy user text, and never
+include secrets, credentials, personal data, or private content. Both fields are
+schema-required and include the same length bounds enforced at runtime.
+
+The client rejects missing, blank, short, oversized, padded low-information,
+or recognizably sensitive text before making a network request. The service repeats the validation before
+storage or sponsor delivery so direct HTTP callers cannot bypass the client.
+High-confidence detection covers common API-key and access-token formats,
+credential assignments, bearer tokens, private keys, JWTs, payment-card
+numbers, email addresses, SSNs, credential-bearing URLs, and international
+phone numbers. Error messages never echo the rejected value. This is a
+defense-in-depth filter, not permission to put private data in either field.
+
+For ordinary non-benchmark traffic, the service stores both raw summaries in
+`discovery_events`. When a reviewed recipient is configured for a listed
+sponsor, it also sends that sponsor the browse or select summaries relevant to
+its listing. Recipient configuration is explicit and empty by default. Runs
+marked `x-jcode-discovery-benchmark: 1` remain stored with
+`benchmark_run = 1` for auditability but are never delivered as sponsor reports.
 
 ### Browse response
 
@@ -207,6 +229,7 @@ curl --fail-with-body --get "$DISCOVERY_URL" \
 curl --fail-with-body --get "$DISCOVERY_URL" \
   --data-urlencode 'category=databases' \
   --data-urlencode 'tool=example-tool' \
+  --data-urlencode 'q=managed postgres for a disposable test application' \
   --data-urlencode 'reason=selected for staging validation after reviewing the listed database options'
 ```
 
@@ -218,6 +241,10 @@ Verify all of the following:
 - an unknown tool and category fail rather than returning a default entry;
 - response bodies remain under 64 KiB;
 - logged query and reason text follows the service's retention and access policy;
+- missing, undersized, oversized, and recognizably sensitive query or reason
+  text is rejected before raw event storage;
+- a configured sponsor recipient receives both browse and select summaries, but
+  the same requests with the benchmark header produce no sponsor delivery;
 - the request ID appears in service logs and can be correlated for reliability
   debugging without a persistent user identifier; and
 - disabling the catalog entry removes it from browse and prevents selection.
@@ -301,6 +328,8 @@ A sponsor is onboarded only when every box is checked:
 - [ ] Category and factual copy are approved.
 - [ ] Setup and destination URL pass security review in a clean environment.
 - [ ] Browse and select responses match the documented schemas.
+- [ ] Both phases reject missing or unsafe `q` and `reason` values.
+- [ ] Sponsor reporting recipients are reviewed and benchmark exclusion is tested.
 - [ ] Browse does not expose setup or MCP launch data.
 - [ ] MCP command and arguments exactly match the tested connection, if used.
 - [ ] Staging jcode validation passes, including disclosure and confirmation.
