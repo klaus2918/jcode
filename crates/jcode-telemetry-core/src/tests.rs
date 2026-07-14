@@ -29,6 +29,11 @@ fn permanent_telemetry_statuses_trip_the_process_breaker() {
     assert!(!telemetry_status_is_permanent(500));
 }
 
+#[test]
+fn telemetry_endpoint_uses_production_custom_domain() {
+    assert_eq!(TELEMETRY_ENDPOINT, "https://telemetry.jcode.sh/v1/event");
+}
+
 fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
     global_test_lock()
 }

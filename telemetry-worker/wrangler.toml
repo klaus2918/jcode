@@ -6,7 +6,8 @@ compatibility_date = "2025-01-01"
 # here). Managed as a Workers custom domain, so Cloudflare creates the DNS
 # record and certificate automatically on deploy.
 routes = [
-  { pattern = "telemetry.solosystems.dev", custom_domain = true }
+  { pattern = "telemetry.solosystems.dev", custom_domain = true },
+  { pattern = "telemetry.jcode.sh", custom_domain = true }
 ]
 
 # Nightly retention prune (see RETENTION_DAYS in src/worker.js). D1 hard-caps
