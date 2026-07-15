@@ -128,7 +128,7 @@ Windows is covered by:
 
 - `.github/workflows/ci.yml`: release build, test compilation, targeted platform tests, runtime smoke tests, lifecycle end-to-end tests, installer verification, and PowerShell syntax checks.
 - `.github/workflows/windows-smoke.yml`: manually dispatchable x64 and ARM64 smoke validation.
-- `.github/workflows/release.yml`: x64 and ARM64 builds, optional managed signing, signature verification, packaging, checksums, and release publication.
+- `.github/workflows/release.yml`: x64 and ARM64 builds, managed signing required by default, signature verification, packaging, checksums, and atomic release publication.
 
 ## Architecture notes
 
