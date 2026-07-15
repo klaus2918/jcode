@@ -17,16 +17,22 @@
     Use a local jcode.exe artifact instead of downloading from GitHub.
 .PARAMETER ArtifactTgzPath
     Use a local jcode .tar.gz artifact instead of downloading from GitHub.
+.PARAMETER ConfigureAlacritty
+    Install Alacritty through winget when it is not already available.
+.PARAMETER ConfigureHotkey
+    Configure the optional global launch hotkey. This requires Alacritty.
 .PARAMETER SkipAlacrittySetup
-    Skip Alacritty install/setup helpers.
+    Deprecated compatibility switch. Alacritty setup is opt-in by default.
 .PARAMETER SkipHotkeySetup
-    Skip Alt+; hotkey setup helpers.
+    Deprecated compatibility switch. Hotkey setup is opt-in by default.
 #>
 param(
     [string]$InstallDir,
     [string]$Version,
     [string]$ArtifactExePath,
     [string]$ArtifactTgzPath,
+    [switch]$ConfigureAlacritty,
+    [switch]$ConfigureHotkey,
     [switch]$SkipAlacrittySetup,
     [switch]$SkipHotkeySetup
 )
@@ -58,6 +64,41 @@ $SetupHintsPath = Join-Path $JcodeHome "setup_hints.json"
 function Write-Info($msg) { Write-Host $msg -ForegroundColor Blue }
 function Write-Err($msg) { Write-Host "error: $msg" -ForegroundColor Red; exit 1 }
 function Write-Warn($msg) { Write-Host "warning: $msg" -ForegroundColor Yellow }
+
+function Get-ReleaseChecksum([string]$ReleaseTag, [string]$AssetName) {
+    $checksumUrl = "https://github.com/$Repo/releases/download/$ReleaseTag/SHA256SUMS"
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $checksumUrl
+        $contents = [string]$response.Content
+    } catch {
+        Write-Err "Could not download SHA256SUMS for $ReleaseTag. Refusing to install an unverified download: $_"
+    }
+
+    foreach ($line in ($contents -split "`r?`n")) {
+        if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
+            if ($Matches[2] -eq $AssetName) {
+                return $Matches[1].ToLowerInvariant()
+            }
+        }
+    }
+
+    Write-Err "SHA256SUMS for $ReleaseTag does not list $AssetName"
+}
+
+function Assert-FileChecksum([string]$Path, [string]$ExpectedSha256, [string]$AssetName) {
+    try {
+        $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    } catch {
+        Write-Err "Could not calculate SHA256 for ${AssetName}: $_"
+    }
+
+    if ($actual -ne $ExpectedSha256) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        Write-Err "SHA256 verification failed for $AssetName (expected $ExpectedSha256, got $actual)"
+    }
+
+    Write-Info "Verified SHA256: $AssetName"
+}
 
 function Resolve-OptionalPath([string]$PathValue) {
     if (-not $PathValue) {
@@ -109,7 +150,10 @@ function Invoke-ProcessWithTimeout {
     }
 
     $process = Start-Process @startParams
-    $timedOut = -not ($process | Wait-Process -Timeout $TimeoutSeconds -PassThru -ErrorAction SilentlyContinue)
+    # Wait-Process did not gain -Timeout until newer PowerShell releases. Use
+    # the underlying .NET Process API so the documented PowerShell 5.1 minimum
+    # is real rather than only passing on PowerShell 7.
+    $timedOut = -not $process.WaitForExit($TimeoutSeconds * 1000)
     if ($timedOut) {
         Stop-ProcessTree -ProcessId $process.Id
         return [pscustomobject]@{
@@ -120,6 +164,9 @@ function Invoke-ProcessWithTimeout {
         }
     }
 
+    # Ensure redirected streams have finished flushing before callers inspect
+    # their files, then refresh ExitCode from the completed process.
+    $process.WaitForExit()
     $process.Refresh()
     return [pscustomobject]@{
         TimedOut = $false
@@ -329,27 +376,22 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
     )
     $ps1Content = $ps1Lines -join "`r`n"
     Set-Content -Path $ps1Path -Value $ps1Content -Encoding UTF8
-
-    $vbsPath = Join-Path $HotkeyDir "jcode-hotkey-launcher.vbs"
-    $vbsContent = @(
-        'Set objShell = CreateObject("WScript.Shell")',
-        ('objShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{0}""", 0, False' -f $ps1Path)
-    ) -join "`r`n"
-    Set-Content -Path $vbsPath -Value $vbsContent -Encoding ASCII
+    Remove-Item -LiteralPath (Join-Path $HotkeyDir "jcode-hotkey-launcher.vbs") -Force -ErrorAction SilentlyContinue
 
     $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
     New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
     $startupShortcutPath = (Join-Path $startupDir "jcode-hotkey.lnk").Replace("'", "''")
-    $escapedVbsPath = $vbsPath.Replace("'", "''")
+    $escapedPs1Path = $ps1Path.Replace("'", "''")
 
     $shortcutLines = @(
+        '$ErrorActionPreference = ''Stop''',
         '$shell = New-Object -ComObject WScript.Shell',
         "`$shortcut = `$shell.CreateShortcut('$startupShortcutPath')",
-        "`$shortcut.TargetPath = 'wscript.exe'",
-        ("`$shortcut.Arguments = '""{0}""'" -f $escapedVbsPath),
+        "`$shortcut.TargetPath = 'powershell.exe'",
+        ("`$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File ""{0}""'" -f $escapedPs1Path),
         "`$shortcut.Description = 'jcode Alt+; hotkey listener'",
-        '`$shortcut.WindowStyle = 7',
-        '`$shortcut.Save()',
+        '$shortcut.WindowStyle = 7',
+        '$shortcut.Save()',
         "Write-Output 'OK'"
     )
     $shortcutScript = $shortcutLines -join "`r`n"
@@ -360,9 +402,10 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
         return $false
     }
 
-    $launchHotkeyCommand = "Start-Process wscript.exe -ArgumentList '""{0}""' -WindowStyle Hidden" -f $vbsPath
-    & powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command $launchHotkeyCommand | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    $listenerArgs = @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-WindowStyle', 'Hidden', '-File', $ps1Path)
+    try {
+        Start-Process powershell.exe -ArgumentList $listenerArgs -WindowStyle Hidden -ErrorAction Stop | Out-Null
+    } catch {
         Write-Warn "Hotkey will start on next login, but could not be launched immediately"
     }
 
@@ -464,17 +507,23 @@ if ($ResolvedArtifactExePath) {
 } else {
     try {
         Write-Info "Downloading $Artifact.exe..."
-        Invoke-WebRequest -Uri $ExeUrl -OutFile $DownloadPath
+        Invoke-WebRequest -UseBasicParsing -Uri $ExeUrl -OutFile $DownloadPath
         $DownloadMode = "bin"
     } catch {
         try {
             Write-Info "Trying archive download..."
-            Invoke-WebRequest -Uri $TgzUrl -OutFile $DownloadPath
+            Invoke-WebRequest -UseBasicParsing -Uri $TgzUrl -OutFile $DownloadPath
             $DownloadMode = "tar"
         } catch {
             $DownloadMode = ""
         }
     }
+}
+
+if (-not $ResolvedArtifactExePath -and -not $ResolvedArtifactTgzPath -and $DownloadMode) {
+    $downloadedAssetName = if ($DownloadMode -eq "bin") { "$Artifact.exe" } else { "$Artifact.tar.gz" }
+    $expectedSha256 = Get-ReleaseChecksum -ReleaseTag $Version -AssetName $downloadedAssetName
+    Assert-FileChecksum -Path $DownloadPath -ExpectedSha256 $expectedSha256 -AssetName $downloadedAssetName
 }
 
 $DestBin = Join-Path $VersionDir "jcode.exe"
@@ -561,17 +610,19 @@ $env:Path = "$InstallDir;$env:Path"
 $installedAlacritty = $false
 $configuredHotkey = $false
 
-if ($SkipAlacrittySetup) {
-    Write-Info "Skipping Alacritty setup"
-    $installedAlacritty = Test-AlacrittyInstalled
-} else {
+if ($ConfigureAlacritty -and -not $SkipAlacrittySetup) {
     $installedAlacritty = Install-Alacritty
+} else {
+    $installedAlacritty = Test-AlacrittyInstalled
+    Write-Info "Optional Alacritty setup not requested"
 }
 
-if ($SkipHotkeySetup) {
-    Write-Info "Skipping Alt+; hotkey setup"
-} elseif ($installedAlacritty) {
+if ($ConfigureHotkey -and -not $SkipHotkeySetup -and $installedAlacritty) {
     $configuredHotkey = Install-JcodeHotkey -JcodeExePath $LauncherPath
+} elseif ($ConfigureHotkey -and -not $installedAlacritty) {
+    Write-Warn "Hotkey setup requires Alacritty. Re-run with -ConfigureAlacritty -ConfigureHotkey."
+} else {
+    Write-Info "Optional global hotkey setup not requested"
 }
 
 Set-SetupHintsState -AlacrittyConfigured:(Test-AlacrittyInstalled) -HotkeyConfigured:$configuredHotkey

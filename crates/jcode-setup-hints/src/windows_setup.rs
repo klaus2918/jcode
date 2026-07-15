@@ -158,32 +158,33 @@ fn create_hotkey_shortcut(use_alacritty: bool) -> Result<()> {
 
     let ps1_path = hotkey_dir.join("jcode-hotkey.ps1");
     std::fs::write(&ps1_path, &ps1_content)?;
+    let _ = std::fs::remove_file(hotkey_dir.join("jcode-hotkey-launcher.vbs"));
 
     let startup_dir = format!(
         "{}\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
         std::env::var("APPDATA").unwrap_or_else(|_| "C:\\Users\\Default\\AppData\\Roaming".into())
     );
 
-    let vbs_path = hotkey_dir.join("jcode-hotkey-launcher.vbs");
-    let vbs_content = format!(
-        "Set objShell = CreateObject(\"WScript.Shell\")\nobjShell.Run \"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"\"{}\"\"\", 0, False\n",
-        ps1_path.to_string_lossy()
-    );
-    std::fs::write(&vbs_path, &vbs_content)?;
+    // Point the Startup shortcut directly at PowerShell instead of adding a
+    // hidden VBScript trampoline. The listener file is generated locally, so
+    // RemoteSigned is sufficient and avoids the broad ExecutionPolicy Bypass
+    // behavior that endpoint security products reasonably treat as suspicious.
+    let ps1_path_for_powershell = ps1_path.to_string_lossy().replace('\'', "''");
 
     let create_startup_lnk = format!(
         r#"
+$ErrorActionPreference = "Stop"
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut("{startup_dir}\jcode-hotkey.lnk")
-$shortcut.TargetPath = "wscript.exe"
-$shortcut.Arguments = '"{vbs_path}"'
+$shortcut.TargetPath = "powershell.exe"
+$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "{ps1_path}"'
 $shortcut.Description = "jcode Alt+; hotkey listener"
 $shortcut.WindowStyle = 7
 $shortcut.Save()
 Write-Output "OK"
 "#,
         startup_dir = startup_dir,
-        vbs_path = vbs_path.to_string_lossy(),
+        ps1_path = ps1_path_for_powershell,
     );
 
     let output = std::process::Command::new("powershell")
@@ -200,20 +201,23 @@ Write-Output "OK"
         anyhow::bail!("Startup shortcut creation did not confirm success");
     }
 
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let start_output = std::process::Command::new("powershell")
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
-            "Bypass",
+            "RemoteSigned",
             "-WindowStyle",
             "Hidden",
-            "-Command",
-            &format!(
-                "Start-Process wscript.exe -ArgumentList '\"{}\"' -WindowStyle Hidden",
-                vbs_path.to_string_lossy()
-            ),
+            "-File",
+            &ps1_path.to_string_lossy(),
         ])
-        .output();
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
 
     if let Err(e) = start_output {
         eprintln!(
