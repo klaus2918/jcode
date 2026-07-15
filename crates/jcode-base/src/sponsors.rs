@@ -32,7 +32,7 @@ pub mod provenance;
 /// Disclosure tag rendered in the UI whenever discovery is used.
 pub const SPONSORED_DISCOVERY_TAG: &str = "(sponsored discovery)";
 
-/// First-use-per-session disclosure line rendered in the TUI.
+/// First-use-per-session disclosure detail rendered inline with discovery.
 pub const SPONSORED_DISCOVERY_NOTICE: &str = "sponsors make tools discoverable, never recommended \
      \u{b7} jcode.sh/sponsored-discovery";
 

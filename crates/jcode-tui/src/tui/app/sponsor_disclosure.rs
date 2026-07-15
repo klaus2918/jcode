@@ -1,70 +1,97 @@
-//! Sponsored discovery disclosure line.
+//! Sponsored discovery disclosure placement.
 //!
-//! Whenever a session first uses the `discover_tools` tool, we render a
-//! persistent `(sponsored discovery)` system line in the transcript. This is
-//! a disclosure, not a teaching hint: unlike `swarm_hint` it has no lifetime
-//! cap and fires once per session, every session, as long as sponsored
-//! discovery is used. The line links to the public policy page so users can
-//! read what sponsored discovery means.
+//! The first `discover_tools` result in a session carries a subtle inline
+//! policy notice. Keeping the notice attached to the result preserves the
+//! disclosure without adding a prominent standalone system message.
 
-use super::{App, DisplayMessage};
+use super::App;
+use crate::message::ToolCall;
 
 /// Tool name that triggers the disclosure.
 pub(super) const DISCOVERY_TOOL_NAME: &str = "discover_tools";
 
-/// The disclosure line shown in the transcript.
-pub(super) fn disclosure_message() -> String {
-    format!(
-        "{} {}",
-        crate::sponsors::SPONSORED_DISCOVERY_TAG,
-        crate::sponsors::SPONSORED_DISCOVERY_NOTICE
-    )
+fn tool_uses_discovery(tool: &ToolCall) -> bool {
+    let name = crate::tui::ui::tools_ui::canonical_tool_name(&tool.name);
+    if name == DISCOVERY_TOOL_NAME {
+        return true;
+    }
+    if name != "batch" {
+        return false;
+    }
+
+    tool.input
+        .get("tool_calls")
+        .and_then(|value| value.as_array())
+        .is_some_and(|calls| {
+            calls.iter().any(|call| {
+                call.get("tool")
+                    .or_else(|| call.get("name"))
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|name| {
+                        crate::tui::ui::tools_ui::canonical_tool_name(name) == DISCOVERY_TOOL_NAME
+                    })
+            })
+        })
 }
 
-/// Pure decision: disclose on first sponsored-discovery use in a session.
-pub(super) fn should_disclose(shown_this_session: bool) -> bool {
-    !shown_this_session
+fn should_disclose(shown_this_session: bool, tool: &ToolCall) -> bool {
+    !shown_this_session && tool_uses_discovery(tool)
 }
 
 impl App {
-    /// Surface the sponsored-discovery disclosure the first time this session
-    /// uses `discover_tools`. Persistent system message, once per session,
-    /// no lifetime cap: disclosure must fire every session that uses
-    /// discovery.
-    pub(in crate::tui::app) fn maybe_surface_sponsor_disclosure(&mut self, tool_name: &str) {
-        if tool_name != DISCOVERY_TOOL_NAME {
-            return;
-        }
-        if !should_disclose(self.sponsor_disclosure_shown_this_session) {
-            return;
+    /// Mark the first direct or batched discovery result in this session so its
+    /// renderer can include the policy notice in the result details.
+    pub(in crate::tui::app) fn inline_sponsor_disclosure_title(
+        &mut self,
+        tool: &ToolCall,
+    ) -> Option<String> {
+        if !should_disclose(self.sponsor_disclosure_shown_this_session, tool) {
+            return None;
         }
         self.sponsor_disclosure_shown_this_session = true;
-        self.push_display_message(DisplayMessage {
-            role: "system".to_string(),
-            content: disclosure_message(),
-            tool_calls: vec![],
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        });
+        Some(crate::sponsors::SPONSORED_DISCOVERY_TAG.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    #[test]
-    fn discloses_once_per_session() {
-        assert!(should_disclose(false));
-        assert!(!should_disclose(true));
+    fn tool(name: &str, input: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "call_1".to_string(),
+            name: name.to_string(),
+            input,
+            intent: None,
+            thought_signature: None,
+        }
     }
 
     #[test]
-    fn disclosure_names_the_policy_and_links_it() {
-        let message = disclosure_message();
-        assert!(message.contains("(sponsored discovery)"));
-        assert!(message.contains("never recommended"));
-        assert!(message.contains("jcode.sh/sponsored-discovery"));
+    fn discloses_once_for_direct_discovery() {
+        let discovery = tool(DISCOVERY_TOOL_NAME, json!({"category": "payments"}));
+        assert!(should_disclose(false, &discovery));
+        assert!(!should_disclose(true, &discovery));
+    }
+
+    #[test]
+    fn detects_discovery_nested_in_batch() {
+        let batch = tool(
+            "batch",
+            json!({
+                "tool_calls": [
+                    {"tool": "read", "file_path": "README.md"},
+                    {"tool": "discover_tools", "parameters": {"category": "payments"}}
+                ]
+            }),
+        );
+        assert!(should_disclose(false, &batch));
+    }
+
+    #[test]
+    fn ignores_tools_without_discovery() {
+        let read = tool("read", json!({"file_path": "README.md"}));
+        assert!(!should_disclose(false, &read));
     }
 }
