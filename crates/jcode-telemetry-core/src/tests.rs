@@ -548,6 +548,39 @@ fn test_install_conversion_id_is_validated_and_consumed() {
 
     write_private_file(&path, "not-a-conversion-id");
     assert_eq!(read_install_conversion_id(), None);
+    assert!(!path.exists());
+
+    assert!(install_conversion_id_is_fresh(std::time::SystemTime::now()));
+    assert!(!install_conversion_id_is_fresh(
+        std::time::SystemTime::now() - std::time::Duration::from_secs(91 * 24 * 60 * 60)
+    ));
+
+    if let Some(prev_home) = prev_home {
+        jcode_core::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        jcode_core::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
+fn test_attributed_install_bypasses_existing_install_marker() {
+    let _guard = lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+    let id = get_or_create_id().expect("telemetry id");
+    mark_install_recorded(&id);
+    assert!(install_recorded_for_id(&id));
+    assert!(read_install_conversion_id().is_none());
+    assert!(!should_record_install_for_id(&id, None));
+
+    let path = install_conversion_id_path().expect("conversion path");
+    write_private_file(&path, "11111111-2222-4333-8444-555555555555\n");
+    assert!(install_recorded_for_id(&id));
+    let conversion_id = read_install_conversion_id();
+    assert!(conversion_id.is_some());
+    assert!(should_record_install_for_id(&id, conversion_id.as_deref()));
 
     if let Some(prev_home) = prev_home {
         jcode_core::env::set_var("JCODE_HOME", prev_home);

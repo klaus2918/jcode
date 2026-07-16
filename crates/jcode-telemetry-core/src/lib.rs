@@ -1297,11 +1297,15 @@ pub fn record_install_if_first_run() {
         Some(id) => id,
         None => return,
     };
-    if install_recorded_for_id(&id) {
+    let install_conversion_id = read_install_conversion_id();
+    // A website-attributed install is a fresh post-install launch even when
+    // this telemetry identity previously recorded an install. This also lets
+    // the first conversion-aware release consume tokens written by the
+    // installer before that release existed.
+    if !should_record_install_for_id(&id, install_conversion_id.as_deref()) {
         return;
     }
     let (schema_version, build_channel, git_checkout, ci, from_cargo) = telemetry_envelope();
-    let install_conversion_id = read_install_conversion_id();
     let event = InstallEvent {
         event_id: new_event_id(),
         id: id.clone(),
@@ -1327,6 +1331,10 @@ pub fn record_install_if_first_run() {
         show_first_run_notice();
     }
     mark_current_version_recorded();
+}
+
+fn should_record_install_for_id(id: &str, install_conversion_id: Option<&str>) -> bool {
+    !install_recorded_for_id(id) || install_conversion_id.is_some()
 }
 
 pub fn record_upgrade_if_needed() {
