@@ -571,9 +571,9 @@ fn install_macos_hotkey_listener(
     Ok(terminal)
 }
 
-fn startup_hints_for_launch(state: &SetupHintsState) -> Option<StartupHints> {
+fn startup_hints_for_launch(_state: &SetupHintsState) -> Option<StartupHints> {
     #[cfg(any(test, target_os = "macos"))]
-    let spawn_notice = if !state.hotkey_configured || state.startup_spawn_hint_dismissed {
+    let spawn_notice = if !_state.hotkey_configured || _state.startup_spawn_hint_dismissed {
         None
     } else {
         Some(format!(
@@ -583,45 +583,6 @@ fn startup_hints_for_launch(state: &SetupHintsState) -> Option<StartupHints> {
     };
     #[cfg(not(any(test, target_os = "macos")))]
     let spawn_notice: Option<String> = None;
-
-    if state.launch_count == 1 {
-        let mut message = "Tip: jcode is left-aligned by default. Use `/alignment centered` or press `Alt+C` to toggle left/centered for the current session.".to_string();
-
-        if let Some(spawn_notice) = spawn_notice {
-            message.push_str("\n\n");
-            message.push_str(&spawn_notice);
-        }
-
-        return Some(StartupHints::with_status_and_display(
-            "Tip: `/alignment centered` or Alt+C toggles alignment.".to_string(),
-            "Alignment",
-            message,
-        ));
-    }
-
-    if state.launch_count <= 3 {
-        let config_path = storage::jcode_dir()
-            .ok()
-            .map(|d| d.join("config.toml"))
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "~/.jcode/config.toml".to_string());
-
-        let mut message = format!(
-            "You can hotswap text alignment with `Alt+C` (left-aligned ↔ centered).\n\nTo save it permanently, use `/alignment centered` or `/alignment left`. You can also change it in `{}` with `display.centered = true` or `display.centered = false`.\n\nLeft-aligned mode is the default for new configs.",
-            config_path
-        );
-
-        if let Some(spawn_notice) = spawn_notice {
-            message.push_str("\n\n");
-            message.push_str(&spawn_notice);
-        }
-
-        return Some(StartupHints::with_status_and_display(
-            "Tip: Alt+C toggles left/center alignment.".to_string(),
-            "Welcome",
-            message,
-        ));
-    }
 
     spawn_notice.map(StartupHints::with_spawn_notice)
 }

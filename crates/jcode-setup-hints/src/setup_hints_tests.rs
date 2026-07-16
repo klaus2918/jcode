@@ -1,46 +1,17 @@
 use super::*;
 
 #[test]
-fn first_launch_shows_explicit_alignment_hint_first() {
-    let state = SetupHintsState {
-        launch_count: 1,
-        ..SetupHintsState::default()
-    };
-
-    let hints = startup_hints_for_launch(&state).expect("expected startup hint");
-    assert_eq!(
-        hints.status_notice.as_deref(),
-        Some("Tip: `/alignment centered` or Alt+C toggles alignment.")
-    );
-
-    let (title, message) = hints.display_message.expect("expected display message");
-    assert_eq!(title, "Alignment");
-    assert!(message.contains("Alt+C"));
-    assert!(message.contains("/alignment centered"));
-    assert!(message.contains("left-aligned by default"));
-    assert!(!message.contains("display.centered = true"));
-}
-
-#[test]
-fn second_and_third_launches_include_alignment_tip() {
-    let state = SetupHintsState {
-        launch_count: 2,
-        ..SetupHintsState::default()
-    };
-
-    let hints = startup_hints_for_launch(&state).expect("expected startup hint");
-    assert_eq!(
-        hints.status_notice.as_deref(),
-        Some("Tip: Alt+C toggles left/center alignment.")
-    );
-
-    let (title, message) = hints.display_message.expect("expected display message");
-    assert_eq!(title, "Welcome");
-    assert!(message.contains("Alt+C"));
-    assert!(message.contains("/alignment centered"));
-    assert!(message.contains("/alignment left"));
-    assert!(message.contains("display.centered = true"));
-    assert!(message.contains("Left-aligned mode is the default"));
+fn first_three_launches_do_not_show_alignment_tips() {
+    for launch_count in 1..=3 {
+        let state = SetupHintsState {
+            launch_count,
+            ..SetupHintsState::default()
+        };
+        assert!(
+            startup_hints_for_launch(&state).is_none(),
+            "launch {launch_count} should not show a generic alignment tip"
+        );
+    }
 }
 
 #[test]
@@ -66,7 +37,7 @@ fn first_three_launches_can_include_hotkey_notice_too() {
 
     let hints = startup_hints_for_launch(&state).expect("expected startup hint");
     let (_, message) = hints.display_message.expect("expected display message");
-    assert!(message.contains("Alt+C"));
+    assert!(!message.contains("Alt+C"));
     assert!(message.contains("Cmd+;"));
     // The notice should make clear the hotkey works globally, not just inside jcode.
     assert!(message.contains("system-wide"));
