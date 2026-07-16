@@ -170,9 +170,10 @@ like `session_details`/`turn_details`) because `events` is near D1's
 The website mints an opaque UUID only when an install/download CTA is used and
 browser DNT/GPC is not active. For the shell path, the same UUID is carried by
 the copied `/install?conversion_id=...` command, injected into the installer,
-persisted locally with mode 0600, and attached to the existing first-run
-`install` event. It is not an account or telemetry ID and contains no browsing
-content.
+persisted locally with mode 0600, and attached to the existing post-install
+`install` event. The CLI consumes it after a successful send and deletes any
+unconsumed token older than 90 days. It is not an account or telemetry ID and
+contains no browsing content.
 
 `install_funnel` stages are `command_copy`, `script_request`,
 `installer_start`, and `installer_finish`, with `success`/`failure` outcomes.

@@ -233,12 +233,30 @@ pub(super) fn get_or_create_id() -> Option<String> {
 
 pub(super) fn read_install_conversion_id() -> Option<String> {
     let path = install_conversion_id_path()?;
-    let value = std::fs::read_to_string(path).ok()?;
-    let parsed = uuid::Uuid::parse_str(value.trim()).ok()?;
+    let fresh = std::fs::metadata(&path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .is_some_and(install_conversion_id_is_fresh);
+    if !fresh {
+        let _ = std::fs::remove_file(&path);
+        return None;
+    }
+    let value = std::fs::read_to_string(&path).ok()?;
+    let Ok(parsed) = uuid::Uuid::parse_str(value.trim()) else {
+        let _ = std::fs::remove_file(&path);
+        return None;
+    };
     if parsed.get_version() != Some(uuid::Version::Random) {
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     Some(parsed.to_string())
+}
+
+pub(super) fn install_conversion_id_is_fresh(modified: SystemTime) -> bool {
+    modified
+        .elapsed()
+        .is_ok_and(|age| age <= Duration::from_secs(90 * 24 * 60 * 60))
 }
 
 pub(super) fn clear_install_conversion_id() {
