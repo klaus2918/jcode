@@ -95,6 +95,18 @@ fn resolve_windows_hotkeys() -> Vec<WindowsHotkey> {
         .collect()
 }
 
+pub(super) fn primary_hotkey_display() -> Option<(String, String)> {
+    resolve_windows_hotkeys()
+        .into_iter()
+        .find(|entry| !entry.self_dev && windows_hotkeys::chord_to_win32(&entry.chord).is_some())
+        .map(|entry| {
+            (
+                entry.chord.canonical(),
+                windows_hotkeys::display_windows(&entry.chord),
+            )
+        })
+}
+
 fn create_hotkey_shortcut(use_alacritty: bool) -> Result<()> {
     let exe = std::env::current_exe()?;
     let exe_path = exe.to_string_lossy();
@@ -635,6 +647,7 @@ pub(super) fn run_setup_hotkey_windows() -> Result<()> {
                 }
             }
             eprintln!();
+            super::install_cli_launch_hints_notice();
             prompt_try_it_out(installed_alacritty);
         }
         Err(e) => {

@@ -27,6 +27,8 @@ use std::path::PathBuf;
 
 pub mod keymap;
 
+mod cli_launch_hints;
+
 #[cfg(any(test, target_os = "macos", target_os = "linux", windows))]
 mod launch_hotkeys;
 #[cfg(any(test, target_os = "linux"))]
@@ -101,6 +103,16 @@ pub struct SetupHintsState {
     /// showing already-learned repo hotkey hints.
     #[serde(default)]
     pub launch_hotkey_usage: HashMap<String, u64>,
+    /// Last time a launch-shortcut reminder was shown for each external CLI.
+    /// Keys are stable source ids such as `claude` and `codex`; values are Unix
+    /// timestamps in seconds.
+    #[serde(default)]
+    pub cli_launch_hint_last_shown: HashMap<String, u64>,
+    /// Lifetime reminder count per external CLI. The native SessionStart hooks
+    /// may fire on every launch, but the reminder intentionally stops after a
+    /// small number of spaced repetitions.
+    #[serde(default)]
+    pub cli_launch_hint_shown_count: HashMap<String, u64>,
 }
 
 /// Serde default helper: fields documented as "true by default".
@@ -127,6 +139,8 @@ impl Default for SetupHintsState {
             keymap_conflict_signature: String::new(),
             glyph_safe_notice_shown: false,
             launch_hotkey_usage: HashMap::new(),
+            cli_launch_hint_last_shown: HashMap::new(),
+            cli_launch_hint_shown_count: HashMap::new(),
         }
     }
 }
@@ -669,7 +683,12 @@ fn nudge_macos_ghostty(state: &mut SetupHintsState) -> Option<StartupHints> {
         reason = "explicit return ends a cfg-gated block"
     )
 )]
-pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
+pub fn run_setup_hotkey(_listen_macos_hotkey: bool, notify_cli_launch: Option<&str>) -> Result<()> {
+    if let Some(source) = notify_cli_launch {
+        cli_launch_hints::maybe_notify(source)?;
+        return Ok(());
+    }
+
     #[cfg(target_os = "macos")]
     {
         // The background listener (`--listen-macos-hotkey`) is intercepted earlier,
@@ -705,6 +724,7 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
                 eprintln!(
                     "    \x1b[1mCmd+Shift+'\x1b[0m new jcode self-dev session (last jcode repo)"
                 );
+                install_cli_launch_hints_notice();
                 return Ok(());
             }
             Err(e) => {
@@ -747,6 +767,7 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
                             );
                         }
                     }
+                    install_cli_launch_hints_notice();
                     return Ok(());
                 }
                 Err(e) => {
@@ -781,6 +802,91 @@ pub fn run_setup_hotkey(_listen_macos_hotkey: bool) -> Result<()> {
     {
         run_setup_hotkey_windows()
     }
+}
+
+/// Install event-driven launch reminders into CLIs that are already present.
+/// This is best-effort because the global hotkey itself is the primary feature;
+/// a malformed third-party config must not turn successful hotkey setup into a
+/// failure. Both integrations use the CLIs' native `SessionStart` lifecycle
+/// event and never inspect command arguments, prompts, or process lists.
+pub(crate) fn install_cli_launch_hints_notice() {
+    match cli_launch_hints::install_available() {
+        Ok(installed) if !installed.is_empty() => {
+            eprintln!();
+            eprintln!(
+                "  \x1b[32m✓\x1b[0m Added launch-shortcut reminders to {}.",
+                installed.join(" and ")
+            );
+            eprintln!("    Uses native SessionStart hooks; no prompts or commands are read.");
+            if installed.iter().any(|name| name == "Codex CLI") {
+                eprintln!(
+                    "    Codex will ask you to review and trust the user hook once via /hooks."
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(err) => jcode_logging::warn(&format!(
+            "could not install external CLI launch-shortcut reminders: {err}"
+        )),
+    }
+}
+
+/// Return the installed primary global launch shortcut as `(canonical, display)`.
+/// A reminder is suppressed unless the shortcut is known to be active.
+pub(crate) fn active_primary_launch_hotkey() -> Option<(String, String)> {
+    let config = load_launch_hotkeys_config();
+    if config.enabled == Some(false) {
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let state = SetupHintsState::load();
+        if !state.hotkey_configured {
+            return None;
+        }
+        let exe_path = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "jcode".to_string());
+        let last_dir = mac_hotkey_last_dir_file()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let last_repo = mac_hotkey_last_repo_file()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return launch_hotkeys::resolve_launch_hotkeys(&config, &exe_path, &last_dir, &last_repo)
+            .into_iter()
+            .find(|entry| !entry.args.iter().any(|arg| arg == "self-dev"))
+            .map(|entry| {
+                let display = keymap::KeyChord::parse(&entry.chord)
+                    .map(|chord| chord.display_symbols())
+                    .unwrap_or_else(|| entry.chord.clone());
+                (entry.chord, display)
+            });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let comp = detect_linux_compositor()?;
+        if !linux_hotkeys_installed(comp) {
+            return None;
+        }
+        return resolve_linux_hotkeys()
+            .into_iter()
+            .find(|entry| !entry.self_dev && linux_chord_expressible(comp, &entry.chord))
+            .map(|entry| (entry.chord.canonical(), entry.chord.display_super()));
+    }
+
+    #[cfg(windows)]
+    {
+        if !SetupHintsState::load().hotkey_configured {
+            return None;
+        }
+        return windows_setup::primary_hotkey_display();
+    }
+
+    #[allow(unreachable_code)]
+    None
 }
 
 /// Run the macOS global-hotkey listener on the current (main) thread.
