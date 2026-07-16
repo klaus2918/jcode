@@ -154,7 +154,9 @@ like `session_details`/`turn_details`) because `events` is near D1's
 - `web_pageview`: `path`, `referrer`, `visitor_id`, `utm_source`,
   `utm_medium`, `utm_campaign`
 - `web_cta_click`: `path`, `cta` (e.g. `plus_early_access`,
-  `flagship_early_access`, `install`), `visitor_id`
+  `flagship_early_access`, `install`), `visitor_id`, `session_id`, `pageview_id`.
+  Install actions also carry a per-click random `conversion_id`, CTA `placement`, and
+  `install_method`.
 - `web_vital`: `path`, `visitor_id`, standard `metric_name` (`CLS`, `FCP`,
   `INP`, `LCP`, or `TTFB`), finite nonnegative `metric_value`, and `rating`
   (`good`, `needs-improvement`, or `poor`). Values are capped at 10 for CLS
@@ -162,6 +164,32 @@ like `session_details`/`turn_details`) because `events` is near D1's
 - `web_error`: `path`, `visitor_id`, and coarse `error_kind` (`script`,
   `promise`, or `resource`). Error messages, stacks, filenames, and URLs are
   never stored. D1 retention is 90 days.
+
+### Install conversion funnel (migration 0020)
+
+The website mints an opaque UUID only when an install/download CTA is used and
+browser DNT/GPC is not active. For the shell path, the same UUID is carried by
+the copied `/install?conversion_id=...` command, injected into the installer,
+persisted locally with mode 0600, and attached to the existing first-run
+`install` event. It is not an account or telemetry ID and contains no browsing
+content.
+
+`install_funnel` stages are `command_copy`, `script_request`,
+`installer_start`, and `installer_finish`, with `success`/`failure` outcomes.
+The existing `install` event receives an `install_details` row with stage
+`first_run`. Installer failures retain only a coarse stage label, never command
+output, paths, hostnames, or error messages. The scheduled retention job nulls
+the cross-system `conversion_id` in both web and install details after 90 days.
+
+Run `npm run conversion` for visitor/session-to-intent rates, copy, script retrieval,
+installer success, first-run conversion, stage latency, campaign/path/placement
+splits, platform success rates, and coarse platform-specific failures. Direct
+binary downloads are measurable through intent only; shell installs can be joined
+through first launch. Browser privacy opt-outs and un-attributed/manual installs
+are intentionally excluded from the joined funnel. Every conversion-bearing
+event is also written to the dedicated
+`jcode_install_firehose` Analytics Engine dataset before D1, so the 90-day
+funnel is reconstructable during a D1 outage.
 
 ### Token subscription plan events (migration 0016)
 

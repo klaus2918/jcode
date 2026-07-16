@@ -14,6 +14,12 @@ pub(super) fn install_recorded_path() -> Option<PathBuf> {
         .map(|d| d.join("telemetry_install_sent"))
 }
 
+pub(super) fn install_conversion_id_path() -> Option<PathBuf> {
+    storage::jcode_dir()
+        .ok()
+        .map(|d| d.join("install_conversion_id"))
+}
+
 pub(super) fn version_recorded_path() -> Option<PathBuf> {
     storage::jcode_dir()
         .ok()
@@ -223,6 +229,22 @@ pub(super) fn get_or_create_id() -> Option<String> {
     let id = uuid::Uuid::new_v4().to_string();
     write_private_file(&path, &id);
     Some(id)
+}
+
+pub(super) fn read_install_conversion_id() -> Option<String> {
+    let path = install_conversion_id_path()?;
+    let value = std::fs::read_to_string(path).ok()?;
+    let parsed = uuid::Uuid::parse_str(value.trim()).ok()?;
+    if parsed.get_version() != Some(uuid::Version::Random) {
+        return None;
+    }
+    Some(parsed.to_string())
+}
+
+pub(super) fn clear_install_conversion_id() {
+    if let Some(path) = install_conversion_id_path() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 pub(super) fn is_first_run() -> bool {

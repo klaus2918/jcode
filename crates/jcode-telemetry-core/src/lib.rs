@@ -1277,6 +1277,7 @@ fn emit_session_start_for_state(id: String, state: &SessionTelemetry, mode: Deli
 
 pub fn record_install_if_first_run() {
     if !is_enabled() {
+        clear_install_conversion_id();
         return;
     }
     // Skip install/onboarding emission under CI. Ephemeral runners start with a
@@ -1287,6 +1288,7 @@ pub fn record_install_if_first_run() {
     // queryable; product dashboards filter is_ci out of the headline metrics.
     if is_ci() {
         logging::debug("skipping telemetry install/onboarding under CI");
+        clear_install_conversion_id();
         mark_current_version_recorded();
         return;
     }
@@ -1299,6 +1301,7 @@ pub fn record_install_if_first_run() {
         return;
     }
     let (schema_version, build_channel, git_checkout, ci, from_cargo) = telemetry_envelope();
+    let install_conversion_id = read_install_conversion_id();
     let event = InstallEvent {
         event_id: new_event_id(),
         id: id.clone(),
@@ -1311,11 +1314,13 @@ pub fn record_install_if_first_run() {
         is_git_checkout: git_checkout,
         is_ci: ci,
         ran_from_cargo: from_cargo,
+        install_conversion_id,
     };
     if let Ok(payload) = serde_json::to_value(&event)
         && send_payload(payload, DeliveryMode::Blocking(BLOCKING_INSTALL_TIMEOUT))
     {
         mark_install_recorded(&id);
+        clear_install_conversion_id();
     }
     if first_run {
         emit_onboarding_step_once("first_run", None, None);

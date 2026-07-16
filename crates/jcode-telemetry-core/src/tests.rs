@@ -529,3 +529,50 @@ fn test_install_marker_tracks_current_telemetry_id() {
         jcode_core::env::remove_var("JCODE_HOME");
     }
 }
+
+#[test]
+fn test_install_conversion_id_is_validated_and_consumed() {
+    let _guard = lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+    let path = install_conversion_id_path().expect("conversion path");
+    write_private_file(&path, "11111111-2222-4333-8444-555555555555\n");
+    assert_eq!(
+        read_install_conversion_id().as_deref(),
+        Some("11111111-2222-4333-8444-555555555555")
+    );
+    clear_install_conversion_id();
+    assert_eq!(read_install_conversion_id(), None);
+
+    write_private_file(&path, "not-a-conversion-id");
+    assert_eq!(read_install_conversion_id(), None);
+
+    if let Some(prev_home) = prev_home {
+        jcode_core::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        jcode_core::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
+fn test_install_conversion_id_is_removed_when_telemetry_is_disabled() {
+    let _guard = lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let temp = tempfile::TempDir::new().expect("create temp dir");
+    jcode_core::env::set_var("JCODE_HOME", temp.path());
+    let path = install_conversion_id_path().expect("conversion path");
+    write_private_file(&path, "11111111-2222-4333-8444-555555555555\n");
+
+    jcode_core::env::set_var("JCODE_NO_TELEMETRY", "1");
+    record_install_if_first_run();
+    jcode_core::env::remove_var("JCODE_NO_TELEMETRY");
+    assert!(!path.exists());
+
+    if let Some(prev_home) = prev_home {
+        jcode_core::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        jcode_core::env::remove_var("JCODE_HOME");
+    }
+}

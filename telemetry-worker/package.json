@@ -28,7 +28,9 @@
     "migrate:auth-failure-reason": "npx wrangler d1 execute jcode-telemetry --remote --file=migrations/0015_auth_failure_reason.sql",
     "migrate:web-subscription": "npx wrangler d1 execute jcode-telemetry --remote --file=migrations/0016_web_subscription_analytics.sql",
     "migrate:discovery": "npx wrangler d1 execute jcode-telemetry --remote --file=migrations/0017_discovery_telemetry.sql",
-    "migrate:web-quality": "npx wrangler d1 execute jcode-telemetry --remote --file=migrations/0018_web_quality_telemetry.sql"
+    "migrate:web-quality": "npx wrangler d1 execute jcode-telemetry --remote --file=migrations/0018_web_quality_telemetry.sql",
+    "migrate:install-conversion": "npx wrangler d1 execute jcode-telemetry --remote --file=migrations/0020_install_conversion_funnel.sql",
+    "conversion": "npx wrangler d1 execute jcode-telemetry --remote --file=conversion.sql"
   },
   "devDependencies": {
     "wrangler": "^4"

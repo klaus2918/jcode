@@ -143,12 +143,38 @@ CREATE TABLE IF NOT EXISTS web_details (
     metric_value REAL,
     rating TEXT,
     error_kind TEXT,
+    pageview_id TEXT,
+    conversion_id TEXT,
+    placement TEXT,
+    install_method TEXT,
     FOREIGN KEY (event_id) REFERENCES events(event_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_web_details_visitor_id ON web_details(visitor_id);
 CREATE INDEX IF NOT EXISTS idx_web_details_path ON web_details(path);
 CREATE INDEX IF NOT EXISTS idx_web_details_cta ON web_details(cta);
+CREATE INDEX IF NOT EXISTS idx_web_details_conversion_id ON web_details(conversion_id)
+    WHERE conversion_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_web_details_pageview_id ON web_details(pageview_id)
+    WHERE pageview_id IS NOT NULL;
+
+-- Cross-system install attribution. conversion_id is a per-click random UUID
+-- minted by the website and removed after 90 days by the retention job.
+CREATE TABLE IF NOT EXISTS install_details (
+    event_id TEXT PRIMARY KEY,
+    conversion_id TEXT,
+    stage TEXT,
+    outcome TEXT,
+    source TEXT,
+    placement TEXT,
+    install_method TEXT,
+    failure_stage TEXT,
+    FOREIGN KEY (event_id) REFERENCES events(event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_install_details_conversion_id ON install_details(conversion_id)
+    WHERE conversion_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_install_details_stage_outcome ON install_details(stage, outcome);
 
 -- Privacy-safe sponsored-discovery attempt details. Free-text query and reason
 -- content are never sent by the client and therefore cannot be stored here.
