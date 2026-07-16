@@ -18,16 +18,20 @@ use serde_json::Value;
 use state_support::*;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const TELEMETRY_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/event";
 const ASYNC_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const BACKGROUND_QUEUE_CAPACITY: usize = 2048;
 const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
 const BLOCKING_LIFECYCLE_TIMEOUT: Duration = Duration::from_millis(800);
 const TELEMETRY_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_DISCOVERY_ENDPOINT: &str = "https://api.jcode.sh/v1/discovery";
 static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
+static TELEMETRY_QUEUE_OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
+static TELEMETRY_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
 static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -972,6 +976,30 @@ fn telemetry_status_is_permanent(status: u16) -> bool {
     (400..500).contains(&status) && !matches!(status, 408 | 425 | 429)
 }
 
+fn spawn_background_worker<F>(capacity: usize, mut deliver: F) -> std::io::Result<SyncSender<Value>>
+where
+    F: FnMut(Value) + Send + 'static,
+{
+    let (sender, receiver) = sync_channel(capacity);
+    std::thread::Builder::new()
+        .name("jcode-telemetry".to_string())
+        .spawn(move || {
+            while let Ok(payload) = receiver.recv() {
+                deliver(payload);
+            }
+        })?;
+    Ok(sender)
+}
+
+fn background_sender() -> &'static SyncSender<Value> {
+    TELEMETRY_BACKGROUND_SENDER.get_or_init(|| {
+        spawn_background_worker(BACKGROUND_QUEUE_CAPACITY, |payload| {
+            let _ = post_payload(payload, ASYNC_SEND_TIMEOUT);
+        })
+        .expect("telemetry background worker should start")
+    })
+}
+
 fn send_payload(payload: serde_json::Value, mode: DeliveryMode) -> bool {
     match mode {
         DeliveryMode::Background => {
@@ -979,10 +1007,24 @@ fn send_payload(payload: serde_json::Value, mode: DeliveryMode) -> bool {
                 return false;
             }
             logging::debug("queueing telemetry payload for background delivery");
-            std::thread::spawn(move || {
-                let _ = post_payload(payload, ASYNC_SEND_TIMEOUT);
-            });
-            true
+            match background_sender().try_send(payload) {
+                Ok(()) => {
+                    TELEMETRY_QUEUE_OVERFLOW_WARNED.store(false, Ordering::Relaxed);
+                    true
+                }
+                Err(TrySendError::Full(_)) => {
+                    if !TELEMETRY_QUEUE_OVERFLOW_WARNED.swap(true, Ordering::Relaxed) {
+                        logging::warn(&format!(
+                            "telemetry background queue is full (capacity={BACKGROUND_QUEUE_CAPACITY}); dropping events until delivery catches up"
+                        ));
+                    }
+                    false
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    logging::warn("telemetry background worker stopped; dropping payload");
+                    false
+                }
+            }
         }
         DeliveryMode::Blocking(timeout) => {
             logging::debug(&format!(

@@ -30,6 +30,31 @@ fn permanent_telemetry_statuses_trip_the_process_breaker() {
 }
 
 #[test]
+fn background_delivery_queue_is_bounded() {
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let sender = spawn_background_worker(1, move |_| {
+        let _ = started_tx.send(());
+        let _ = release_rx.recv();
+    })
+    .expect("start test telemetry worker");
+
+    sender
+        .send(serde_json::json!({"event": "first"}))
+        .expect("enqueue first payload");
+    started_rx.recv().expect("worker started first payload");
+    sender
+        .try_send(serde_json::json!({"event": "second"}))
+        .expect("bounded queue accepts one waiting payload");
+    assert!(matches!(
+        sender.try_send(serde_json::json!({"event": "third"})),
+        Err(std::sync::mpsc::TrySendError::Full(_))
+    ));
+
+    release_tx.send(()).expect("release telemetry worker");
+}
+
+#[test]
 fn telemetry_endpoint_uses_production_custom_domain() {
     assert_eq!(TELEMETRY_ENDPOINT, "https://telemetry.jcode.sh/v1/event");
 }
