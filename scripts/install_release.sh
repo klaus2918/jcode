@@ -87,6 +87,17 @@ echo "Updated stable symlink: $stable_dir/jcode -> $version_dir/jcode"
 echo "Updated current symlink: $current_dir/jcode -> $version_dir/jcode"
 echo "Updated launcher symlink: $install_dir/jcode -> $current_dir/jcode"
 
+# Configure supported desktop launch hotkeys as part of installation. This is
+# idempotent and best-effort because headless installs may not expose a desktop
+# session; the first interactive launch retries automatically.
+case "$(uname -s)" in
+  Darwin|Linux)
+    if "$install_dir/jcode" setup-hotkey </dev/null >/dev/null 2>&1; then
+      echo "Configured system-wide jcode launch hotkeys (when supported)."
+    fi
+    ;;
+esac
+
 # Gracefully reload any running background server onto the binary we just
 # installed (issue #291). `server reload` only reloads when the running daemon
 # is genuinely older, hands live headless/swarm sessions to the new process, and

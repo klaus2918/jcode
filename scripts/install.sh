@@ -246,13 +246,14 @@ if [ "$(uname -s)" = "Darwin" ]; then
   xattr -d com.apple.quarantine "$dest_version_dir/$bin_name" 2>/dev/null || true
 fi
 
-if [ "$(uname -s)" = "Darwin" ]; then
+hotkey_setup_ready=false
+case "$(uname -s)" in
+Darwin|Linux)
   if "$launcher_path" setup-hotkey </dev/null >/dev/null 2>&1; then
-    mac_hotkey_ready=true
-  else
-    mac_hotkey_ready=false
+    hotkey_setup_ready=true
   fi
-fi
+  ;;
+esac
 
 # Retire any background server still running the old binary so the freshly
 # installed version is picked up without the user having to kill a daemon by
@@ -366,7 +367,7 @@ else
   echo ""
 
   if [ "$(uname -s)" = "Darwin" ]; then
-    if [ "${mac_hotkey_ready:-false}" = true ]; then
+    if [ "$hotkey_setup_ready" = true ]; then
       info "Global hotkey ready: Cmd+; launches a new jcode from anywhere, system-wide"
     else
       info "Tip: run 'jcode setup-hotkey' so Cmd+; launches jcode system-wide on macOS"

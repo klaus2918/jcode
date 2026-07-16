@@ -73,6 +73,30 @@ fn default_resolved_hotkeys_match_legacy_three() {
 }
 
 #[test]
+fn linux_hotkeys_install_automatically_and_respect_opt_out() {
+    assert_eq!(
+        linux_hotkey_setup_action(None, false, 0),
+        LinuxHotkeySetupAction::Install,
+        "a fresh install should configure compositor hotkeys automatically"
+    );
+    assert_eq!(
+        linux_hotkey_setup_action(Some(true), true, 0),
+        LinuxHotkeySetupAction::Refresh,
+        "an older managed block should refresh automatically"
+    );
+    assert_eq!(
+        linux_hotkey_setup_action(Some(true), true, LAUNCH_HOTKEY_TRACKING_VERSION),
+        LinuxHotkeySetupAction::None,
+        "an up-to-date install should remain idempotent"
+    );
+    assert_eq!(
+        linux_hotkey_setup_action(Some(false), false, 0),
+        LinuxHotkeySetupAction::None,
+        "an explicit launch-hotkey opt-out must be honored"
+    );
+}
+
+#[test]
 fn baked_repo_hotkey_cds_into_fixed_dir() {
     // A config-baked per-repo hotkey opens a fixed directory.
     let config = jcode_config_types::LaunchHotkeysConfig {
