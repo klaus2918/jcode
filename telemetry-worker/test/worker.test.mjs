@@ -93,7 +93,16 @@ function makeDb(plan = {}) {
               results: [
                 "event_id", "path", "referrer", "visitor_id", "utm_source",
                 "utm_medium", "utm_campaign", "cta", "metric_name",
-                "metric_value", "rating", "error_kind",
+                "metric_value", "rating", "error_kind", "pageview_id",
+                "conversion_id", "placement", "install_method",
+              ].map((name) => ({ name })),
+            };
+          }
+          if (/table_info\(install_details\)/.test(sql)) {
+            return {
+              results: [
+                "event_id", "conversion_id", "stage", "outcome", "source",
+                "placement", "install_method", "failure_stage",
               ].map((name) => ({ name })),
             };
           }
@@ -326,6 +335,8 @@ function makeWebBody(overrides = {}) {
     utm_medium: "social",
     utm_campaign: "launch",
     event_id: "web-event-1",
+    session_id: "web-session-1",
+    pageview_id: "web-pageview-1",
     ...overrides,
   };
 }
@@ -354,8 +365,7 @@ test("web_pageview is normalized and stored in events + web_details", async () =
 });
 
 test("web_pageview without event_id mints one so web_details still lands", async () => {
-  // The real beacon (jcode-website public/beacon.js) does not send event_id;
-  // web_details joins on it, so the worker must mint one server-side.
+  // Defensive compatibility for older beacons and hand-written clients.
   const db = makeDb();
   const ctx = makeCtx();
 
@@ -406,6 +416,99 @@ test("web_cta_click requires cta", async () => {
   assert.equal(ok.status, 200);
   const detailInsert = db.executed.find(({ sql }) => /INSERT OR IGNORE INTO web_details/.test(sql));
   assert.ok(detailInsert.values.includes("plus_early_access"));
+});
+
+test("install CTA details retain the anonymous conversion dimensions", async () => {
+  const db = makeDb();
+  const webFirehose = makeFirehose();
+  const installFirehose = makeFirehose();
+  const conversionId = "11111111-2222-4333-8444-555555555555";
+  const response = await worker.fetch(
+    postRequest(makeWebBody({
+      event: "web_cta_click",
+      cta: "install",
+      conversion_id: conversionId,
+      placement: "hero",
+      install_method: "shell",
+    })),
+    { DB: db, FIREHOSE_WEB: webFirehose, FIREHOSE_INSTALL: installFirehose },
+    makeCtx(),
+  );
+  assert.equal(response.status, 200);
+  const detailInsert = db.executed.find(({ sql }) => /INSERT OR IGNORE INTO web_details/.test(sql));
+  assert.ok(detailInsert.values.includes(conversionId));
+  assert.ok(detailInsert.values.includes("web-pageview-1"));
+  assert.ok(detailInsert.values.includes("hero"));
+  assert.ok(detailInsert.values.includes("shell"));
+  assert.equal(webFirehose.points.length, 1);
+  assert.equal(installFirehose.points.length, 1);
+  assert.deepEqual(installFirehose.points[0].indexes, [conversionId]);
+  assert.equal(installFirehose.points[0].blobs[0], "web_cta_click");
+  assert.equal(installFirehose.points[0].blobs[2], conversionId);
+  assert.equal(installFirehose.points[0].blobs[6], "hero");
+});
+
+function makeInstallFunnelBody(overrides = {}) {
+  return {
+    id: "11111111-2222-4333-8444-555555555555",
+    event: "install_funnel",
+    version: "web",
+    os: "web",
+    arch: "web",
+    conversion_id: "11111111-2222-4333-8444-555555555555",
+    stage: "script_request",
+    outcome: "success",
+    source: "install_endpoint",
+    install_method: "shell",
+    ...overrides,
+  };
+}
+
+test("install funnel stages are validated and persisted in install_details", async () => {
+  const db = makeDb();
+  const installFirehose = makeFirehose();
+  const response = await worker.fetch(
+    postRequest(makeInstallFunnelBody()),
+    { DB: db, FIREHOSE_INSTALL: installFirehose },
+    makeCtx(),
+  );
+  assert.equal(response.status, 200);
+  const detailInsert = db.executed.find(({ sql }) => /INSERT OR IGNORE INTO install_details/.test(sql));
+  assert.ok(detailInsert, "install_details row inserted");
+  assert.ok(detailInsert.values.includes("script_request"));
+  assert.ok(detailInsert.values.includes("success"));
+  assert.equal(installFirehose.points.length, 1);
+  assert.equal(installFirehose.points[0].blobs[3], "script_request");
+  assert.equal(installFirehose.points[0].blobs[4], "success");
+
+  const invalid = await worker.fetch(
+    postRequest(makeInstallFunnelBody({ conversion_id: "not-a-uuid" })),
+    { DB: makeDb() },
+    makeCtx(),
+  );
+  assert.equal(invalid.status, 400);
+});
+
+test("first-run install events join to the conversion id without widening events", async () => {
+  const db = makeDb();
+  const conversionId = "11111111-2222-4333-8444-555555555555";
+  const response = await worker.fetch(
+    postRequest(makeBody({
+      event: "install",
+      event_id: "install-event-1",
+      step: undefined,
+      install_conversion_id: conversionId,
+    })),
+    { DB: db },
+    makeCtx(),
+  );
+  assert.equal(response.status, 200);
+  const eventInsert = db.executed.find(({ sql }) => /INSERT OR IGNORE INTO events/.test(sql));
+  assert.equal(eventInsert.sql.includes("conversion_id"), false);
+  const detailInsert = db.executed.find(({ sql }) => /INSERT OR IGNORE INTO install_details/.test(sql));
+  assert.ok(detailInsert.values.includes(conversionId));
+  assert.ok(detailInsert.values.includes("first_run"));
+  assert.ok(detailInsert.values.includes("cli"));
 });
 
 test("web free-text fields are length-capped (size defense)", async () => {
@@ -538,7 +641,7 @@ test("web_error stores only an allowed coarse classification", async () => {
   assert.equal(rejected.status, 400);
 });
 
-test("scheduled retention uses 30 days for web_vital and 90 days for web_error", async () => {
+test("scheduled retention prunes funnel events and redacts conversion joins after 90 days", async () => {
   const db = makeDb();
   const ctx = makeCtx();
   await worker.scheduled({}, { DB: db }, ctx);
@@ -547,6 +650,13 @@ test("scheduled retention uses 30 days for web_vital and 90 days for web_error",
   const eventDeletes = db.executed.filter(({ sql }) => /DELETE FROM events WHERE id IN/.test(sql));
   assert.ok(eventDeletes.some(({ values }) => values[0] === "web_vital" && values[1] === "-30 days"));
   assert.ok(eventDeletes.some(({ values }) => values[0] === "web_error" && values[1] === "-90 days"));
+  assert.ok(eventDeletes.some(({ values }) => values[0] === "install_funnel" && values[1] === "-90 days"));
+  const redactions = db.executed.filter(({ sql }) => /UPDATE (web_details|install_details) SET conversion_id = NULL/.test(sql));
+  assert.equal(redactions.length, 2);
+  assert.ok(redactions.every(({ values }) => values[0] === "-90 days"));
+  assert.ok(db.executed.some(({ sql, values }) =>
+    /DELETE FROM install_details WHERE event_id IN/.test(sql) && values[0] === "install_funnel"
+  ));
 });
 
 // ---------------------------------------------------------------------------

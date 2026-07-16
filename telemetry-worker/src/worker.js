@@ -2,6 +2,7 @@ let cachedEventColumns = null;
 let cachedSessionDetailColumns = null;
 let cachedTurnDetailColumns = null;
 let cachedWebDetailColumns = null;
+let cachedInstallDetailColumns = null;
 let cachedDiscoveryDetailColumns = null;
 
 // Website beacon events (anonymous visitor_id minted in localStorage). Their
@@ -9,6 +10,7 @@ let cachedDiscoveryDetailColumns = null;
 // events table sits one column shy of D1's 100-column cap, so wide event
 // shapes go in detail tables per the session_details / turn_details pattern.
 const WEB_EVENTS = ["web_pageview", "web_cta_click", "web_vital", "web_error"];
+const INSTALL_FUNNEL_EVENTS = ["install_funnel"];
 
 // Token subscription plan lifecycle events, plus account_linked, the
 // analytics<->account join anchor (telemetry_id + account_id).
@@ -33,7 +35,12 @@ const CLI_EVENTS = [
   "discovery",
 ];
 
-const KNOWN_EVENTS = [...CLI_EVENTS, ...WEB_EVENTS, ...SUBSCRIPTION_EVENTS];
+const KNOWN_EVENTS = [
+  ...CLI_EVENTS,
+  ...WEB_EVENTS,
+  ...INSTALL_FUNNEL_EVENTS,
+  ...SUBSCRIPTION_EVENTS,
+];
 
 // Origins the website beacon posts from. The default CORS policy stays the
 // permissive ALLOWED_ORIGIN var ("*", telemetry is anonymous and unauthed);
@@ -198,15 +205,35 @@ const FIREHOSE_DISCOVERY_SCHEMA = {
   ],
 };
 
+// Install conversion events need their opaque join key in the outage-resistant
+// firehose. The general and web datasets are both at their positional limits,
+// so this dedicated dataset preserves the complete 90-day funnel when D1 is
+// unavailable or temporarily full.
+const FIREHOSE_INSTALL_SCHEMA = {
+  blobs: [
+    "event", "event_id", "conversion_id", "stage", "outcome", "source",
+    "placement", "install_method", "failure_stage", "visitor_id", "session_id",
+    "pageview_id", "utm_source", "utm_medium", "utm_campaign", "path",
+    "version", "os", "arch",
+  ],
+  doubles: [],
+};
+
 function writeFirehose(env, body) {
   if (body.event === "discovery") {
     return writeDiscoveryFirehose(env, body);
   }
+  const installFirehoseOk = body.conversion_id
+    ? writeInstallFirehose(env, body)
+    : false;
   if (WEB_EVENTS.includes(body.event) || SUBSCRIPTION_EVENTS.includes(body.event)) {
-    return writeWebFirehose(env, body);
+    return writeWebFirehose(env, body) || installFirehoseOk;
+  }
+  if (INSTALL_FUNNEL_EVENTS.includes(body.event)) {
+    return installFirehoseOk;
   }
   if (!env.FIREHOSE || typeof env.FIREHOSE.writeDataPoint !== "function") {
-    return false;
+    return installFirehoseOk;
   }
   const errors = body.errors || {};
   const boolFields = new Set([
@@ -242,6 +269,27 @@ function writeFirehose(env, body) {
     return true;
   } catch (err) {
     console.warn("firehose write failed", err?.message || err);
+    return false;
+  }
+}
+
+function writeInstallFirehose(env, body) {
+  const sink = env.FIREHOSE_INSTALL;
+  if (!sink || typeof sink.writeDataPoint !== "function") {
+    return false;
+  }
+  try {
+    sink.writeDataPoint({
+      indexes: [String(body.conversion_id || "").slice(0, 96)],
+      blobs: FIREHOSE_INSTALL_SCHEMA.blobs.map((name) => {
+        const value = body[name];
+        return value == null ? "" : String(value).slice(0, 200);
+      }),
+      doubles: [],
+    });
+    return true;
+  } catch (err) {
+    console.warn("install firehose write failed", err?.message || err);
     return false;
   }
 }
@@ -352,6 +400,20 @@ export default {
     // filled in, and the anonymous visitor_id doubles as the telemetry id.
     if (typeof body.event === "string" && WEB_EVENTS.includes(body.event)) {
       const problem = normalizeWebEvent(body);
+      if (problem) {
+        return jsonResponse({ error: problem }, 400, cors);
+      }
+    }
+
+    if (body.event === "install_funnel") {
+      const problem = normalizeInstallFunnelEvent(body);
+      if (problem) {
+        return jsonResponse({ error: problem }, 400, cors);
+      }
+    }
+
+    if (body.event === "install" && body.install_conversion_id != null) {
+      const problem = normalizeInstallConversion(body);
       if (problem) {
         return jsonResponse({ error: problem }, 400, cors);
       }
@@ -512,6 +574,7 @@ const RETENTION_DAYS = {
   web_cta_click: 365,
   web_vital: 30,
   web_error: 90,
+  install_funnel: 90,
   subscription_login: 180,
   subscription_router_error: 90,
   subscription_budget_exhausted: 365,
@@ -523,6 +586,23 @@ const PRUNE_MAX_BATCHES_PER_RUN = 12;
 async function pruneOldEvents(env, options = {}) {
   const retentionScale = options.retentionScale ?? 1;
   const maxBatches = options.maxBatches ?? PRUNE_MAX_BATCHES_PER_RUN;
+  const linkageDays = Math.max(1, Math.round(90 * retentionScale));
+  const linkageCutoff = `-${linkageDays} days`;
+  // The conversion key is deliberately short-lived. Keep the aggregate CTA and
+  // install anchors, but sever the browser <-> CLI join after 90 days.
+  for (const table of ["web_details", "install_details"]) {
+    try {
+      await env.DB.prepare(
+        `UPDATE ${table} SET conversion_id = NULL WHERE conversion_id IS NOT NULL
+         AND event_id IN (
+           SELECT event_id FROM events
+           WHERE created_at < datetime('now', ?) AND event_id IS NOT NULL
+         )`
+      ).bind(linkageCutoff).run();
+    } catch (err) {
+      console.warn(`${table} attribution redaction failed`, err?.message || err);
+    }
+  }
   let batchesUsed = 0;
   for (const [eventType, days] of Object.entries(RETENTION_DAYS)) {
     const scaledDays = Math.max(1, Math.round(days * retentionScale));
@@ -542,6 +622,18 @@ async function pruneOldEvents(env, options = {}) {
           ).bind(eventType, cutoff, PRUNE_BATCH_LIMIT).run();
         } catch (err) {
           console.warn(`web_details prune failed for ${eventType}`, err?.message || err);
+        }
+      }
+      if (INSTALL_FUNNEL_EVENTS.includes(eventType)) {
+        try {
+          await env.DB.prepare(
+            `DELETE FROM install_details WHERE event_id IN (
+               SELECT event_id FROM events
+               WHERE event = ? AND created_at < datetime('now', ?) AND event_id IS NOT NULL
+               LIMIT ?)`
+          ).bind(eventType, cutoff, PRUNE_BATCH_LIMIT).run();
+        } catch (err) {
+          console.warn(`install_details prune failed for ${eventType}`, err?.message || err);
         }
       }
       try {
@@ -581,6 +673,7 @@ async function insertEvent(env, body) {
   const columns = await getEventColumns(env);
   const sessionDetailColumns = await getSessionDetailColumns(env);
   const turnDetailColumns = await getTurnDetailColumns(env);
+  const installDetailColumns = await getInstallDetailColumns(env);
   const common = commonEventEntries(body, columns);
 
   if (body.event === "discovery") {
@@ -631,8 +724,24 @@ async function insertEvent(env, body) {
     ].filter(([name]) => columns.has(name)));
   }
 
+  if (body.event === "install_funnel") {
+    const values = [
+      ["telemetry_id", body.id],
+      ["event", body.event],
+      ["version", body.version],
+      ["os", body.os],
+      ["arch", body.arch],
+      ...common,
+    ].filter(([name]) => columns.has(name));
+    const inserted = await insertEventRow(env, body, values);
+    if (inserted) {
+      await insertInstallDetails(env, body, installDetailColumns);
+    }
+    return;
+  }
+
   if (body.event === "install") {
-    return insertEventRow(env, body, [
+    const inserted = await insertEventRow(env, body, [
       ["telemetry_id", body.id],
       ["event", body.event],
       ["version", body.version],
@@ -640,6 +749,15 @@ async function insertEvent(env, body) {
       ["arch", body.arch],
       ...common,
     ].filter(([name]) => columns.has(name)));
+    if (inserted && body.conversion_id) {
+      await insertInstallDetails(env, {
+        ...body,
+        stage: "first_run",
+        outcome: "success",
+        source: "cli",
+      }, installDetailColumns);
+    }
+    return;
   }
 
   if (body.event === "upgrade") {
@@ -1178,6 +1296,19 @@ async function getWebDetailColumns(env) {
   return cachedWebDetailColumns;
 }
 
+async function getInstallDetailColumns(env) {
+  if (cachedInstallDetailColumns) {
+    return cachedInstallDetailColumns;
+  }
+  try {
+    const result = await env.DB.prepare("PRAGMA table_info(install_details)").all();
+    cachedInstallDetailColumns = new Set((result.results || []).map((row) => row.name));
+  } catch {
+    cachedInstallDetailColumns = new Set();
+  }
+  return cachedInstallDetailColumns;
+}
+
 async function getDiscoveryDetailColumns(env) {
   if (cachedDiscoveryDetailColumns) {
     return cachedDiscoveryDetailColumns;
@@ -1234,9 +1365,32 @@ async function insertWebDetails(env, body, columns) {
     ["metric_value", body.metric_value ?? null],
     ["rating", body.rating || null],
     ["error_kind", body.error_kind || null],
+    ["pageview_id", body.pageview_id || null],
+    ["conversion_id", body.conversion_id || null],
+    ["placement", body.placement || null],
+    ["install_method", body.install_method || null],
   ].filter(([name]) => columns.has(name));
   if (values.length > 1) {
     await insertDynamic(env, "web_details", values);
+  }
+}
+
+async function insertInstallDetails(env, body, columns) {
+  if (!columns || columns.size === 0 || !body.event_id || !columns.has("event_id")) {
+    return;
+  }
+  const values = [
+    ["event_id", body.event_id],
+    ["conversion_id", body.conversion_id],
+    ["stage", body.stage],
+    ["outcome", body.outcome],
+    ["source", body.source],
+    ["placement", body.placement || null],
+    ["install_method", body.install_method || null],
+    ["failure_stage", body.failure_stage || null],
+  ].filter(([name]) => columns.has(name));
+  if (values.length > 1) {
+    await insertDynamic(env, "install_details", values);
   }
 }
 
@@ -1277,9 +1431,23 @@ function normalizeWebEvent(body) {
     }
     // Keep only route-level context for errors. In particular, do not retain
     // referrer or campaign values that may contain full URLs or query strings.
-    for (const field of ["referrer", "utm_source", "utm_medium", "utm_campaign", "cta"]) {
+    for (const field of [
+      "referrer", "utm_source", "utm_medium", "utm_campaign", "cta",
+      "session_id", "pageview_id", "conversion_id", "placement", "install_method",
+    ]) {
       delete body[field];
     }
+  }
+  if (body.conversion_id != null && !CONVERSION_ID_PATTERN.test(body.conversion_id)) {
+    return "Invalid conversion_id";
+  }
+  if (body.install_method != null && !new Set([
+    "shell", "download_macos", "download_linux", "download_windows",
+  ]).has(body.install_method)) {
+    return "Invalid install_method";
+  }
+  if (body.placement != null && !new Set(["hero", "sticky"]).has(body.placement)) {
+    return "Invalid install placement";
   }
   // Error payloads are classification-only. Never retain messages, stacks,
   // filenames, or full URLs even if a caller includes them.
@@ -1287,6 +1455,7 @@ function normalizeWebEvent(body) {
     delete body[field];
   }
   body.visitor_id = body.visitor_id.slice(0, 96);
+  if (body.session_id != null) body.session_id = String(body.session_id).slice(0, 96);
   body.id = body.id || body.visitor_id;
   // The beacon does not send an event_id, but web_details rows join on it.
   // Mint one server-side so path/referrer/utm/cta are actually persisted.
@@ -1294,10 +1463,63 @@ function normalizeWebEvent(body) {
   body.version = body.version || "web";
   body.os = body.os || "web";
   body.arch = body.arch || "web";
-  for (const field of ["path", "referrer", "utm_source", "utm_medium", "utm_campaign", "cta"]) {
+  for (const field of [
+    "path", "referrer", "utm_source", "utm_medium", "utm_campaign", "cta",
+    "pageview_id", "conversion_id", "placement", "install_method",
+  ]) {
     if (body[field] != null) {
       body[field] = String(body[field]).slice(0, 200);
     }
+  }
+  return null;
+}
+
+const CONVERSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function normalizeInstallConversion(body) {
+  if (!CONVERSION_ID_PATTERN.test(body.install_conversion_id)) {
+    return "Invalid install_conversion_id";
+  }
+  body.conversion_id = body.install_conversion_id.toLowerCase();
+  return null;
+}
+
+function normalizeInstallFunnelEvent(body) {
+  const stages = new Set(["command_copy", "script_request", "installer_start", "installer_finish"]);
+  const outcomes = new Set(["success", "failure"]);
+  const sources = new Set(["browser", "install_endpoint", "installer"]);
+  const methods = new Set(["shell", "download_macos", "download_linux", "download_windows"]);
+  const placements = new Set(["hero", "sticky"]);
+
+  if (!CONVERSION_ID_PATTERN.test(body.conversion_id)) {
+    return "Invalid conversion_id";
+  }
+  if (!stages.has(body.stage)) {
+    return "Invalid install stage";
+  }
+  if (!outcomes.has(body.outcome)) {
+    return "Invalid install outcome";
+  }
+  if (!sources.has(body.source)) {
+    return "Invalid install source";
+  }
+  if (body.install_method != null && !methods.has(body.install_method)) {
+    return "Invalid install_method";
+  }
+  if (body.placement != null && !placements.has(body.placement)) {
+    return "Invalid install placement";
+  }
+  if (body.failure_stage != null && !/^[a-z0-9_]{0,64}$/i.test(body.failure_stage)) {
+    return "Invalid failure_stage";
+  }
+  if (body.outcome !== "failure") {
+    body.failure_stage = null;
+  }
+  body.conversion_id = body.conversion_id.toLowerCase();
+  body.id = body.id || body.conversion_id;
+  body.event_id = body.event_id || crypto.randomUUID();
+  for (const field of ["stage", "outcome", "source", "placement", "install_method", "failure_stage"]) {
+    if (body[field] != null) body[field] = String(body[field]).slice(0, 100);
   }
   return null;
 }

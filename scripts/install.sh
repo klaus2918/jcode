@@ -4,12 +4,76 @@ set -euo pipefail
 REPO="1jehuang/jcode"
 IS_WINDOWS=false
 IS_TERMUX=false
+INSTALL_STAGE="startup"
+INSTALL_SUCCEEDED=0
+INSTALL_OS="unknown"
+INSTALL_ARCH="unknown"
+INSTALL_VERSION="unknown"
+tmpdir=""
 
 info() { printf '\033[1;34m%s\033[0m\n' "$*"; }
 err()  { printf '\033[1;31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 
+valid_conversion_id() {
+  printf '%s' "${JCODE_INSTALL_CONVERSION_ID:-}" |
+    grep -Eiq '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+}
+
+telemetry_value() {
+  printf '%s' "$1" | tr -cd '[:alnum:]_. -' | cut -c1-100
+}
+
+report_install_funnel() {
+  stage="$1"
+  outcome="$2"
+  failure_stage="${3:-}"
+  [ "${JCODE_NO_TELEMETRY:-}" != "1" ] || return 0
+  [ "${DO_NOT_TRACK:-}" != "1" ] || return 0
+  valid_conversion_id || return 0
+
+  payload=$(printf '{"id":"%s","event":"install_funnel","version":"%s","os":"%s","arch":"%s","conversion_id":"%s","stage":"%s","outcome":"%s","source":"installer","install_method":"shell","failure_stage":"%s"}' \
+    "$JCODE_INSTALL_CONVERSION_ID" \
+    "$(telemetry_value "$INSTALL_VERSION")" \
+    "$(telemetry_value "$INSTALL_OS")" \
+    "$(telemetry_value "$INSTALL_ARCH")" \
+    "$JCODE_INSTALL_CONVERSION_ID" \
+    "$(telemetry_value "$stage")" \
+    "$(telemetry_value "$outcome")" \
+    "$(telemetry_value "$failure_stage")")
+  curl -fsS --max-time 2 -H 'Content-Type: application/json' \
+    --data "$payload" https://telemetry.jcode.sh/v1/event >/dev/null 2>&1 || true
+}
+
+persist_install_conversion_id() {
+  [ "${JCODE_NO_TELEMETRY:-}" != "1" ] || return 0
+  [ "${DO_NOT_TRACK:-}" != "1" ] || return 0
+  valid_conversion_id || return 0
+  jcode_home="${JCODE_HOME:-$HOME/.jcode}"
+  mkdir -p "$jcode_home" 2>/dev/null || return 0
+  (umask 077; printf '%s\n' "$JCODE_INSTALL_CONVERSION_ID" > "$jcode_home/install_conversion_id") \
+    2>/dev/null || return 0
+  chmod 600 "$jcode_home/install_conversion_id" 2>/dev/null || true
+}
+
+install_exit() {
+  status=$?
+  trap - EXIT
+  set +e
+  [ -z "$tmpdir" ] || rm -rf "$tmpdir"
+  if [ "$INSTALL_SUCCEEDED" = "1" ] && [ "$status" = "0" ]; then
+    report_install_funnel "installer_finish" "success" ""
+  else
+    report_install_funnel "installer_finish" "failure" "$INSTALL_STAGE"
+  fi
+  exit "$status"
+}
+trap install_exit EXIT
+
+INSTALL_STAGE="platform_detection"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
+INSTALL_OS="$OS"
+INSTALL_ARCH="$ARCH"
 
 if [ -n "${TERMUX_VERSION:-}" ] || [ "${PREFIX:-}" = "/data/data/com.termux/files/usr" ] || [ -d "/data/data/com.termux/files/usr" ]; then
   IS_TERMUX=true
@@ -43,6 +107,8 @@ case "$OS" in
     ;;
 esac
 
+report_install_funnel "installer_start" "success" ""
+
 if [ "$IS_WINDOWS" = true ]; then
   INSTALL_DIR="${JCODE_INSTALL_DIR:-$LOCALAPPDATA/jcode/bin}"
 else
@@ -52,8 +118,10 @@ fi
 # Extract the tag_name value, working for both pretty-printed (multi-line) and
 # compact (single-line) GitHub API JSON. `grep -o` isolates just the tag_name
 # field so `cut` no longer matches an unrelated string like the release url.
+INSTALL_STAGE="release_lookup"
 VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep -o '"tag_name" *: *"[^"]*"' | head -1 | cut -d'"' -f4)
 [ -n "$VERSION" ] || err "Failed to determine latest version"
+INSTALL_VERSION="${VERSION#v}"
 
 URL_TGZ="https://github.com/$REPO/releases/download/$VERSION/$ARTIFACT.tar.gz"
 URL_BIN="https://github.com/$REPO/releases/download/$VERSION/$ARTIFACT"
@@ -87,8 +155,8 @@ fi
 info "  launcher: $launcher_path"
 
 tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
 
+INSTALL_STAGE="artifact_download"
 download_mode=""
 if curl -fsSL "$URL_TGZ" -o "$tmpdir/jcode.download" 2>/dev/null; then
   download_mode="tar"
@@ -96,6 +164,7 @@ elif curl -fsSL "$URL_BIN" -o "$tmpdir/jcode.download" 2>/dev/null; then
   download_mode="bin"
 fi
 
+INSTALL_STAGE="binary_install"
 mkdir -p "$INSTALL_DIR" "$stable_dir" "$current_dir" "$version_dir"
 
 version="${VERSION#v}"
@@ -192,6 +261,7 @@ fi
 # only reloads when the running server is genuinely older than what we just
 # installed (so a newer/dev daemon is never downgraded). This is best-effort:
 # it must never fail the install, and it is skipped when no server is running.
+INSTALL_STAGE="server_reload"
 if [ "${JCODE_SKIP_SERVER_RELOAD:-}" != "1" ]; then
   reload_bin="$launcher_path"
   [ -x "$reload_bin" ] || reload_bin="$stable_dir/$bin_name"
@@ -219,6 +289,7 @@ if [ "$IS_WINDOWS" = true ]; then
     printf '    \033[1;32m[Environment]::SetEnvironmentVariable("Path", "%s;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")\033[0m\n' "$win_install_dir"
   fi
 else
+  INSTALL_STAGE="path_configuration"
   PATH_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
   added_to=""
 
@@ -312,3 +383,7 @@ else
     echo "  Future terminal sessions will have jcode on PATH automatically."
   fi
 fi
+
+persist_install_conversion_id
+INSTALL_STAGE="complete"
+INSTALL_SUCCEEDED=1

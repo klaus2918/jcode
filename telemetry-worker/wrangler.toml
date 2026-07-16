@@ -52,5 +52,11 @@ dataset = "jcode_web_firehose"
 binding = "FIREHOSE_DISCOVERY"
 dataset = "jcode_discovery_firehose"
 
+# Complete website -> installer -> first-run conversion reconstruction. This
+# remains queryable for roughly 90 days even during a D1 size-cap incident.
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_INSTALL"
+dataset = "jcode_install_firehose"
+
 [vars]
 ALLOWED_ORIGIN = "*"
