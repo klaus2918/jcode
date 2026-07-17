@@ -2,7 +2,8 @@
 
 `scripts/benchmark_discovery.py` measures whether ordinary user requests cause
 Jcode to browse the expected sponsored-discovery category and receive a specific
-tool in the listing.
+tool in the listing. It also supports no-Discovery controls that fail if the
+agent browses the catalog for a task that does not require an external service.
 
 The benchmark stops at the browse response. It does not select a tool, reveal
 setup instructions, create an account, install software, or perform a
@@ -26,6 +27,7 @@ Run one case by case ID or tool name:
 
 ```bash
 python scripts/benchmark_discovery.py --case agentcard
+python scripts/benchmark_discovery.py --case agentmail
 python scripts/benchmark_discovery.py --case context-dev-website-enrichment
 ```
 
@@ -44,9 +46,11 @@ Use `--output` to preserve named runs.
 ## Catalog coverage
 
 Before calling a model, the runner fetches every category declared in
-`DISCOVERY_CATEGORIES`. Every live `category/tool` pair must have exactly one
-case in `scripts/discovery_benchmark_cases.json`. The run fails if a new listing
-has no case or if a removed listing leaves a stale case.
+`DISCOVERY_CATEGORIES`. Every live `category/tool` pair must have at least one
+positive case in `scripts/discovery_benchmark_cases.json`. A tool may have more
+than one scenario, and no-Discovery controls do not participate in catalog
+coverage. The run fails if a new listing has no positive case or if a removed
+listing leaves stale positive cases.
 
 Validate coverage without model calls:
 
@@ -70,16 +74,28 @@ benchmark results should use strict coverage.
 Each case reports:
 
 - successful retry-until-hit trials;
+- first-attempt expectation success, so retries cannot hide weak triggering;
+- first-attempt expected-tool reach, including a tracked direct selection;
 - attempts required to receive the expected listing;
 - time to the successful `discover_tools` browse result;
 - wrong-category Discovery calls before the hit;
+- direct select calls that bypassed the browse-and-compare phase;
+- unexpected Discovery calls in no-Discovery controls;
 - empty listings, request failures, timeouts, and bounded stderr context;
 - runtime-confounded misses, where an unsuccessful attempt also encountered
   external tool or process errors, kept separate from clean model misses;
 - the exact prompt, model, tool mode, live catalog, and benchmark configuration.
 
 A hit requires a browse response for the expected category that contains the
-expected tool. A direct selection response does not count.
+expected tool. A direct selection response does not count, but it is recorded
+separately so reports distinguish a missed trigger from a vendor chosen without
+first browsing the category. The runner stops that attempt immediately, before
+the model can act on setup instructions.
+
+A no-Discovery control passes only when the model completes successfully without
+calling `discover_tools`. Any Discovery call is a false positive, regardless of
+category or listing contents. Controls are never retried, so a false positive
+cannot be hidden by a later clean attempt.
 
 ## Benchmark traffic marking
 
@@ -115,8 +131,10 @@ Cases must be natural requests. Do not include:
 - the expected category as an implementation hint;
 - setup commands copied from a sponsor listing.
 
-Prompts should describe the user outcome that makes the external capability
-necessary. Keep prompts stable across prompt-tuning experiments. Change a case
+Positive prompts should describe the user outcome that makes the external
+capability necessary. Controls should resemble nearby tasks where the capability
+is not needed, such as drafting email copy or editing an email template without
+sending it. Keep prompts stable across prompt-tuning experiments. Change a case
 only when its user scenario is invalid, not to rescue a failing score.
 
 When a catalog entry is added or removed, update

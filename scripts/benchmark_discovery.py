@@ -3,8 +3,8 @@
 
 The runner starts an isolated Jcode server marked with
 JCODE_DISCOVERY_BENCHMARK=1, verifies that every live catalog listing has a
-natural-language benchmark case, then retries each case until the model calls
-``discover_tools`` and receives the expected tool in a browse listing.
+natural-language positive benchmark case, then evaluates both expected listing
+hits and no-Discovery controls.
 
 No setup instructions are requested and the model process is stopped as soon
 as the expected browse listing arrives.
@@ -37,6 +37,7 @@ BENCHMARK_ENV = "JCODE_DISCOVERY_BENCHMARK"
 BENCHMARK_HEADER = "x-jcode-discovery-benchmark"
 LISTING_RE = re.compile(r"Discoverable tools in '([^']+)'")
 EMPTY_RE = re.compile(r"No discoverable tools in category '([^']+)'")
+SELECTION_RE = re.compile(r"Selected '([^']+)' from '([^']+)'")
 TOOL_RE = re.compile(r"^- ([^:\n]+):", re.MULTILINE)
 RUNTIME_ERROR_RE = re.compile(
     r"\b(error|failed|failure|timed out|timeout|did not start|exited before startup)\b",
@@ -47,9 +48,10 @@ RUNTIME_ERROR_RE = re.compile(
 @dataclass(frozen=True)
 class BenchmarkCase:
     id: str
-    expected_category: str
-    expected_tool: str
+    expected_category: str | None
+    expected_tool: str | None
     prompt: str
+    expectation: str = "listing"
 
 
 @dataclass
@@ -122,30 +124,51 @@ def load_categories(path: Path = CATEGORY_SOURCE) -> list[str]:
 
 def load_cases(path: Path) -> list[BenchmarkCase]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("version") != 1 or not isinstance(data.get("cases"), list):
+    if data.get("version") not in {1, 2} or not isinstance(data.get("cases"), list):
         raise BenchmarkError(f"unsupported benchmark case file: {path}")
     cases: list[BenchmarkCase] = []
     seen_ids: set[str] = set()
-    seen_tools: set[tuple[str, str]] = set()
+    seen_prompts: set[str] = set()
     for raw in data["cases"]:
+        expectation = str(raw.get("expectation", "listing")).strip().lower()
+        expected_category = str(raw.get("expected_category") or "").strip().lower() or None
+        expected_tool = str(raw.get("expected_tool") or "").strip().lower() or None
         case = BenchmarkCase(
             id=str(raw.get("id", "")).strip(),
-            expected_category=str(raw.get("expected_category", "")).strip().lower(),
-            expected_tool=str(raw.get("expected_tool", "")).strip().lower(),
+            expected_category=expected_category,
+            expected_tool=expected_tool,
             prompt=str(raw.get("prompt", "")).strip(),
+            expectation=expectation,
         )
-        if not all(asdict(case).values()):
-            raise BenchmarkError(f"benchmark case has an empty field: {raw}")
-        key = (case.expected_category, case.expected_tool)
+        if not case.id or not case.prompt:
+            raise BenchmarkError(f"benchmark case has an empty id or prompt: {raw}")
+        if case.expectation not in {"listing", "no-discovery"}:
+            raise BenchmarkError(
+                f"case {case.id} has unknown expectation {case.expectation!r}; "
+                "expected 'listing' or 'no-discovery'"
+            )
+        if case.expectation == "listing" and not case.expected_category:
+            raise BenchmarkError(f"listing case {case.id} requires expected_category")
+        if case.expectation == "listing" and not case.expected_tool:
+            raise BenchmarkError(f"listing case {case.id} requires expected_tool")
+        if case.expectation == "no-discovery" and (case.expected_category or case.expected_tool):
+            raise BenchmarkError(
+                f"no-discovery case {case.id} must not declare an expected category or tool"
+            )
         if case.id in seen_ids:
             raise BenchmarkError(f"duplicate benchmark case id: {case.id}")
-        if key in seen_tools:
-            raise BenchmarkError(f"duplicate benchmark target: {key[0]}/{key[1]}")
         lowered_prompt = case.prompt.lower()
-        if case.expected_tool in lowered_prompt or "discover_tools" in lowered_prompt or "tool discovery" in lowered_prompt:
+        normalized_prompt = " ".join(lowered_prompt.split())
+        if normalized_prompt in seen_prompts:
+            raise BenchmarkError(f"duplicate benchmark prompt in case {case.id}")
+        if (
+            (case.expected_tool and case.expected_tool in lowered_prompt)
+            or "discover_tools" in lowered_prompt
+            or "tool discovery" in lowered_prompt
+        ):
             raise BenchmarkError(f"case {case.id} leaks its expected tool or Discovery into the prompt")
         seen_ids.add(case.id)
-        seen_tools.add(key)
+        seen_prompts.add(normalized_prompt)
         cases.append(case)
     return cases
 
@@ -179,7 +202,13 @@ def catalog_targets(catalog: dict[str, list[dict[str, Any]]]) -> set[tuple[str, 
 
 def validate_catalog_coverage(cases: list[BenchmarkCase], catalog: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     live = catalog_targets(catalog)
-    covered = {(case.expected_category, case.expected_tool) for case in cases}
+    covered = {
+        (case.expected_category, case.expected_tool)
+        for case in cases
+        if case.expectation == "listing"
+        and case.expected_category is not None
+        and case.expected_tool is not None
+    }
     return {
         "live_targets": sorted(f"{category}/{tool}" for category, tool in live),
         "case_targets": sorted(f"{category}/{tool}" for category, tool in covered),
@@ -192,8 +221,13 @@ def filter_cases(cases: list[BenchmarkCase], filters: list[str] | None) -> list[
     if not filters:
         return cases
     wanted = {value.lower() for value in filters}
-    selected = [case for case in cases if case.id.lower() in wanted or case.expected_tool in wanted]
-    missing = wanted - {case.id.lower() for case in selected} - {case.expected_tool for case in selected}
+    selected = [
+        case
+        for case in cases
+        if case.id.lower() in wanted or (case.expected_tool and case.expected_tool in wanted)
+    ]
+    selected_tools = {case.expected_tool for case in selected if case.expected_tool}
+    missing = wanted - {case.id.lower() for case in selected} - selected_tools
     if missing:
         raise BenchmarkError(f"unknown --case values: {', '.join(sorted(missing))}")
     return selected
@@ -202,12 +236,29 @@ def filter_cases(cases: list[BenchmarkCase], filters: list[str] | None) -> list[
 def parse_discovery_output(output: str, elapsed: float) -> DiscoveryCall:
     listing = LISTING_RE.search(output)
     empty = EMPTY_RE.search(output)
-    category = listing.group(1) if listing else empty.group(1) if empty else None
-    tools = [match.strip().lower() for match in TOOL_RE.findall(output)] if listing else []
+    selection = SELECTION_RE.search(output)
+    category = (
+        listing.group(1)
+        if listing
+        else empty.group(1)
+        if empty
+        else selection.group(2)
+        if selection
+        else None
+    )
+    tools = (
+        [match.strip().lower() for match in TOOL_RE.findall(output)]
+        if listing
+        else [selection.group(1).strip().lower()]
+        if selection
+        else []
+    )
     if listing:
         outcome = "listing"
     elif empty:
         outcome = "empty"
+    elif selection:
+        outcome = "selection"
     elif output.startswith("Error:"):
         outcome = "error"
     else:
@@ -219,6 +270,29 @@ def parse_discovery_output(output: str, elapsed: float) -> DiscoveryCall:
         outcome=outcome,
         output=output[:4000],
     )
+
+
+def discovery_call_decision(case: BenchmarkCase, call: DiscoveryCall) -> str:
+    """Return success, failure, or continue for one Discovery call."""
+    if case.expectation == "no-discovery":
+        return "failure"
+    if call.outcome == "selection":
+        # A direct select bypasses the unbiased browse-and-compare phase. Stop
+        # immediately so the benchmark cannot reveal setup instructions and
+        # proceed toward account creation or other consequential actions.
+        return "failure"
+    if (
+        call.outcome == "listing"
+        and call.category == case.expected_category
+        and case.expected_tool in call.tools
+    ):
+        return "success"
+    return "continue"
+
+
+def should_retry(case: BenchmarkCase, attempt: AttemptResult) -> bool:
+    """Only positive listing cases use retry-until-hit semantics."""
+    return case.expectation == "listing" and not attempt.success
 
 
 def _pump(stream: Any, source: str, messages: queue.Queue[tuple[str, str | None]]) -> None:
@@ -298,8 +372,14 @@ def fetch_catalog_via_jcode(
                 tool_input = json.dumps(
                     {
                         "category": category,
-                        "query": "benchmark catalog coverage",
-                        "reason": "validate live Discovery benchmark catalog coverage",
+                        "query": (
+                            f"public {category.replace('-', ' ')} capabilities available "
+                            "for external agent workflows"
+                        ),
+                        "reason": (
+                            "Enumerate the live public listings so benchmark scenarios can be "
+                            "validated without selecting or configuring any provider."
+                        ),
                     },
                     separators=(",", ":"),
                 )
@@ -379,6 +459,7 @@ def run_attempt(args: argparse.Namespace, case: BenchmarkCase, attempt: int, soc
     discovery_calls: list[DiscoveryCall] = []
     stderr_parts: list[str] = []
     success = False
+    expectation_failed = False
     hit_seconds: float | None = None
     timed_out = False
     closed_streams = 0
@@ -409,12 +490,16 @@ def run_attempt(args: argparse.Namespace, case: BenchmarkCase, attempt: int, soc
             continue
         call = parse_discovery_output(str(event.get("output", "")), time.monotonic() - started)
         discovery_calls.append(call)
-        if call.category == case.expected_category and case.expected_tool in call.tools:
+        decision = discovery_call_decision(case, call)
+        if decision == "success":
             success = True
             hit_seconds = call.elapsed_seconds
             break
+        if decision == "failure":
+            expectation_failed = True
+            break
 
-    if success or timed_out:
+    if success or expectation_failed or timed_out:
         terminate_process(process)
     else:
         try:
@@ -423,6 +508,10 @@ def run_attempt(args: argparse.Namespace, case: BenchmarkCase, attempt: int, soc
             terminate_process(process)
 
     elapsed = time.monotonic() - started
+    if case.expectation == "no-discovery" and not expectation_failed and not timed_out:
+        success = process.poll() == 0
+        if success:
+            hit_seconds = round(elapsed, 3)
     stderr_tail = "".join(stderr_parts)[-4000:]
     return AttemptResult(
         attempt=attempt,
@@ -519,11 +608,23 @@ def stop_server(args: argparse.Namespace, socket_path: Path, process: subprocess
 
 def summarize_case(case: BenchmarkCase, trials: list[dict[str, Any]]) -> dict[str, Any]:
     successful = [trial for trial in trials if trial["success"]]
+    first_attempt_successful = [trial for trial in trials if trial["attempts_to_hit"] == 1]
     attempts = [trial["attempts_to_hit"] for trial in successful]
     hit_times = [trial["hit_seconds"] for trial in successful]
     wrong_categories: dict[str, int] = {}
+    unexpected_discovery_calls = 0
+    direct_selection_calls = 0
+    first_attempt_target_reached = 0
     runtime_confounded_trials = 0
     for trial in trials:
+        if case.expectation == "listing" and trial["attempts"]:
+            first_calls = trial["attempts"][0]["discovery_calls"]
+            if any(
+                call.get("category") == case.expected_category
+                and case.expected_tool in call.get("tools", [])
+                for call in first_calls
+            ):
+                first_attempt_target_reached += 1
         if not trial["success"] and any(
             attempt.get("runtime_error_count", 0) > 0 for attempt in trial["attempts"]
         ):
@@ -531,17 +632,31 @@ def summarize_case(case: BenchmarkCase, trials: list[dict[str, Any]]) -> dict[st
         for attempt in trial["attempts"]:
             for call in attempt["discovery_calls"]:
                 category = call.get("category")
-                if category and category != case.expected_category:
-                    wrong_categories[category] = wrong_categories.get(category, 0) + 1
+                if case.expectation == "no-discovery":
+                    unexpected_discovery_calls += 1
+                else:
+                    if call.get("outcome") == "selection":
+                        direct_selection_calls += 1
+                    if category and category != case.expected_category:
+                        wrong_categories[category] = wrong_categories.get(category, 0) + 1
     return {
         "case": asdict(case),
         "trial_count": len(trials),
         "successful_trials": len(successful),
         "success_rate": len(successful) / len(trials),
+        "first_attempt_successful_trials": len(first_attempt_successful),
+        "first_attempt_success_rate": len(first_attempt_successful) / len(trials),
+        "first_attempt_target_reach_rate": (
+            first_attempt_target_reached / len(trials)
+            if case.expectation == "listing"
+            else None
+        ),
         "mean_attempts_to_hit": round(statistics.mean(attempts), 3) if attempts else None,
         "median_hit_seconds": round(statistics.median(hit_times), 3) if hit_times else None,
         "runtime_confounded_trials": runtime_confounded_trials,
         "wrong_category_calls": dict(sorted(wrong_categories.items())),
+        "unexpected_discovery_calls": unexpected_discovery_calls,
+        "direct_selection_calls": direct_selection_calls,
         "trials": trials,
     }
 
@@ -562,7 +677,7 @@ def run_benchmark(args: argparse.Namespace, cases: list[BenchmarkCase], socket_p
                 )
                 attempt = run_attempt(args, case, attempt_index, socket_path, workdir)
                 attempts.append(attempt)
-                if attempt.success:
+                if not should_retry(case, attempt):
                     break
                 if args.retry_delay:
                     time.sleep(args.retry_delay)
@@ -574,8 +689,13 @@ def run_benchmark(args: argparse.Namespace, cases: list[BenchmarkCase], socket_p
                     "attempts_to_hit": hit.attempt if hit else None,
                     "hit_seconds": hit.hit_seconds if hit else None,
                     "outcome": (
-                        "hit"
+                        "expected-listing"
+                        if hit and case.expectation == "listing"
+                        else "no-discovery"
                         if hit
+                        else "unexpected-discovery"
+                        if case.expectation == "no-discovery"
+                        and any(attempt.discovery_calls for attempt in attempts)
                         else "runtime-confounded-miss"
                         if any(attempt.runtime_error_count > 0 for attempt in attempts)
                         else "clean-miss"
@@ -648,7 +768,7 @@ def main() -> int:
 
     report: dict[str, Any] = {
         "benchmark": "discovery-trigger",
-        "version": 1,
+        "version": 2,
         "started_at": started_at.isoformat(),
         "benchmark_marker": {
             "environment": f"{BENCHMARK_ENV}=1",
@@ -684,7 +804,11 @@ def main() -> int:
     for result in report["results"]:
         print(
             f"  {result['case']['id']}: {result['successful_trials']}/{result['trial_count']} trials, "
-            f"mean attempts={result['mean_attempts_to_hit']}, median hit={result['median_hit_seconds']}s, "
+            f"first-attempt success={result['first_attempt_success_rate']:.0%}, "
+            f"first-attempt target reach={result['first_attempt_target_reach_rate']}, "
+            f"mean attempts={result['mean_attempts_to_hit']}, median decision={result['median_hit_seconds']}s, "
+            f"direct selections={result['direct_selection_calls']}, "
+            f"unexpected Discovery calls={result['unexpected_discovery_calls']}, "
             f"runtime-confounded misses={result['runtime_confounded_trials']}"
         )
     print(f"  Report: {args.output}")

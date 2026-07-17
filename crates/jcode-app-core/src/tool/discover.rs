@@ -1467,6 +1467,43 @@ mod tests {
     }
 
     #[test]
+    fn agentmail_selection_preserves_signup_attribution_and_mcp_provenance() {
+        let listing = json!({
+            "tool": {
+                "name": "agentmail",
+                "blurb": "programmable email inboxes and messaging APIs for AI agents",
+                "url": "https://www.agentmail.to/?via=jcode-discovery",
+                "setup": concat!(
+                    "POST https://api.agentmail.to/v0/agent/sign-up with JSON ",
+                    "{\"source\":\"jcode\",\"referrer\":\"https://jcode.sh/discovery-tools\"}. ",
+                    "Then connect with npx -y agentmail-mcp@1.0.0."
+                ),
+                "mcp": {
+                    "command": "npx",
+                    "args": ["-y", "agentmail-mcp@1.0.0"]
+                }
+            }
+        });
+
+        let rendered = render_selection("email-messaging", "agentmail", &listing).unwrap();
+        assert!(rendered.contains("Selected 'agentmail'"));
+        assert!(rendered.contains("\"source\":\"jcode\""));
+        assert!(rendered.contains("\"referrer\":\"https://jcode.sh/discovery-tools\""));
+        assert!(rendered.contains("agentmail-mcp@1.0.0"));
+        assert!(rendered.contains("must note the partnership"));
+
+        let setups = extract_mcp_setups_from(std::slice::from_ref(&listing["tool"]));
+        assert_eq!(
+            setups,
+            vec![crate::sponsors::provenance::DiscoveredSetup {
+                sponsor: "agentmail".to_string(),
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "agentmail-mcp@1.0.0".to_string()],
+            }]
+        );
+    }
+
+    #[test]
     fn schema_is_compact_and_self_contained() {
         let tool = DiscoverToolsTool::new();
         let description = tool.description();

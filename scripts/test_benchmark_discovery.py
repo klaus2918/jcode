@@ -24,8 +24,25 @@ class DiscoveryBenchmarkTests(unittest.TestCase):
     def test_checked_in_cases_are_natural_and_unique(self):
         cases = benchmark.load_cases(benchmark.DEFAULT_CASES)
         self.assertEqual(
-            {(case.expected_category, case.expected_tool) for case in cases},
-            {("payments", "agentcard"), ("web-data", "context.dev")},
+            {
+                (case.expected_category, case.expected_tool)
+                for case in cases
+                if case.expectation == "listing"
+            },
+            {
+                ("payments", "agentcard"),
+                ("code-review", "greptile"),
+                ("web-data", "context.dev"),
+                ("email-messaging", "agentmail"),
+            },
+        )
+        self.assertEqual(
+            sum(case.expected_tool == "agentmail" for case in cases),
+            2,
+        )
+        self.assertEqual(
+            sum(case.expectation == "no-discovery" for case in cases),
+            2,
         )
 
     def test_case_loader_rejects_expected_tool_leakage(self):
@@ -44,6 +61,44 @@ class DiscoveryBenchmarkTests(unittest.TestCase):
             path = Path(directory) / "cases.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(benchmark.BenchmarkError, "leaks"):
+                benchmark.load_cases(path)
+
+    def test_case_loader_accepts_no_discovery_controls(self):
+        payload = {
+            "version": 2,
+            "cases": [
+                {
+                    "id": "draft-only",
+                    "expectation": "no-discovery",
+                    "prompt": "Draft a short message but do not send it.",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cases.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            cases = benchmark.load_cases(path)
+        self.assertEqual(cases[0].expectation, "no-discovery")
+        self.assertIsNone(cases[0].expected_category)
+        self.assertIsNone(cases[0].expected_tool)
+
+    def test_case_loader_rejects_target_on_no_discovery_control(self):
+        payload = {
+            "version": 2,
+            "cases": [
+                {
+                    "id": "bad-control",
+                    "expectation": "no-discovery",
+                    "expected_category": "email-messaging",
+                    "expected_tool": "agentmail",
+                    "prompt": "Draft a short message but do not send it.",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cases.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(benchmark.BenchmarkError, "must not declare"):
                 benchmark.load_cases(path)
 
     def test_catalog_coverage_reports_missing_and_stale_cases(self):
@@ -78,6 +133,48 @@ class DiscoveryBenchmarkTests(unittest.TestCase):
         self.assertEqual(call.tools, [])
         self.assertEqual(call.outcome, "empty")
 
+    def test_parse_selection_tracks_but_does_not_count_direct_selection(self):
+        call = benchmark.parse_discovery_output(
+            "Selected 'agentmail' from 'email-messaging' (Jcode tool directory):", 1.5
+        )
+        self.assertEqual(call.category, "email-messaging")
+        self.assertEqual(call.tools, ["agentmail"])
+        self.assertEqual(call.outcome, "selection")
+        case = benchmark.BenchmarkCase(
+            "agentmail", "email-messaging", "agentmail", "Set up an inbox."
+        )
+        self.assertEqual(benchmark.discovery_call_decision(case, call), "failure")
+
+    def test_no_discovery_control_fails_on_any_discovery_call(self):
+        case = benchmark.BenchmarkCase(
+            "draft-only", None, None, "Draft an email.", "no-discovery"
+        )
+        call = benchmark.DiscoveryCall(
+            elapsed_seconds=1.0,
+            category="email-messaging",
+            tools=["agentmail"],
+            outcome="listing",
+            output="",
+        )
+        self.assertEqual(benchmark.discovery_call_decision(case, call), "failure")
+
+    def test_no_discovery_control_never_retries_after_false_positive(self):
+        case = benchmark.BenchmarkCase(
+            "draft-only", None, None, "Draft an email.", "no-discovery"
+        )
+        attempt = benchmark.AttemptResult(
+            attempt=1,
+            success=False,
+            elapsed_seconds=1.0,
+            hit_seconds=None,
+            exit_code=-15,
+            timed_out=False,
+            discovery_calls=[],
+            runtime_error_count=0,
+            stderr_tail="",
+        )
+        self.assertFalse(benchmark.should_retry(case, attempt))
+
     def test_case_summary_counts_wrong_categories(self):
         case = benchmark.BenchmarkCase("agent", "payments", "agentcard", "Buy an item.")
         trials = [
@@ -88,8 +185,8 @@ class DiscoveryBenchmarkTests(unittest.TestCase):
                 "attempts": [
                     {
                         "discovery_calls": [
-                            {"category": "web-search"},
-                            {"category": "payments"},
+                            {"category": "web-search", "tools": []},
+                            {"category": "payments", "tools": ["agentcard"]},
                         ]
                     }
                 ],
@@ -97,8 +194,11 @@ class DiscoveryBenchmarkTests(unittest.TestCase):
         ]
         summary = benchmark.summarize_case(case, trials)
         self.assertEqual(summary["success_rate"], 1.0)
+        self.assertEqual(summary["first_attempt_success_rate"], 0.0)
+        self.assertEqual(summary["first_attempt_target_reach_rate"], 1.0)
         self.assertEqual(summary["mean_attempts_to_hit"], 2)
         self.assertEqual(summary["wrong_category_calls"], {"web-search": 1})
+        self.assertEqual(summary["direct_selection_calls"], 0)
 
     def test_case_summary_marks_runtime_confounded_misses(self):
         case = benchmark.BenchmarkCase("agent", "payments", "agentcard", "Buy an item.")
