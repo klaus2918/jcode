@@ -23,7 +23,83 @@ use jcode_provider_core::{
     anthropic_stainless_arch as stainless_arch, anthropic_stainless_os as stainless_os,
 };
 
+const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com";
+
 static CACHE_TTL_1H: AtomicBool = AtomicBool::new(true);
+
+/// Resolve the Anthropic Messages API base URL for **API-key** mode.
+///
+/// Defaults to `https://api.anthropic.com`, but honors a user override so the
+/// direct Anthropic provider can target a local/proxied Anthropic-compatible
+/// gateway over either `http://` or `https://`. Checked in order:
+/// `JCODE_ANTHROPIC_API_BASE`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_BASE`.
+///
+/// The override must be an absolute `http(s)://` URL; anything else is logged
+/// and ignored. Unlike the stricter built-in profile validator, named
+/// user-configured gateways (and this explicit environment override) may use
+/// public HTTP hosts.
+pub fn resolve_api_base() -> String {
+    const OVERRIDE_VARS: [&str; 3] = [
+        "JCODE_ANTHROPIC_API_BASE",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_BASE",
+    ];
+    for var in OVERRIDE_VARS {
+        let Ok(raw) = std::env::var(var) else {
+            continue;
+        };
+        if let Some(normalized) = crate::provider_catalog::normalize_api_base_relaxed(&raw) {
+            crate::logging::info(&format!(
+                "Anthropic API base overridden to '{}' via {}",
+                normalized, var
+            ));
+            return normalized;
+        }
+        crate::logging::warn(&format!(
+            "Ignoring invalid {} '{}'; expected an absolute http(s):// URL",
+            var,
+            raw.trim()
+        ));
+    }
+    ANTHROPIC_API_BASE.to_string()
+}
+
+/// Whether the direct Anthropic API-key path is pointing at a custom gateway.
+pub fn is_custom_api_base_configured() -> bool {
+    resolve_api_base().trim_end_matches('/') != ANTHROPIC_API_BASE
+}
+
+/// Derive the Messages endpoint from an Anthropic base URL.
+///
+/// Accepts any of:
+/// - `https://host`                 -> `https://host/v1/messages`
+/// - `https://host/v1`              -> `https://host/v1/messages`
+/// - `https://host/v1/messages`     -> verbatim
+/// - `https://host/anthropic`       -> `https://host/anthropic/v1/messages`
+pub fn messages_url_from_api_base(base: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.ends_with("/messages") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/messages")
+    } else {
+        format!("{trimmed}/v1/messages")
+    }
+}
+
+/// Derive the `GET /models` catalog endpoint from an Anthropic base URL.
+pub fn models_url_from_api_base(base: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    let trimmed = trimmed
+        .strip_suffix("/messages")
+        .map(|value| value.trim_end_matches('/'))
+        .unwrap_or(trimmed);
+    if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
+    }
+}
 
 /// Enable or disable the 1-hour cache TTL (default: 1-hour)
 pub fn set_cache_ttl_1h(enabled: bool) {
@@ -103,4 +179,89 @@ pub fn load_anthropic_api_key() -> Result<String> {
 
 pub fn has_anthropic_api_key() -> bool {
     load_anthropic_api_key().is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            crate::env::remove_var(key);
+            Self { key, previous }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            crate::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                crate::env::set_var(self.key, previous);
+            } else {
+                crate::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_api_base_precedence_and_validation() {
+        let _a = EnvGuard::remove("JCODE_ANTHROPIC_API_BASE");
+        let _b = EnvGuard::remove("ANTHROPIC_BASE_URL");
+        let _c = EnvGuard::remove("ANTHROPIC_API_BASE");
+        assert_eq!(resolve_api_base(), ANTHROPIC_API_BASE);
+
+        let _d = EnvGuard::set("ANTHROPIC_API_BASE", "https://b.example/v1");
+        let _e = EnvGuard::set("ANTHROPIC_BASE_URL", "https://a.example/v1");
+        assert_eq!(resolve_api_base(), "https://a.example/v1");
+
+        let _f = EnvGuard::set("JCODE_ANTHROPIC_API_BASE", "http://gateway.example/v1");
+        assert_eq!(resolve_api_base(), "http://gateway.example/v1");
+        assert!(is_custom_api_base_configured());
+
+        let _g = EnvGuard::set("JCODE_ANTHROPIC_API_BASE", "not-a-url");
+        assert_eq!(resolve_api_base(), "https://a.example/v1");
+    }
+
+    #[test]
+    fn messages_and_models_urls_handle_common_base_shapes() {
+        assert_eq!(
+            messages_url_from_api_base("https://host"),
+            "https://host/v1/messages"
+        );
+        assert_eq!(
+            messages_url_from_api_base("http://host/v1"),
+            "http://host/v1/messages"
+        );
+        assert_eq!(
+            messages_url_from_api_base("https://host/v1/messages"),
+            "https://host/v1/messages"
+        );
+        assert_eq!(
+            models_url_from_api_base("https://host"),
+            "https://host/v1/models"
+        );
+        assert_eq!(
+            models_url_from_api_base("http://host/v1"),
+            "http://host/v1/models"
+        );
+        assert_eq!(
+            models_url_from_api_base("https://host/v1/messages"),
+            "https://host/v1/models"
+        );
+        assert_eq!(
+            models_url_from_api_base("https://host/anthropic"),
+            "https://host/anthropic/v1/models"
+        );
+    }
 }

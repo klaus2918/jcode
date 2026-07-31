@@ -1173,6 +1173,67 @@ pub fn model_route_provider_labels_related(route_provider: &str, login_provider:
     model_route_provider_labels_match(&route, &login)
 }
 
+/// Apply the `provider.model_picker_providers` allowlist to model routes.
+///
+/// Each allowlist entry can name a provider label, a route api method, or a
+/// bare openai-compatible profile id. Matching is case/format-insensitive via
+/// the shared provider label normalizer. When the allowlist is present,
+/// non-listed routes are dropped, and unavailable routes are dropped too
+/// unless they are the current model's route, so the picker and slash-command
+/// surfaces stay limited to what the user configured and can actually use.
+///
+/// A missing/empty/blank allowlist is a no-op. A non-empty allowlist that
+/// matches nothing intentionally yields an empty result instead of falling
+/// back to showing everything; the caller can render a clear "no models"
+/// message rather than silently disabling the restriction.
+pub fn filter_model_routes_by_provider_allowlist(
+    routes: Vec<ModelRoute>,
+    allowlist: Option<&[String]>,
+    current_model: &str,
+    only_available: bool,
+) -> Vec<ModelRoute> {
+    let Some(allowlist) = allowlist else {
+        return routes;
+    };
+    let allowed: Vec<String> = allowlist
+        .iter()
+        .map(|entry| normalize_model_route_provider_label(entry))
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if allowed.is_empty() {
+        return routes;
+    }
+
+    let current_model = current_model.trim();
+    routes
+        .into_iter()
+        .filter(|route| {
+            if !current_model.is_empty() && route.model == current_model {
+                return true;
+            }
+            if only_available && !route.available {
+                return false;
+            }
+
+            let provider = normalize_model_route_provider_label(&route.provider);
+            let api_method = normalize_model_route_provider_label(&route.api_method);
+            // "openai-compatible:myprofile" normalizes to
+            // "openaicompatible:myprofile"; also expose the bare profile id.
+            let profile_id = route
+                .api_method
+                .split_once(':')
+                .map(|(_, profile)| normalize_model_route_provider_label(profile))
+                .unwrap_or_default();
+            allowed.iter().any(|entry| {
+                *entry == provider
+                    || *entry == api_method
+                    || (!profile_id.is_empty() && *entry == profile_id)
+                    || model_route_provider_labels_match(&route.provider, entry)
+            })
+        })
+        .collect()
+}
+
 pub fn model_route_provider_matches_key(
     route_provider_key: Option<&str>,
     route_provider_label: &str,

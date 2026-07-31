@@ -229,6 +229,39 @@ fn test_multi_provider_with_openai() -> MultiProvider {
 }
 
 #[test]
+fn model_picker_allowlist_blocks_direct_switch_outside_list() {
+    with_clean_provider_test_env(|| {
+        let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME should be set");
+        std::fs::write(
+            std::path::PathBuf::from(jcode_home).join("config.toml"),
+            r#"
+[provider]
+model_picker_providers = ["openai"]
+"#,
+        )
+        .expect("write test config.toml");
+        crate::config::invalidate_config_cache();
+
+        let rt = enter_test_runtime();
+        let _runtime_guard = rt.enter();
+        let provider = test_multi_provider_with_openai();
+        let models = known_openai_model_ids();
+        let allowed = models.first().expect("at least one OpenAI model").as_str();
+
+        assert!(
+            provider.ensure_model_switch_allowed(allowed).is_ok(),
+            "OpenAI model should remain switchable when OpenAI is allowlisted"
+        );
+        assert!(
+            provider
+                .ensure_model_switch_allowed("claude-opus-4-6")
+                .is_err(),
+            "Anthropic model must be rejected when Anthropic is not allowlisted"
+        );
+    });
+}
+
+#[test]
 fn openai_model_switch_prefixes_preserve_oauth_vs_api_state_space() {
     with_clean_provider_test_env(|| {
         let rt = enter_test_runtime();

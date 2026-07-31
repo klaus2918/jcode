@@ -497,6 +497,11 @@ Notes:
 - Plain `http://` is accepted for `localhost` and private LAN IPs. Public remote HTTP is still rejected.
 - HTTPS endpoints work as usual.
 
+For the direct Anthropic API-key provider, the same http/https override is available
+through `JCODE_ANTHROPIC_API_BASE`, `ANTHROPIC_BASE_URL`, or `ANTHROPIC_API_BASE`.
+The value may be a base like `https://host`, `https://host/v1`, or a full
+`/v1/messages` URL; requests and the `/v1/models` catalog fetch use it.
+
 #### MCP config files
 
 MCP config is separate from `config.toml`.

@@ -401,28 +401,49 @@ impl App {
         let mut seen = std::collections::HashSet::new();
         let mut models = Vec::new();
 
-        if self.is_remote {
-            if let Some(current) = self.remote_provider_model.clone() {
-                push_unique(&mut seen, &mut models, current);
-            }
-
-            let routes = if !self.remote_model_options.is_empty() {
+        let current = if self.is_remote {
+            self.remote_provider_model.clone().unwrap_or_default()
+        } else {
+            self.provider.model()
+        };
+        let allowlist = crate::config::config()
+            .provider
+            .model_picker_providers
+            .clone();
+        let only_available = allowlist.is_some();
+        let routes = if self.is_remote {
+            if !self.remote_model_options.is_empty() {
                 self.remote_model_options.clone()
             } else {
                 self.build_remote_model_routes_fallback()
-            };
-
-            for route in routes {
-                push_unique(&mut seen, &mut models, route.model);
-            }
-
-            for model in &self.remote_available_entries {
-                push_unique(&mut seen, &mut models, model.clone());
             }
         } else {
-            push_unique(&mut seen, &mut models, self.provider.model());
-            for model in self.provider.available_models_display() {
-                push_unique(&mut seen, &mut models, model);
+            self.provider.model_routes()
+        };
+        let filtered_routes = crate::provider::filter_model_routes_by_provider_allowlist(
+            routes,
+            allowlist.as_deref(),
+            &current,
+            only_available,
+        );
+
+        push_unique(&mut seen, &mut models, current);
+        for route in &filtered_routes {
+            push_unique(&mut seen, &mut models, route.model.clone());
+        }
+        if allowlist.is_some() {
+            let allowed_models: std::collections::HashSet<String> = filtered_routes
+                .iter()
+                .map(|route| route.model.clone())
+                .collect();
+            for model in &self.remote_available_entries {
+                if allowed_models.contains(model) {
+                    push_unique(&mut seen, &mut models, model.clone());
+                }
+            }
+        } else {
+            for model in &self.remote_available_entries {
+                push_unique(&mut seen, &mut models, model.clone());
             }
         }
 
@@ -454,36 +475,61 @@ impl App {
 
         let mut seen = std::collections::HashSet::new();
         let mut suggestions = Vec::new();
-        push_unique(
-            &mut seen,
-            &mut suggestions,
-            format!("/model {}@auto", openrouter_model),
-            "Use automatic OpenRouter provider routing",
-        );
 
-        if self.is_remote {
-            let routes = if !self.remote_model_options.is_empty() {
+        let allowlist = crate::config::config()
+            .provider
+            .model_picker_providers
+            .clone();
+        let only_available = allowlist.is_some();
+        let current = if self.is_remote {
+            self.remote_provider_model.clone().unwrap_or_default()
+        } else {
+            self.provider.model()
+        };
+        let routes = if self.is_remote {
+            if !self.remote_model_options.is_empty() {
                 self.remote_model_options.clone()
             } else {
                 self.build_remote_model_routes_fallback()
-            };
-
-            for route in routes {
-                if route.model == model && route.api_method == "openrouter" {
-                    let help = if route.provider == "auto" {
-                        "Use automatic OpenRouter provider routing"
-                    } else {
-                        "Pin OpenRouter provider"
-                    };
-                    push_unique(
-                        &mut seen,
-                        &mut suggestions,
-                        format!("/model {}@{}", openrouter_model, route.provider),
-                        help,
-                    );
-                }
             }
         } else {
+            self.provider.model_routes()
+        };
+        let filtered_routes = crate::provider::filter_model_routes_by_provider_allowlist(
+            routes,
+            allowlist.as_deref(),
+            &current,
+            only_available,
+        );
+
+        let has_allowed_openrouter = filtered_routes
+            .iter()
+            .any(|route| route.model == model && route.api_method == "openrouter");
+        if allowlist.is_none() || has_allowed_openrouter {
+            push_unique(
+                &mut seen,
+                &mut suggestions,
+                format!("/model {}@auto", openrouter_model),
+                "Use automatic OpenRouter provider routing",
+            );
+        }
+
+        for route in filtered_routes {
+            if route.model == model && route.api_method == "openrouter" {
+                let help = if route.provider == "auto" {
+                    "Use automatic OpenRouter provider routing"
+                } else {
+                    "Pin OpenRouter provider"
+                };
+                push_unique(
+                    &mut seen,
+                    &mut suggestions,
+                    format!("/model {}@{}", openrouter_model, route.provider),
+                    help,
+                );
+            }
+        }
+        if !self.is_remote && allowlist.is_none() {
             for provider in self.provider.available_providers_for_model(model) {
                 push_unique(
                     &mut seen,

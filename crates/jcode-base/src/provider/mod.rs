@@ -65,7 +65,8 @@ pub use jcode_provider_core::{
     summarize_model_catalog_refresh,
 };
 pub use jcode_provider_core::{
-    FallbackPickOptions, error_looks_like_credential_failure, model_route_provider_labels_match,
+    FallbackPickOptions, error_looks_like_credential_failure,
+    filter_model_routes_by_provider_allowlist, model_route_provider_labels_match,
     normalize_model_route_provider_label, pick_next_fallback_route,
     pick_next_fallback_route_with_options,
 };
@@ -1544,6 +1545,42 @@ impl MultiProvider {
         };
         format!("{prefix}:{current_model}")
     }
+
+    fn ensure_model_switch_allowed(&self, requested: &str) -> Result<()> {
+        let allowlist = crate::config::config()
+            .provider
+            .model_picker_providers
+            .as_deref();
+        if allowlist.is_none() {
+            return Ok(());
+        }
+
+        let current_model = self.model();
+        let routes = filter_model_routes_by_provider_allowlist(
+            self.model_routes(),
+            allowlist,
+            &current_model,
+            true,
+        );
+        let mut requested_specs = vec![requested.to_string()];
+        if let Some(base) = requested.strip_suffix("@auto") {
+            requested_specs.push(base.to_string());
+        }
+        let allowed = routes.iter().any(|route| route.model == requested)
+            || routes.iter().any(|route| {
+                let routed = RouteSelection::from_model_route(route).routed_model_spec();
+                requested_specs.iter().any(|spec| spec == &routed)
+            });
+        if allowed {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Model '{}' is not in the configured model picker allowlist. \
+                 Add its provider/profile to `provider.model_picker_providers` or choose it from `/model`.",
+                requested
+            )
+        }
+    }
 }
 
 impl Default for MultiProvider {
@@ -1807,6 +1844,7 @@ impl Provider for MultiProvider {
         if requested_model.is_empty() {
             anyhow::bail!("Model cannot be empty");
         }
+        self.ensure_model_switch_allowed(requested_model)?;
 
         if let Some((profile, target_model)) = Self::openai_compatible_model_prefix(requested_model)
         {
