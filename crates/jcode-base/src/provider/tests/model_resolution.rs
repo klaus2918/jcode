@@ -2335,3 +2335,93 @@ fn bare_openai_compatible_model_id_routes_to_its_profile_not_the_active_provider
         );
     });
 }
+
+/// A `default_provider` pointing at a named profile with `api = "anthropic"`
+/// must resolve through the same default-path as OpenAI-compatible profiles
+/// and build Anthropic Messages API requests (`POST /v1/messages`), not OpenAI
+/// chat/completions requests.
+#[test]
+fn default_named_anthropic_api_format_profile_uses_messages_request_path() {
+    let _lock = crate::storage::lock_test_env();
+    register_test_external_runtimes();
+    let temp = tempfile::TempDir::new().expect("create temp home");
+    let jcode_home = temp.path().join("jcode-home");
+    let _jcode_home = OrEnvVarGuard::set("JCODE_HOME", &jcode_home);
+    let _home = OrEnvVarGuard::set("HOME", temp.path());
+    let _appdata = OrEnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
+    let _env = isolate_openrouter_autodetect_env_or();
+    let _key = OrEnvVarGuard::set("TEST_ANTH_GW_KEY", "test-anth-key");
+    let (api_base, request_rx) = spawn_single_response_chat_server_or();
+
+    std::fs::create_dir_all(&jcode_home).expect("create test config dir");
+    std::fs::write(
+        jcode_home.join("config.toml"),
+        format!(
+            r#"
+[provider]
+default_provider = "anth-gw"
+
+[providers.anth-gw]
+type = "openai-compatible"
+base_url = "{api_base}"
+api = "anthropic"
+auth = "bearer"
+api_key_env = "TEST_ANTH_GW_KEY"
+default_model = "claude-sonnet-4-6"
+"#
+        ),
+    )
+    .expect("write test config");
+    crate::config::invalidate_config_cache();
+
+    let provider = MultiProvider::new_with_auth_status(crate::auth::AuthStatus::default());
+    assert_eq!(provider.active_provider(), ActiveProvider::OpenRouter);
+    let openrouter = provider
+        .openrouter_provider()
+        .expect("openrouter execution slot");
+    assert_eq!(
+        openrouter.name(),
+        "anthropic",
+        "anthropic-format named profile must instantiate the Anthropic runtime"
+    );
+
+    let messages = vec![crate::message::Message {
+        role: crate::message::Role::User,
+        content: vec![crate::message::ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = openrouter
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake anthropic request should start");
+        while let Some(event) = futures::StreamExt::next(&mut stream).await {
+            event.expect("stream event should parse");
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        request.starts_with("POST /v1/messages "),
+        "anthropic-format profile must POST /v1/messages, got: {request}"
+    );
+    assert!(
+        request.contains(r#""model":"claude-sonnet-4-6""#),
+        "request should use named profile default model: {request}"
+    );
+    assert!(
+        request.contains("authorization: Bearer test-anth-key"),
+        "request should carry bearer/api-key auth: {request}"
+    );
+}

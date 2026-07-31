@@ -3425,6 +3425,7 @@ dependencies = [
  "jcode-message-types",
  "jcode-plan",
  "jcode-protocol",
+ "jcode-provider-anthropic-runtime",
  "jcode-provider-antigravity",
  "jcode-provider-bedrock",
  "jcode-provider-copilot",

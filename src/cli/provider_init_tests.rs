@@ -139,6 +139,78 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
     crate::auth::AuthStatus::invalidate_cache();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "test env locks intentionally stay held across provider init to isolate process-global auth env"
+)]
+async fn named_provider_profile_with_anthropic_api_format_uses_anthropic_runtime() {
+    let _guard = lock_env();
+    let _env_guard = crate::storage::lock_test_env();
+    let dir = TempDir::new().expect("temp dir");
+    let keys = [
+        "JCODE_HOME",
+        "ANTH_GW_KEY",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_RUNTIME_PROVIDER",
+        "JCODE_ACTIVE_PROVIDER",
+    ];
+    let saved: Vec<(&str, Option<String>)> = keys
+        .iter()
+        .map(|key| (*key, std::env::var(key).ok()))
+        .collect();
+
+    crate::env::set_var("JCODE_HOME", dir.path());
+    crate::env::set_var("ANTH_GW_KEY", "sk-ant-gateway-test");
+    crate::env::set_var("JCODE_NAMED_PROVIDER_PROFILE", "anth-gw");
+    crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+    crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
+
+    std::fs::write(
+        dir.path().join("config.toml"),
+        r#"
+[provider]
+default_provider = "anth-gw"
+
+[providers.anth-gw]
+type = "openai-compatible"
+base_url = "https://gateway.example.com/v1"
+api = "anthropic"
+auth = "bearer"
+api_key_env = "ANTH_GW_KEY"
+default_model = "claude-sonnet-4-6"
+"#,
+    )
+    .expect("write config");
+    crate::config::invalidate_config_cache();
+    crate::auth::AuthStatus::invalidate_cache();
+
+    let provider = init_provider_for_validation(&ProviderChoice::OpenaiCompatible, None)
+        .await
+        .expect("anthropic-format named profile should initialize");
+
+    // The named profile speaks the Anthropic Messages wire format, so the
+    // OpenAI-compatible choice must resolve to the Anthropic-format runtime,
+    // not an OpenAI chat/completions client pointed at the same base URL.
+    assert_eq!(provider.name(), "anthropic");
+    assert_eq!(provider.runtime_display_name(), "anth-gw");
+    assert_eq!(provider.model(), "claude-sonnet-4-6");
+
+    for (key, value) in saved {
+        if let Some(value) = value {
+            crate::env::set_var(key, value);
+        } else {
+            crate::env::remove_var(key);
+        }
+    }
+    crate::config::invalidate_config_cache();
+    crate::auth::AuthStatus::invalidate_cache();
+}
+
 #[test]
 fn test_server_bootstrap_login_selection_preserves_order() {
     let providers = provider_catalog::server_bootstrap_login_providers();
