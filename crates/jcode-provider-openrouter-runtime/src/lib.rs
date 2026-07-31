@@ -1457,7 +1457,7 @@ impl OpenRouterProvider {
             })
             .collect::<HashMap<_, _>>();
         Ok(Self {
-            client: jcode_provider_core::shared_http_client(),
+            client: jcode_provider_core::http_client_with_proxy(profile.proxy.as_deref())?,
             model: Arc::new(RwLock::new(model)),
             reasoning_effort: Arc::new(RwLock::new(Self::initial_reasoning_effort(
                 profile.supports_reasoning_effort,

@@ -2388,6 +2388,10 @@ use sse_types::{
 
 mod context_window;
 
+/// Anthropic Messages API runtime for user-defined named provider profiles
+/// (`[providers.<name>]` with `api = "anthropic"`).
+pub mod named;
+
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 #[path = "anthropic_tests.rs"]

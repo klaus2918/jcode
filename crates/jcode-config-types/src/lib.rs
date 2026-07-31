@@ -400,6 +400,29 @@ pub enum NamedProviderType {
     OpenRouter,
 }
 
+/// Wire API format spoken by a named provider profile.
+///
+/// `OpenAiCompatible` (default) sends OpenAI chat-completions requests to
+/// `base_url`. `Anthropic` sends Anthropic Messages API requests to
+/// `base_url/v1/messages` (used by Anthropic-compatible gateways and routers).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderApiFormat {
+    #[default]
+    #[serde(
+        alias = "openai",
+        alias = "openai-compatible",
+        alias = "openai_compatible"
+    )]
+    OpenAiCompatible,
+    #[serde(
+        alias = "anthropic-messages",
+        alias = "anthropic",
+        alias = "anthropic_compatible"
+    )]
+    Anthropic,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NamedProviderAuth {
@@ -432,7 +455,23 @@ pub struct NamedProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: NamedProviderType,
     pub base_url: String,
-    pub api: Option<String>,
+    /// Wire API format for this endpoint. `openai-compatible` (default) uses
+    /// OpenAI chat-completions; `anthropic` uses the Anthropic Messages API.
+    #[serde(
+        default,
+        alias = "api",
+        alias = "api-format",
+        alias = "api_format",
+        alias = "format",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_format: Option<ProviderApiFormat>,
+    /// Optional HTTP(S) proxy for requests to this endpoint, e.g.
+    /// `"http://127.0.0.1:7890"`. Overrides the global `[network] proxy`.
+    /// Unset = fall back to `[network] proxy`, then standard
+    /// `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` environment variables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
     pub auth: NamedProviderAuth,
     pub auth_header: Option<String>,
     pub api_key_env: Option<String>,
@@ -474,7 +513,8 @@ impl Default for NamedProviderConfig {
         Self {
             provider_type: NamedProviderType::OpenAiCompatible,
             base_url: String::new(),
-            api: None,
+            api_format: None,
+            proxy: None,
             auth: NamedProviderAuth::Bearer,
             auth_header: None,
             api_key_env: None,
@@ -1637,6 +1677,36 @@ pub struct LaunchHotkeysConfig {
     /// Set true once auto-import has populated `entries`, so we only bake the
     /// per-repo mapping a single time and never clobber later user edits.
     pub imported: bool,
+}
+
+/// Network / proxy configuration.
+///
+/// Controls how outbound provider/API requests route through an HTTP(S)
+/// proxy. When no proxy is configured here, jcode falls back to the standard
+/// `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` (and `NO_PROXY`) environment
+/// variables (honored by reqwest's `system-proxy` support).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkConfig {
+    /// Proxy URL for all outbound requests, e.g. `"http://127.0.0.1:7890"`.
+    ///
+    /// `auto` (the default) honors the environment-variable proxy settings.
+    /// `none` disables proxying entirely. Any other value is treated as a
+    /// proxy URL and applied to both HTTP and HTTPS traffic.
+    pub proxy: String,
+    /// Optional comma-separated list of hosts that must bypass the proxy
+    /// (e.g. `"localhost,127.0.0.1,.internal"`). Overrides `NO_PROXY`.
+    #[serde(default)]
+    pub no_proxy: Option<String>,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            proxy: "auto".to_string(),
+            no_proxy: None,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -167,9 +167,23 @@ pub fn register_external_provider_runtimes() {
             OpenRouterRuntimeSpec::CompatibleProfile(profile) => std::sync::Arc::new(
                 OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
             ),
-            OpenRouterRuntimeSpec::NamedProfile { name, config } => std::sync::Arc::new(
-                OpenRouterProvider::new_named_openai_compatible(&name, &config)?,
-            ),
+            OpenRouterRuntimeSpec::NamedProfile { name, config } => {
+                // A named profile with `api = "anthropic"` speaks the Anthropic
+                // Messages wire format against its own endpoint (Anthropic-
+                // compatible gateways/routers). Everything else keeps the
+                // OpenAI chat-completions transport.
+                if config.api_format == Some(crate::config::ProviderApiFormat::Anthropic) {
+                    std::sync::Arc::new(
+                        jcode_provider_anthropic_runtime::named::NamedAnthropicProvider::new_named(
+                            &name, &config,
+                        )?,
+                    )
+                } else {
+                    std::sync::Arc::new(OpenRouterProvider::new_named_openai_compatible(
+                        &name, &config,
+                    )?)
+                }
+            }
         };
         Ok(provider)
     });

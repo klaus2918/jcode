@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::cli::args::ProviderAuthArg;
 use crate::config::{
     Config, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
+    ProviderApiFormat,
 };
 use crate::provider_catalog::{
     api_base_uses_localhost, is_safe_env_file_name, is_safe_env_key_name, normalize_api_base,
@@ -29,6 +30,8 @@ pub(crate) struct ProviderAddOptions {
     pub overwrite: bool,
     pub provider_routing: bool,
     pub model_catalog: bool,
+    pub api: Option<crate::cli::args::ProviderApiFormatArg>,
+    pub proxy: Option<String>,
     pub json: bool,
 }
 
@@ -126,6 +129,19 @@ pub(crate) fn configure_provider_profile(
         None
     };
 
+    let api_format = options.api.map(|format| match format {
+        crate::cli::args::ProviderApiFormatArg::OpenaiCompatible => {
+            ProviderApiFormat::OpenAiCompatible
+        }
+        crate::cli::args::ProviderApiFormatArg::Anthropic => ProviderApiFormat::Anthropic,
+    });
+    let proxy = options
+        .proxy
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
     let env_file = if uses_auth && (api_key.is_some() || options.env_file.is_some()) {
         Some(resolve_env_file(&name, options.env_file.as_deref())?)
     } else {
@@ -156,7 +172,8 @@ pub(crate) fn configure_provider_profile(
     let profile = NamedProviderConfig {
         provider_type: NamedProviderType::OpenAiCompatible,
         base_url: api_base.clone(),
-        api: None,
+        api_format,
+        proxy,
         auth: auth.clone(),
         auth_header: match auth {
             NamedProviderAuth::Header => options
@@ -415,6 +432,16 @@ fn append_profile_section(
     content.push_str(&format!("[providers.{name}]\n"));
     content.push_str("type = \"openai-compatible\"\n");
     content.push_str(&format!("base_url = {}\n", toml_quote(&profile.base_url)));
+    if let Some(api_format) = profile.api_format {
+        let wire = match api_format {
+            ProviderApiFormat::OpenAiCompatible => "openai-compatible",
+            ProviderApiFormat::Anthropic => "anthropic",
+        };
+        content.push_str(&format!("api = {}\n", toml_quote(wire)));
+    }
+    if let Some(proxy) = profile.proxy.as_deref() {
+        content.push_str(&format!("proxy = {}\n", toml_quote(proxy)));
+    }
     content.push_str(&format!(
         "auth = {}\n",
         toml_quote(auth_label(&profile.auth))
@@ -655,8 +682,40 @@ mod tests {
             overwrite: false,
             provider_routing: false,
             model_catalog: false,
+            api: None,
+            proxy: None,
             json: false,
         }
+    }
+
+    #[test]
+    fn provider_add_writes_anthropic_format_and_proxy() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+        let _key = EnvVarGuard::remove("JCODE_PROVIDER_ANTH_API_KEY");
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(&config_path, "").expect("write config");
+
+        let mut options = base_options();
+        options.name = "anth".to_string();
+        options.api_key = Some("sk-anth".to_string());
+        options.api = Some(crate::cli::args::ProviderApiFormatArg::Anthropic);
+        options.proxy = Some("http://127.0.0.1:7890".to_string());
+
+        configure_provider_profile(options).expect("configure provider");
+        let config = std::fs::read_to_string(&config_path).expect("read config");
+        assert!(config.contains("[providers.anth]"));
+        assert!(config.contains("api = \"anthropic\""));
+        assert!(config.contains("proxy = \"http://127.0.0.1:7890\""));
+
+        let parsed: Config = toml::from_str(&config).expect("valid config");
+        let profile = parsed.providers.get("anth").expect("profile");
+        assert_eq!(
+            profile.api_format,
+            Some(crate::config::ProviderApiFormat::Anthropic)
+        );
+        assert_eq!(profile.proxy.as_deref(), Some("http://127.0.0.1:7890"));
     }
 
     #[test]

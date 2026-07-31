@@ -702,6 +702,48 @@ fn provider_add_subcommand_parses_agent_friendly_flags() {
 }
 
 #[test]
+fn provider_add_subcommand_parses_api_format_and_proxy() {
+    let args = Args::try_parse_from([
+        "jcode",
+        "provider",
+        "add",
+        "anth-gw",
+        "--base-url",
+        "https://gateway.example.com/v1",
+        "--model",
+        "claude-sonnet-4-6",
+        "--api-key-env",
+        "ANTH_GW_KEY",
+        "--api",
+        "anthropic",
+        "--proxy",
+        "http://127.0.0.1:7890",
+        "--json",
+    ])
+    .unwrap();
+
+    match args.command {
+        Some(Command::Provider(ProviderCommand::Add {
+            name,
+            base_url,
+            model,
+            api,
+            proxy,
+            json,
+            ..
+        })) => {
+            assert_eq!(name, "anth-gw");
+            assert_eq!(base_url, "https://gateway.example.com/v1");
+            assert_eq!(model, "claude-sonnet-4-6");
+            assert_eq!(api, Some(ProviderApiFormatArg::Anthropic));
+            assert_eq!(proxy.as_deref(), Some("http://127.0.0.1:7890"));
+            assert!(json);
+        }
+        other => panic!("unexpected command: {:?}", other),
+    }
+}
+
+#[test]
 fn restart_save_subcommand_parses() {
     let args = Args::try_parse_from(["jcode", "restart", "save"]).unwrap();
     match args.command {
