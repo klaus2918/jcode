@@ -988,9 +988,23 @@ fn register_test_external_runtimes() {
             OpenRouterRuntimeSpec::CompatibleProfile(profile) => Arc::new(
                 OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
             ),
-            OpenRouterRuntimeSpec::NamedProfile { name, config } => Arc::new(
-                OpenRouterProvider::new_named_openai_compatible(&name, &config)?,
-            ),
+            OpenRouterRuntimeSpec::NamedProfile { name, config } => {
+                // Mirrors the binary's composition root
+                // (`startup::register_external_provider_runtimes`): a named
+                // profile with `api = "anthropic"` speaks the Anthropic
+                // Messages wire format against its own endpoint.
+                if config.api_format == Some(crate::config::ProviderApiFormat::Anthropic) {
+                    Arc::new(
+                        jcode_provider_anthropic_runtime::named::NamedAnthropicProvider::new_named(
+                            &name, &config,
+                        )?,
+                    )
+                } else {
+                    Arc::new(OpenRouterProvider::new_named_openai_compatible(
+                        &name, &config,
+                    )?)
+                }
+            }
         };
         Ok(provider)
     });

@@ -1558,23 +1558,55 @@ async fn init_provider_with_options(
                 runtime_model_hint = resolved.default_model.clone();
                 resolved.display_name
             };
-            init_notice(&format!(
-                "Using {} via OpenAI-compatible API as the initial provider",
-                display_name
-            ));
-            crate::provider::activation::apply_openai_compatible_runtime(runtime_model_hint)?;
+            // A named profile with `api = "anthropic"` speaks the Anthropic
+            // Messages wire format against its own endpoint (Anthropic-
+            // compatible gateways/routers). Everything else keeps the OpenAI
+            // chat-completions transport, mirroring the composition-root
+            // factory in `startup::register_external_provider_runtimes`.
+            let anthropic_format = std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE").is_some()
+                && crate::config::config()
+                    .providers
+                    .get(
+                        std::env::var("JCODE_NAMED_PROVIDER_PROFILE")
+                            .as_deref()
+                            .unwrap_or(""),
+                    )
+                    .is_some_and(|profile| {
+                        profile.api_format == Some(crate::config::ProviderApiFormat::Anthropic)
+                    });
+            if anthropic_format {
+                init_notice(&format!(
+                    "Using {} via Anthropic-compatible API as the initial provider",
+                    display_name
+                ));
+            } else {
+                init_notice(&format!(
+                    "Using {} via OpenAI-compatible API as the initial provider",
+                    display_name
+                ));
+                crate::provider::activation::apply_openai_compatible_runtime(runtime_model_hint)?;
+            }
             if std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE").is_some() {
                 let profile_name = std::env::var("JCODE_NAMED_PROVIDER_PROFILE")?;
                 let cfg = crate::config::config();
                 let profile = cfg.providers.get(&profile_name).ok_or_else(|| {
                     anyhow::anyhow!("Unknown provider profile '{}'", profile_name)
                 })?;
-                Arc::new(
-                    jcode_provider_openrouter_runtime::OpenRouterProvider::new_named_openai_compatible(
-                        &profile_name,
-                        profile,
-                    )?,
-                )
+                if profile.api_format == Some(crate::config::ProviderApiFormat::Anthropic) {
+                    Arc::new(
+                        jcode_provider_anthropic_runtime::named::NamedAnthropicProvider::new_named(
+                            &profile_name,
+                            profile,
+                        )?,
+                    )
+                } else {
+                    Arc::new(
+                        jcode_provider_openrouter_runtime::OpenRouterProvider::new_named_openai_compatible(
+                            &profile_name,
+                            profile,
+                        )?,
+                    )
+                }
             } else {
                 Arc::new(jcode_provider_openrouter_runtime::OpenRouterProvider::new()?)
             }

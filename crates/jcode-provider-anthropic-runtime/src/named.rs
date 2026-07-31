@@ -97,17 +97,24 @@ impl NamedAnthropicProvider {
             .map(str::trim)
             .filter(|v| !v.is_empty());
         if let Some(env_key) = env_key {
-            let env_file = profile
+            return match profile
                 .env_file
                 .as_deref()
                 .map(str::trim)
-                .filter(|v| !v.is_empty());
-            if let Some(key) = jcode_base::provider_catalog::load_api_key_from_env_or_config(
-                env_key,
-                env_file.unwrap_or(""),
-            ) {
-                return Some(key);
-            }
+                .filter(|v| !v.is_empty())
+            {
+                Some(env_file) => {
+                    jcode_base::provider_catalog::load_api_key_from_env_or_config(env_key, env_file)
+                }
+                // No env file configured: read the environment variable
+                // directly. Passing an empty file name to
+                // `load_api_key_from_env_or_config` fails its safe-name
+                // validation and would lose the key entirely.
+                None => std::env::var(env_key)
+                    .ok()
+                    .map(|key| key.trim().to_string())
+                    .filter(|key| !key.is_empty()),
+            };
         }
         profile.api_key.clone()
     }
