@@ -659,7 +659,10 @@ pub fn apply_named_provider_profile_env_from_config(
         );
     };
 
-    let api_base = normalize_api_base(&profile.base_url).ok_or_else(|| {
+    // Named profiles are explicit user endpoint choices, so accept arbitrary
+    // http:// gateways (not just localhost/private-LAN), like other coding
+    // agents that support self-hosted gateways.
+    let api_base = normalize_api_base_relaxed(&profile.base_url).ok_or_else(|| {
         anyhow::anyhow!(
             "Provider profile '{}' has invalid base_url '{}'. Use https://... or http://localhost.",
             profile_name,

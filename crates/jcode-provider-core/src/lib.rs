@@ -1792,6 +1792,8 @@ mod tests {
         assert!(http_client_with_proxy(None).is_ok());
         // Explicit URL -> dedicated client.
         assert!(http_client_with_proxy(Some("http://127.0.0.1:7890")).is_ok());
+        // SOCKS5 proxy (e.g. clash/v2ray-style local proxy).
+        assert!(http_client_with_proxy(Some("socks5://127.0.0.1:7890")).is_ok());
         // "none" sentinel -> client with proxying disabled.
         assert!(http_client_with_proxy(Some("none")).is_ok());
         // Blank -> falls back to the shared client.

@@ -265,6 +265,25 @@ pub fn normalize_api_base(raw: &str) -> Option<String> {
     Some(trimmed.trim_end_matches('/').to_string())
 }
 
+/// Like [`normalize_api_base`], but accepts any `http://` host (not just
+/// localhost/private-LAN). Used for user-configured named provider profiles,
+/// which are explicit endpoint choices (mirroring how tools like Reasonix
+/// accept arbitrary gateway URLs). HTTPS validation is unchanged.
+pub fn normalize_api_base_relaxed(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let parsed = url::Url::parse(trimmed).ok()?;
+    let scheme = parsed.scheme();
+    if scheme != "https" && scheme != "http" {
+        return None;
+    }
+
+    Some(trimmed.trim_end_matches('/').to_string())
+}
+
 fn allows_insecure_http_host(host: &str) -> bool {
     let host = host.trim();
     let host = host
@@ -358,6 +377,27 @@ mod tests {
     fn normalize_api_base_rejects_public_http_hosts() {
         assert_eq!(normalize_api_base("http://example.com/v1"), None);
         assert_eq!(normalize_api_base("http://8.8.8.8/v1"), None);
+    }
+
+    #[test]
+    fn normalize_api_base_relaxed_accepts_public_http_gateways() {
+        // Named provider profiles are explicit user endpoint choices, so
+        // arbitrary http:// gateways are allowed (https unchanged).
+        assert_eq!(
+            normalize_api_base_relaxed("http://gateway.example.com").as_deref(),
+            Some("http://gateway.example.com")
+        );
+        assert_eq!(
+            normalize_api_base_relaxed("http://gateway.example.com/v1/").as_deref(),
+            Some("http://gateway.example.com/v1")
+        );
+        assert_eq!(
+            normalize_api_base_relaxed("https://gateway.example.com/v1").as_deref(),
+            Some("https://gateway.example.com/v1")
+        );
+        // Non-http(s) schemes are still rejected.
+        assert_eq!(normalize_api_base_relaxed("ftp://host/v1"), None);
+        assert_eq!(normalize_api_base_relaxed(""), None);
     }
 
     #[test]
