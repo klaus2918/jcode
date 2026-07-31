@@ -1370,7 +1370,10 @@ pub struct ProviderConfig {
     /// Entries match provider labels ("openai", "anthropic", "copilot",
     /// "openrouter", ...), api methods ("claude-oauth",
     /// "openai-compatible:myprofile", ...), or openai-compatible profile ids
-    /// ("myprofile"). The active model's routes always stay visible.
+    /// ("myprofile"). The active model's routes always stay visible; other
+    /// unavailable routes are hidden, `/model` suggestions follow the same
+    /// filter, and direct `/model <name>` switches outside the list are
+    /// rejected.
     pub model_picker_providers: Option<Vec<String>>,
     /// Max seconds to wait for streaming data before timing out a request with
     /// no data received. Base budget only: high reasoning efforts scale it up

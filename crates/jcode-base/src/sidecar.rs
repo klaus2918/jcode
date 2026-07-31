@@ -30,9 +30,6 @@ const OPENAI_ORIGINATOR: &str = "codex_cli_rs";
 /// Claude Messages API endpoint (with beta=true for OAuth)
 const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages?beta=true";
 
-/// Claude Messages API endpoint for direct API-key access (no OAuth beta flag).
-const CLAUDE_API_KEY_URL: &str = "https://api.anthropic.com/v1/messages";
-
 /// User-Agent for OAuth requests (must match Claude CLI format)
 const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/1.0.0";
 
@@ -488,7 +485,9 @@ impl Sidecar {
 
         let response = self
             .client
-            .post(CLAUDE_API_KEY_URL)
+            .post(crate::provider::anthropic::messages_url_from_api_base(
+                &crate::provider::anthropic::resolve_api_base(),
+            ))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("anthropic-beta", "prompt-caching-2024-07-31")

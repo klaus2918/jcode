@@ -27,7 +27,8 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use jcode_base::provider::anthropic::{
     AVAILABLE_MODELS, AnthropicCredentialMode, CLAUDE_CLI_USER_AGENT,
-    apply_oauth_attribution_headers, is_cache_ttl_1h, load_anthropic_api_key,
+    apply_oauth_attribution_headers, is_cache_ttl_1h, is_custom_api_base_configured,
+    load_anthropic_api_key, messages_url_from_api_base, resolve_api_base,
 };
 #[cfg(test)]
 use jcode_base::provider::anthropic::{OAUTH_BETA_HEADERS, effectively_1m};
@@ -52,9 +53,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
-
-/// Anthropic Messages API endpoint
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
 
 /// OAuth endpoint (with beta=true query param)
 const API_URL_OAUTH: &str = "https://api.anthropic.com/v1/messages?beta=true";
@@ -1129,9 +1127,10 @@ impl Provider for AnthropicProvider {
         } else {
             model
         };
-        if !jcode_base::provider::known_anthropic_model_ids()
-            .iter()
-            .any(|known| known == model)
+        if !is_custom_api_base_configured()
+            && !jcode_base::provider::known_anthropic_model_ids()
+                .iter()
+                .any(|known| known == model)
         {
             anyhow::bail!("Model {} not supported by Anthropic provider", model);
         }
@@ -1160,6 +1159,12 @@ impl Provider for AnthropicProvider {
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
+        if is_custom_api_base_configured() {
+            if let Some(models) = jcode_base::provider::cached_anthropic_model_ids() {
+                return models;
+            }
+            return vec![self.model()];
+        }
         jcode_base::provider::cached_anthropic_model_ids()
             .unwrap_or_else(jcode_base::provider::known_anthropic_model_ids)
     }
@@ -1772,7 +1777,11 @@ async fn stream_response(
     let connect_start = std::time::Instant::now();
     let stream_idle_timeout = jcode_base::provider::stream_idle_timeout();
     // Build request with appropriate auth headers
-    let url = if is_oauth { API_URL_OAUTH } else { API_URL };
+    let url = if is_oauth {
+        API_URL_OAUTH.to_string()
+    } else {
+        messages_url_from_api_base(&resolve_api_base())
+    };
 
     let mut req = client
         .post(url)

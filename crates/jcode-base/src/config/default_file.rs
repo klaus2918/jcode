@@ -363,7 +363,9 @@ cross_provider_failover = "countdown"
 # provider labels ("openai", "anthropic", "copilot", "openrouter", ...), route
 # api methods ("claude-oauth", "openai-compatible:myprofile"), or bare
 # openai-compatible profile ids ("myprofile"). The active model's routes always
-# stay visible. Unset or empty = show everything.
+# stay visible; other unavailable routes are hidden. /model suggestions follow
+# the same filter, and direct /model switches outside the list are rejected.
+# Unset or empty = show everything.
 # model_picker_providers = ["myprofile", "openrouter"]
 # Max seconds to wait for streaming data before timing out a request with no
 # data received. Raise this for slow reasoning models (e.g. DeepSeek) that think

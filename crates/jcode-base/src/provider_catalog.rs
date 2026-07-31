@@ -879,6 +879,54 @@ pub fn openai_compatible_profile_is_configured(profile: OpenAiCompatibleProfile)
         .unwrap_or(false)
 }
 
+/// Whether a user-defined `[providers.<name>]` profile has usable credentials.
+///
+/// `auth = "none"` and explicitly no-auth/localhost profiles are configured.
+/// Bearer/header profiles need their inline key, `api_key_env`, or the
+/// referenced env file to resolve. This mirrors the auth checks the named
+/// OpenAI-compatible and named Anthropic runtimes perform at construction.
+pub fn named_provider_profile_is_configured(
+    _profile_name: &str,
+    profile: &crate::config::NamedProviderConfig,
+) -> bool {
+    match profile.auth {
+        crate::config::NamedProviderAuth::None => true,
+        crate::config::NamedProviderAuth::Bearer | crate::config::NamedProviderAuth::Header => {
+            let requires_key = profile
+                .requires_api_key
+                .unwrap_or(!api_base_uses_localhost(&profile.base_url));
+            if !requires_key {
+                return true;
+            }
+
+            if let Some(env_key) = profile
+                .api_key_env
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if let Some(env_file) = profile
+                    .env_file
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    return load_api_key_from_env_or_config(env_key, env_file).is_some();
+                }
+                return std::env::var(env_key)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false);
+            }
+
+            profile
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+        }
+    }
+}
+
 /// Resolve the active named provider profile's credential env var + env file,
 /// as set by [`apply_named_provider_profile_env`], if one is active.
 ///

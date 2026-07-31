@@ -1,6 +1,7 @@
 use crate::auth::{AuthState, AuthStatus};
 
 use super::pricing::cheapness_for_route;
+use super::registry::ProviderRegistry;
 use super::{
     ALL_OPENAI_MODELS, AccountModelAvailabilityState, CHATGPT_WEB_MODEL, ModelRoute, MultiProvider,
     Provider, anthropic_api_key_route_availability, anthropic_oauth_route_availability, bedrock,
@@ -479,7 +480,7 @@ fn append_openai_compatible_profile_routes(
         if active_direct_openai_compatible_api_method.as_deref() == Some(api_method.as_str()) {
             continue;
         }
-        let named_routes = named_provider_profile_routes(profile_name, profile_config);
+        let named_routes = named_provider_profile_routes(provider, profile_name, profile_config);
         added_any |= !named_routes.is_empty();
         routes.extend(named_routes);
     }
@@ -491,10 +492,15 @@ fn append_openai_compatible_profile_routes(
 /// Text-capable static models plus the profile's `default_model` are offered;
 /// models declared image-only via `input = ["image"]` are excluded.
 fn named_provider_profile_routes(
+    provider: &MultiProvider,
     profile_name: &str,
     profile_config: &crate::config::NamedProviderConfig,
 ) -> Vec<ModelRoute> {
-    let mut models: Vec<String> = profile_config
+    let mut models = ProviderRegistry::new(provider)
+        .compatible_profile(profile_name)
+        .map(|runtime| runtime.available_models_display())
+        .unwrap_or_default();
+    for model in profile_config
         .models
         .iter()
         .filter(|model| {
@@ -503,7 +509,11 @@ fn named_provider_profile_routes(
         })
         .map(|model| model.id.trim().to_string())
         .filter(|id| !id.is_empty())
-        .collect();
+    {
+        if !models.contains(&model) {
+            models.push(model);
+        }
+    }
     if models.is_empty()
         && let Some(default_model) = profile_config
             .default_model
@@ -515,6 +525,8 @@ fn named_provider_profile_routes(
     }
 
     let api_method = format!("openai-compatible:{}", profile_name);
+    let configured =
+        crate::provider_catalog::named_provider_profile_is_configured(profile_name, profile_config);
     let detail = if profile_config.base_url.trim().is_empty() {
         "configured provider profile".to_string()
     } else {
@@ -530,7 +542,7 @@ fn named_provider_profile_routes(
             model,
             provider: profile_name.to_string(),
             api_method: api_method.clone(),
-            available: true,
+            available: configured,
             detail: detail.clone(),
             cheapness: None,
         });

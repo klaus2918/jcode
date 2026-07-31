@@ -1,4 +1,4 @@
-﻿//! Anthropic Messages API runtime for user-defined named provider profiles
+//! Anthropic Messages API runtime for user-defined named provider profiles
 //! (`[providers.<name>]` with `api = "anthropic"` in `config.toml`).
 //!
 //! Unlike the primary [`super::AnthropicProvider`] 鈥?which is hardwired to
@@ -66,6 +66,7 @@ pub struct NamedAnthropicProvider {
     supports_model_catalog: bool,
     static_models: Vec<String>,
     static_context_limits: HashMap<String, usize>,
+    models_cache: Arc<RwLock<Vec<String>>>,
     max_tokens_override: Option<u32>,
     /// Extra top-level request-body fields merged into every Messages request.
     extra_body: Option<serde_json::Map<String, Value>>,
@@ -88,6 +89,61 @@ impl NamedAnthropicProvider {
         } else {
             format!("{trimmed}/v1/messages")
         }
+    }
+
+    async fn fetch_models(&self) -> Result<Vec<String>> {
+        let url = jcode_base::provider::anthropic::models_url_from_api_base(&self.api_base);
+        let response = self
+            .auth
+            .apply(
+                self.client
+                    .get(&url)
+                    .header("anthropic-version", "2023-06-01"),
+            )
+            .await?
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to send Anthropic-compatible model catalog request\n  endpoint: {}",
+                    url
+                )
+            })?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = jcode_base::util::http_error_body(response, "HTTP error").await;
+            anyhow::bail!(
+                "Anthropic-compatible model catalog request failed\n  endpoint: {}\n  auth: {}\n  status: {}\n  response: {}\nHint: verify the base URL resolves to the Anthropic `/v1/models` endpoint and the key is valid.",
+                url,
+                self.auth.label(),
+                status,
+                body
+            );
+        }
+
+        let data: Value = response
+            .json()
+            .await
+            .context("Failed to parse Anthropic model catalog")?;
+        let models = data
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if models.is_empty() {
+            anyhow::bail!(
+                "Anthropic-compatible model catalog response did not contain any model ids"
+            );
+        }
+        if let Ok(mut cache) = self.models_cache.try_write() {
+            *cache = models.clone();
+        }
+        Ok(models)
     }
 
     fn resolve_named_key(profile: &NamedProviderConfig) -> Option<String> {
@@ -207,6 +263,7 @@ impl NamedAnthropicProvider {
             supports_model_catalog: profile.model_catalog,
             static_models,
             static_context_limits,
+            models_cache: Arc::new(RwLock::new(Vec::new())),
             max_tokens_override,
             extra_body: profile.extra_body.as_ref().and_then(|value| {
                 value.as_object().cloned().or_else(|| {
@@ -449,6 +506,7 @@ impl Default for NamedAnthropicProvider {
             supports_model_catalog: false,
             static_models: Vec::new(),
             static_context_limits: HashMap::new(),
+            models_cache: Arc::new(RwLock::new(Vec::new())),
             max_tokens_override: None,
             extra_body: None,
         }
@@ -703,20 +761,39 @@ impl Provider for NamedAnthropicProvider {
     }
 
     fn available_models_display(&self) -> Vec<String> {
-        if !self.static_models.is_empty() {
-            self.static_models.clone()
-        } else {
-            AVAILABLE_MODELS.iter().map(|m| (*m).to_string()).collect()
+        if !self.supports_model_catalog {
+            if !self.static_models.is_empty() {
+                return self.static_models.clone();
+            }
+            return AVAILABLE_MODELS.iter().map(|m| (*m).to_string()).collect();
         }
+
+        let mut models = self
+            .models_cache
+            .try_read()
+            .map(|cache| cache.clone())
+            .unwrap_or_default();
+        for model in &self.static_models {
+            if !models.contains(model) {
+                models.push(model.clone());
+            }
+        }
+        if models.is_empty() {
+            models.push(self.model());
+        }
+        models
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
-        if !self.static_models.is_empty() {
-            self.static_models.clone()
-        } else {
-            jcode_base::provider::cached_anthropic_model_ids()
-                .unwrap_or_else(jcode_base::provider::known_anthropic_model_ids)
+        self.available_models_display()
+    }
+
+    async fn prefetch_models(&self) -> Result<()> {
+        if !self.supports_model_catalog {
+            return Ok(());
         }
+        let _ = self.fetch_models().await;
+        Ok(())
     }
 
     fn context_window(&self) -> usize {
@@ -757,6 +834,7 @@ impl Provider for NamedAnthropicProvider {
             supports_model_catalog: self.supports_model_catalog,
             static_models: self.static_models.clone(),
             static_context_limits: self.static_context_limits.clone(),
+            models_cache: Arc::clone(&self.models_cache),
             max_tokens_override: self.max_tokens_override,
             extra_body: self.extra_body.clone(),
         })

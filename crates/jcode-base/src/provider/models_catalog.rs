@@ -178,9 +178,12 @@ pub async fn fetch_openai_model_catalog(access_token: &str) -> Result<OpenAIMode
 }
 
 pub async fn fetch_anthropic_model_catalog(api_key: &str) -> Result<AnthropicModelCatalog> {
+    let models_url = crate::provider::anthropic::models_url_from_api_base(
+        &crate::provider::anthropic::resolve_api_base(),
+    );
     fetch_anthropic_model_catalog_with_request(|client, after_id| {
         let mut req = client
-            .get("https://api.anthropic.com/v1/models")
+            .get(&models_url)
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .query(&[("limit", "1000")]);
