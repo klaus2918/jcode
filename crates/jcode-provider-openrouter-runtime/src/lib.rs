@@ -22,9 +22,10 @@ use futures::StreamExt;
 use jcode_base::provider_catalog::{
     OPENAI_COMPAT_PROFILE, is_safe_env_file_name, is_safe_env_key_name,
     load_api_key_from_env_or_config, load_env_value_from_env_or_config, normalize_api_base,
-    openai_compatible_profile_by_id, openai_compatible_profile_id_for_api_base,
-    openai_compatible_profile_static_context_limits, openai_compatible_profile_static_models,
-    openai_compatible_profiles, resolve_openai_compatible_profile,
+    normalize_api_base_relaxed, openai_compatible_profile_by_id,
+    openai_compatible_profile_id_for_api_base, openai_compatible_profile_static_context_limits,
+    openai_compatible_profile_static_models, openai_compatible_profiles,
+    resolve_openai_compatible_profile,
 };
 use jcode_message_types::{CacheControl, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use jcode_provider_core::{EventStream, Provider};
@@ -1383,7 +1384,9 @@ impl OpenRouterProvider {
         // before any model-cache reads/writes happen. Without this, a custom
         // endpoint can accidentally display the default OpenRouter catalog.
         jcode_base::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", profile_name);
-        let api_base = normalize_api_base(&profile.base_url).ok_or_else(|| {
+        // Named profiles are explicit user endpoint choices; accept arbitrary
+        // http:// gateways (not just localhost/private-LAN).
+        let api_base = normalize_api_base_relaxed(&profile.base_url).ok_or_else(|| {
             anyhow::anyhow!("Provider profile '{}' has invalid base_url", profile_name)
         })?;
         let key_env = profile

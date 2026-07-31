@@ -1,8 +1,8 @@
-//! Anthropic Messages API runtime for user-defined named provider profiles
+﻿//! Anthropic Messages API runtime for user-defined named provider profiles
 //! (`[providers.<name>]` with `api = "anthropic"` in `config.toml`).
 //!
-//! Unlike the primary [`super::AnthropicProvider`] — which is hardwired to
-//! `api.anthropic.com` and the Claude OAuth/API-key credential setup — this
+//! Unlike the primary [`super::AnthropicProvider`] 鈥?which is hardwired to
+//! `api.anthropic.com` and the Claude OAuth/API-key credential setup 鈥?this
 //! runtime points the Anthropic wire format at an arbitrary endpoint and uses
 //! the named profile's own auth (bearer / api-key header / none). It reuses the
 //! same request shaping (`jcode_provider_anthropic`) and SSE parsing
@@ -12,7 +12,7 @@
 
 use super::*;
 use jcode_base::config::{NamedProviderAuth, NamedProviderConfig};
-use jcode_base::provider_catalog::normalize_api_base;
+use jcode_base::provider_catalog::normalize_api_base_relaxed;
 use reqwest::header::HeaderName;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -122,13 +122,15 @@ impl NamedAnthropicProvider {
     /// Build the runtime for a named Anthropic-format profile.
     pub fn new_named(profile_name: &str, profile: &NamedProviderConfig) -> Result<Self> {
         jcode_base::env::set_var("JCODE_OPENROUTER_CACHE_NAMESPACE", profile_name);
-        let api_base = normalize_api_base(&profile.base_url).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Provider profile '{}' has invalid base_url '{}'. Use https://... or http://localhost.",
-                    profile_name,
-                    profile.base_url
-                )
-            })?;
+        // Named profiles are explicit user endpoint choices; accept arbitrary
+        // http:// gateways (not just localhost/private-LAN).
+        let api_base = normalize_api_base_relaxed(&profile.base_url).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Provider profile '{}' has invalid base_url '{}'.",
+                profile_name,
+                profile.base_url
+            )
+        })?;
         let key = Self::resolve_named_key(profile);
         let key_label = profile
             .api_key_env
@@ -361,7 +363,7 @@ impl NamedAnthropicProvider {
                                 let _ = tx
                                     .send(Ok(StreamEvent::StatusDetail {
                                         detail: format!(
-                                            "⚠ '{}' is unavailable; falling back to '{}'",
+                                            "鈿?'{}' is unavailable; falling back to '{}'",
                                             strip_1m_suffix(&model_name),
                                             strip_1m_suffix(&fallback)
                                         ),

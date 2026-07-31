@@ -9,8 +9,8 @@ use crate::config::{
     ProviderApiFormat,
 };
 use crate::provider_catalog::{
-    api_base_uses_localhost, is_safe_env_file_name, is_safe_env_key_name, normalize_api_base,
-    resolve_login_provider, save_env_value_to_env_file,
+    api_base_uses_localhost, is_safe_env_file_name, is_safe_env_key_name,
+    normalize_api_base_relaxed, resolve_login_provider, save_env_value_to_env_file,
 };
 
 #[derive(Debug)]
@@ -98,9 +98,9 @@ pub(crate) fn configure_provider_profile(
     let name = validate_profile_name(&options.name)?;
     ensure_profile_name_not_reserved(&name)?;
 
-    let api_base = normalize_api_base(&options.base_url).ok_or_else(|| {
+    let api_base = normalize_api_base_relaxed(&options.base_url).ok_or_else(|| {
         anyhow::anyhow!(
-            "Invalid --base-url '{}'. Use https://... or http://localhost/127.0.0.1/private-LAN for local servers.",
+            "Invalid --base-url '{}'. Use https://... or http://... (http is allowed for explicit gateway endpoints).",
             options.base_url
         )
     })?;
@@ -790,5 +790,26 @@ mod tests {
         let config = std::fs::read_to_string(temp.path().join("config.toml")).expect("config");
         assert!(config.contains("auth = \"none\""));
         assert!(config.contains("requires_api_key = false"));
+    }
+
+    #[test]
+    fn provider_add_allows_public_http_gateway_base_url() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+        let _key = EnvVarGuard::remove("JCODE_PROVIDER_GW_HTTP_API_KEY");
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(&config_path, "").expect("write config");
+
+        let mut options = base_options();
+        options.name = "gw-http".to_string();
+        options.base_url = "http://gateway.example.com".to_string();
+        options.api_key = Some("sk-http-gw".to_string());
+
+        configure_provider_profile(options).expect("public http gateway should be accepted");
+        let config = std::fs::read_to_string(&config_path).expect("read config");
+        let parsed: Config = toml::from_str(&config).expect("valid config");
+        let profile = parsed.providers.get("gw-http").expect("profile");
+        assert_eq!(profile.base_url, "http://gateway.example.com");
     }
 }
