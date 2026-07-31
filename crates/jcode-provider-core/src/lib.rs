@@ -608,7 +608,7 @@ pub fn shared_http_client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::Client::builder()
+            let builder = reqwest::Client::builder()
                 .user_agent(JCODE_USER_AGENT)
                 .connect_timeout(Duration::from_secs(15))
                 .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -621,23 +621,25 @@ pub fn shared_http_client() -> reqwest::Client {
                 .http2_keep_alive_timeout(Duration::from_secs(15))
                 .http2_keep_alive_while_idle(true)
                 .pool_idle_timeout(Duration::from_secs(90))
-                .pool_max_idle_per_host(8)
-                .build()
-                .unwrap_or_else(|err| {
+                .pool_max_idle_per_host(8);
+            match apply_configured_proxy(builder) {
+                Ok(builder) => builder.build().unwrap_or_else(|err| {
                     eprintln!("jcode: failed to build shared provider HTTP client: {err}");
-                    match reqwest::Client::builder()
+                    reqwest::Client::new()
+                }),
+                Err(err) => {
+                    eprintln!("jcode: failed to apply proxy settings: {err}; using default proxy detection");
+                    reqwest::Client::builder()
                         .user_agent(JCODE_USER_AGENT)
                         .build()
-                    {
-                        Ok(client) => client,
-                        Err(fallback_err) => {
+                        .unwrap_or_else(|fallback_err| {
                             eprintln!(
                                 "jcode: failed to build fallback provider HTTP client: {fallback_err}"
                             );
                             reqwest::Client::new()
-                        }
-                    }
-                })
+                        })
+                }
+            }
         })
         .clone()
 }
@@ -652,7 +654,7 @@ pub fn shared_http_client() -> reqwest::Client {
 /// that makes transport-fault retries actually succeed). Building a client
 /// costs ~10ms, which is fine on a retry path that already backs off >=1s.
 pub fn fresh_transport_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .user_agent(JCODE_USER_AGENT)
         .connect_timeout(Duration::from_secs(15))
         .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -660,9 +662,153 @@ pub fn fresh_transport_client() -> reqwest::Client {
         .http2_keep_alive_timeout(Duration::from_secs(15))
         .http2_keep_alive_while_idle(true)
         // No pooled reuse: every request gets a fresh connection.
-        .pool_max_idle_per_host(0)
-        .build()
-        .unwrap_or_else(|_| shared_http_client())
+        .pool_max_idle_per_host(0);
+    match apply_configured_proxy(builder) {
+        Ok(builder) => builder.build().unwrap_or_else(|_| shared_http_client()),
+        Err(_) => shared_http_client(),
+    }
+}
+
+/// Proxy policy for outbound provider HTTP clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyPolicy {
+    /// Honor the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` (and
+    /// `NO_PROXY`) environment variables (reqwest's default `system-proxy`
+    /// behavior).
+    System,
+    /// Disable proxying entirely.
+    None,
+    /// Route both HTTP and HTTPS traffic through an explicit proxy URL
+    /// (see [`resolved_proxy_url`]).
+    Explicit,
+}
+
+/// Resolve the process-wide proxy policy for provider requests.
+///
+/// Precedence: `JCODE_PROXY` (explicit, jcode-specific) wins over the
+/// `[network] proxy` config value (which `jcode-base` propagates into
+/// `JCODE_PROXY`), which wins over the standard proxy env vars. A per-provider
+/// profile override is applied separately by the runtime that constructs the
+/// client for that profile.
+///
+/// - `"auto"` or empty/unset → [`ProxyPolicy::System`]
+/// - `"none"`/`"off"`/`"0"`/`"false"` → [`ProxyPolicy::None`]
+/// - anything else → [`ProxyPolicy::Explicit`]
+pub fn resolved_proxy_policy() -> ProxyPolicy {
+    match explicit_proxy_url().as_deref() {
+        None => ProxyPolicy::System,
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "auto" => ProxyPolicy::System,
+            "none" | "off" | "0" | "false" | "no" => ProxyPolicy::None,
+            _ => ProxyPolicy::Explicit,
+        },
+    }
+}
+
+/// The explicit proxy URL from `JCODE_PROXY` (set by `jcode-base` from the
+/// `[network] proxy` config value), when one is configured. `None` means fall
+/// back to system proxy detection.
+pub fn resolved_proxy_url() -> Option<String> {
+    explicit_proxy_url().filter(|value| {
+        !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "auto" | "none" | "off" | "0" | "false" | "no"
+        )
+    })
+}
+
+fn explicit_proxy_url() -> Option<String> {
+    std::env::var("JCODE_PROXY")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Comma-separated hosts that must bypass the proxy, from `JCODE_NO_PROXY`
+/// (set by `jcode-base` from `[network] no_proxy`) or the standard `NO_PROXY`
+/// env var.
+pub fn resolved_no_proxy() -> Option<String> {
+    std::env::var("JCODE_NO_PROXY")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            std::env::var("NO_PROXY")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+}
+
+/// Apply the configured proxy policy to a [`reqwest::ClientBuilder`].
+///
+/// Returns the builder (possibly with `.proxy(...)` / `.no_proxy()` applied)
+/// or an error when an explicitly configured proxy URL is malformed.
+pub fn apply_configured_proxy(
+    builder: reqwest::ClientBuilder,
+) -> anyhow::Result<reqwest::ClientBuilder> {
+    let no_proxy = resolved_no_proxy();
+    let builder = match resolved_proxy_policy() {
+        ProxyPolicy::System => builder,
+        ProxyPolicy::None => builder.no_proxy(),
+        ProxyPolicy::Explicit => {
+            let url = resolved_proxy_url().unwrap_or_default();
+            let proxy = reqwest::Proxy::all(url)
+                .map_err(|err| anyhow::anyhow!("invalid JCODE_PROXY proxy URL: {err}"))?;
+            let proxy = if let Some(no_proxy) = no_proxy {
+                proxy.no_proxy(reqwest::NoProxy::from_string(&no_proxy))
+            } else {
+                proxy
+            };
+            builder.proxy(proxy)
+        }
+    };
+    Ok(builder)
+}
+
+/// Build an HTTP client honoring a per-provider proxy override, or fall back to
+/// the process-wide proxy configuration.
+///
+/// When `profile_proxy` is `Some` and non-empty, it takes the highest priority
+/// and the returned client routes all traffic through that proxy (or disables
+/// proxying for the `none`/`off` sentinels). When `None`, the client is the
+/// shared one, which applies the global `[network] proxy` / `JCODE_PROXY`
+/// configuration. This lets a named provider profile pin its own proxy while
+/// everyone else follows the global setting.
+pub fn http_client_with_proxy(profile_proxy: Option<&str>) -> anyhow::Result<reqwest::Client> {
+    let Some(proxy) = profile_proxy.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(shared_http_client());
+    };
+
+    let builder = reqwest::Client::builder()
+        .user_agent(JCODE_USER_AGENT)
+        .connect_timeout(Duration::from_secs(15))
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .http2_keep_alive_interval(Some(Duration::from_secs(30)))
+        .http2_keep_alive_timeout(Duration::from_secs(15))
+        .http2_keep_alive_while_idle(true)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(8);
+
+    let builder = match proxy.to_ascii_lowercase().as_str() {
+        "auto" => builder,
+        "none" | "off" | "0" | "false" | "no" => builder.no_proxy(),
+        _ => {
+            let no_proxy = resolved_no_proxy();
+            let reqwest_proxy = reqwest::Proxy::all(proxy)
+                .map_err(|err| anyhow::anyhow!("invalid provider proxy URL '{proxy}': {err}"))?;
+            let reqwest_proxy = if let Some(no_proxy) = no_proxy {
+                reqwest_proxy.no_proxy(reqwest::NoProxy::from_string(&no_proxy))
+            } else {
+                reqwest_proxy
+            };
+            builder.proxy(reqwest_proxy)
+        }
+    };
+
+    builder.build().map_err(|err| {
+        anyhow::anyhow!("failed to build provider HTTP client with proxy '{proxy}': {err}")
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1638,5 +1784,19 @@ mod tests {
             }
         );
         assert_eq!(selection.provider_label, "NVIDIA NIM");
+    }
+
+    #[test]
+    fn http_client_with_proxy_honors_profile_override() {
+        // No per-profile override -> shared client (global proxy handling).
+        assert!(http_client_with_proxy(None).is_ok());
+        // Explicit URL -> dedicated client.
+        assert!(http_client_with_proxy(Some("http://127.0.0.1:7890")).is_ok());
+        // "none" sentinel -> client with proxying disabled.
+        assert!(http_client_with_proxy(Some("none")).is_ok());
+        // Blank -> falls back to the shared client.
+        assert!(http_client_with_proxy(Some("  ")).is_ok());
+        // Malformed URL -> error surfaced.
+        assert!(http_client_with_proxy(Some("not a url")).is_err());
     }
 }

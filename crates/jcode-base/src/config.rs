@@ -9,9 +9,10 @@ pub use jcode_config_types::{
     DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HooksConfig, KeybindingsConfig,
     LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode,
     NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
-    NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode, PowerConfig, ProviderConfig,
-    ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
-    SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
+    NativeScrollbarConfig, NetworkConfig, NotificationsConfig, OverscrollStatusMode, PowerConfig,
+    ProviderApiFormat, ProviderConfig, ReasoningDisplayMode, SafetyConfig,
+    SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
+    UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -135,6 +136,8 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_PIN_TODOS",
     "JCODE_PREVENT_SLEEP_WHILE_STREAMING",
     "JCODE_PROVIDER",
+    "JCODE_PROXY",
+    "JCODE_NO_PROXY",
     "JCODE_PROMPT_ENTRY_ANIMATION",
     "JCODE_QUEUE_MODE",
     "JCODE_REASONING_DISPLAY",
@@ -536,6 +539,9 @@ pub struct Config {
 
     /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
     pub launch_hotkeys: LaunchHotkeysConfig,
+
+    /// Network / proxy configuration for outbound provider requests.
+    pub network: NetworkConfig,
 }
 
 /// Agent Client Protocol adapter configuration.

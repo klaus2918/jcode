@@ -26,6 +26,24 @@ pub(crate) enum ProviderAuthArg {
     None,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ProviderApiFormatArg {
+    /// OpenAI chat-completions wire format (default)
+    #[value(
+        alias = "openai",
+        alias = "openai-compatible",
+        alias = "openai_compatible"
+    )]
+    OpenaiCompatible,
+    /// Anthropic Messages API wire format
+    #[value(
+        alias = "anthropic-messages",
+        alias = "anthropic",
+        alias = "anthropic_compatible"
+    )]
+    Anthropic,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "jcode")]
 #[command(version = jcode_build_meta::version())]
@@ -870,7 +888,11 @@ pub(crate) enum SessionCommand {
     },
 }
 
+// The `Add` subcommand carries many `String`/`Option<String>` fields, and the
+// `proxy` flag makes it the largest variant. These are clap-parsed CLI fields
+// (boxing them breaks clap's inferred value parsers), so suppress the lint.
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ProviderCommand {
     /// List provider IDs you can pass to -p/--provider
     List {
@@ -946,6 +968,16 @@ pub(crate) enum ProviderCommand {
         /// Fetch/list models from the provider's /models endpoint
         #[arg(long)]
         model_catalog: bool,
+
+        /// Wire API format for the endpoint: openai-compatible (default) or
+        /// anthropic (Anthropic Messages API)
+        #[arg(long, value_enum)]
+        api: Option<ProviderApiFormatArg>,
+
+        /// HTTP(S) proxy URL for requests to this endpoint, e.g.
+        /// http://127.0.0.1:7890
+        #[arg(long)]
+        proxy: Option<String>,
 
         /// Emit JSON instead of human-readable setup output
         #[arg(long)]

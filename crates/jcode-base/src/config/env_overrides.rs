@@ -678,6 +678,32 @@ impl Config {
             }
         }
 
+        // Network / proxy
+        if let Ok(v) = std::env::var("JCODE_PROXY") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.network.proxy = trimmed.to_string();
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_NO_PROXY") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.network.no_proxy = Some(trimmed.to_string());
+            }
+        }
+        // If set in config but not in env, propagate config -> env so the
+        // shared provider HTTP client (which reads JCODE_PROXY / JCODE_NO_PROXY)
+        // honors the config value without a jcode-base -> provider-core dep.
+        if std::env::var_os("JCODE_PROXY").is_none() && self.network.proxy != "auto" {
+            crate::env::set_var("JCODE_PROXY", &self.network.proxy);
+        }
+        if std::env::var_os("JCODE_NO_PROXY").is_none()
+            && let Some(no_proxy) = self.network.no_proxy.as_deref()
+            && !no_proxy.trim().is_empty()
+        {
+            crate::env::set_var("JCODE_NO_PROXY", no_proxy);
+        }
+
         // Provider
         if let Ok(v) = std::env::var("JCODE_MODEL") {
             self.provider.default_model = Some(v);

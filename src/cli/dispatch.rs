@@ -316,6 +316,8 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 overwrite,
                 provider_routing,
                 model_catalog,
+                api,
+                proxy,
                 json,
             } => {
                 commands::run_provider_add_command(commands::ProviderAddOptions {
@@ -334,6 +336,8 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                     overwrite,
                     provider_routing,
                     model_catalog,
+                    api,
+                    proxy,
                     json,
                 })?;
             }
