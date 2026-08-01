@@ -346,6 +346,15 @@ pub struct CompactionConfig {
     /// Compaction mode: reactive (default), proactive, or semantic
     pub mode: CompactionMode,
 
+    /// Context usage ratio at which compaction triggers (0.0-1.0).
+    ///
+    /// The ratio is computed against the provider's context window (token
+    /// budget), so 0.26 means compact when the active context reaches 26% of
+    /// the window. Shared by all modes: reactive compacts at this level,
+    /// proactive projects token growth against it, semantic falls back to it.
+    /// Clamped to [0.05, 0.95] at use time.
+    pub threshold: f32,
+
     /// [proactive] Number of turns to look ahead when projecting token growth
     pub lookahead_turns: usize,
 
@@ -378,6 +387,7 @@ impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             mode: CompactionMode::Reactive,
+            threshold: 0.80,
             lookahead_turns: 15,
             ewma_alpha: 0.3,
             proactive_floor: 0.40,

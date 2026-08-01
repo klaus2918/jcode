@@ -22,3 +22,5 @@ captures/
 /*.avif
 /*.mp4
 /*.png
+# Internal task notes / configs (never commit: may contain credentials)
+000-task/
