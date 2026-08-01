@@ -821,6 +821,8 @@ where
     } else if let Some(window) = context_fn(model, provider_hint) {
         capability.context_window = Some(window);
         trace.context_window = Some(CapabilitySource::Heuristic);
+    } else {
+        trace.context_window = Some(CapabilitySource::Default);
     }
 
     // --- output window: explicit > registry ---
@@ -830,6 +832,8 @@ where
     } else if let Some(window) = registry.as_ref().and_then(|r| r.output_window) {
         capability.output_window = Some(window);
         trace.output_window = Some(CapabilitySource::Registry);
+    } else {
+        trace.output_window = Some(CapabilitySource::Default);
     }
 
     // --- vision: explicit > explicit input modalities > registry > heuristic > default(false) ---
