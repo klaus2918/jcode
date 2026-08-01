@@ -457,6 +457,88 @@ pub struct NamedProviderModelConfig {
     pub context_window: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<String>,
+    /// Explicit vision capability for this model. Overrides `input = ["image"]`
+    /// and any registry/heuristic default. `None` defers to resolution order.
+    #[serde(
+        default,
+        alias = "supports_vision",
+        alias = "vision_supported",
+        alias = "supports-image",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub vision: Option<bool>,
+    /// Explicit tool-call capability. `false` means the model must never
+    /// receive tool definitions; `true`/`None` leave tools enabled.
+    #[serde(
+        default,
+        alias = "supports_tools",
+        alias = "tool_use",
+        alias = "tool-use",
+        alias = "supports-tools",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tools: Option<bool>,
+    /// Explicit reasoning wire shape: `auto`/`deepseek`/`openai`/
+    /// `thinking_type`/`anthropic`/`none`.
+    #[serde(
+        default,
+        alias = "reasoning-protocol",
+        alias = "reasoning",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_protocol: Option<String>,
+    /// Explicit `/effort` ladder for this model (canonical jcode vocabulary).
+    #[serde(
+        default,
+        alias = "efforts",
+        alias = "supported-efforts",
+        alias = "supported_efforts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub supported_efforts: Option<Vec<String>>,
+    /// Effort used by `/effort auto` for this model.
+    #[serde(
+        default,
+        alias = "default-effort",
+        alias = "default_effort",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_effort: Option<String>,
+    /// Output token window for this model.
+    #[serde(
+        default,
+        alias = "output_window",
+        alias = "output-window",
+        alias = "max_output_tokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output_window: Option<usize>,
+    /// Whether the endpoint honors a `temperature` field. `false` for
+    /// fixed-sampling backends (e.g. Kimi K3).
+    #[serde(
+        default,
+        alias = "temperature-supported",
+        alias = "temperature_supported",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub temperature_supported: Option<bool>,
+    /// Whether the endpoint requires omitting all user sampling knobs.
+    #[serde(
+        default,
+        alias = "fixed-sampling",
+        alias = "fixed_sampling",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fixed_sampling: Option<bool>,
+    /// Output-limit request field for this model: `max_tokens` or
+    /// `max_completion_tokens`.
+    #[serde(
+        default,
+        alias = "output-limit-field",
+        alias = "output_limit_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output_limit_field: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1750,5 +1832,80 @@ mod reasoning_display_defaults_tests {
         display.set_reasoning_display(ReasoningDisplayMode::Off);
         assert!(display.has_explicit_reasoning_display());
         assert!(!display.show_thinking);
+    }
+}
+
+#[cfg(test)]
+mod named_provider_model_config_tests {
+    use super::*;
+
+    #[test]
+    fn capability_fields_deserialize_with_aliases() {
+        let json = r#"{
+            "id": "custom-vlm",
+            "context_window": 128000,
+            "input": ["text", "image"],
+            "supports_vision": true,
+            "supports_tools": false,
+            "reasoning_protocol": "openai",
+            "efforts": ["low", "high"],
+            "default_effort": "high",
+            "output_window": 16384,
+            "temperature_supported": false,
+            "fixed_sampling": true,
+            "output_limit_field": "max_completion_tokens"
+        }"#;
+        let config: NamedProviderModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.id, "custom-vlm");
+        assert_eq!(config.context_window, Some(128_000));
+        assert_eq!(config.input, ["text", "image"]);
+        assert_eq!(config.vision, Some(true));
+        assert_eq!(config.tools, Some(false));
+        assert_eq!(config.reasoning_protocol.as_deref(), Some("openai"));
+        assert_eq!(
+            config.supported_efforts.as_deref(),
+            Some(&["low".to_string(), "high".to_string()][..])
+        );
+        assert_eq!(config.default_effort.as_deref(), Some("high"));
+        assert_eq!(config.output_window, Some(16_384));
+        assert_eq!(config.temperature_supported, Some(false));
+        assert_eq!(config.fixed_sampling, Some(true));
+        assert_eq!(
+            config.output_limit_field.as_deref(),
+            Some("max_completion_tokens")
+        );
+    }
+
+    #[test]
+    fn legacy_model_config_still_deserializes_without_capability_fields() {
+        let json = r#"{"id": "plain-model", "context_window": 65536}"#;
+        let config: NamedProviderModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.id, "plain-model");
+        assert_eq!(config.context_window, Some(65_536));
+        assert_eq!(config.vision, None);
+        assert_eq!(config.tools, None);
+        assert!(config.supported_efforts.is_none());
+    }
+
+    #[test]
+    fn capability_fields_serialize_only_when_set() {
+        let config = NamedProviderModelConfig {
+            id: "model-a".to_string(),
+            context_window: Some(128_000),
+            input: Vec::new(),
+            vision: None,
+            tools: Some(false),
+            reasoning_protocol: None,
+            supported_efforts: None,
+            default_effort: None,
+            output_window: None,
+            temperature_supported: None,
+            fixed_sampling: None,
+            output_limit_field: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"tools\":false"));
+        assert!(!json.contains("vision"));
+        assert!(!json.contains("supported_efforts"));
     }
 }

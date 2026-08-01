@@ -112,7 +112,7 @@ fn test_model_picker_bedrock_selection_prefixes_model() {
     let mut app = create_test_app();
     app.is_remote = true;
     app.remote_available_entries = vec!["amazon.nova-pro-v1:0".to_string()];
-    app.remote_model_options = vec![crate::provider::ModelRoute {
+    app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
         model: "amazon.nova-pro-v1:0".to_string(),
         provider: "AWS Bedrock".to_string(),
         api_method: "bedrock".to_string(),
@@ -155,7 +155,7 @@ fn test_model_picker_bedrock_arn_selection_prefixes_model() {
     app.is_remote = true;
     let model = "arn:aws:bedrock:us-east-2:302154194530:inference-profile/us.deepseek.r1-v1:0";
     app.remote_available_entries = vec![model.to_string()];
-    app.remote_model_options = vec![crate::provider::ModelRoute {
+    app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
         model: model.to_string(),
         provider: "AWS Bedrock".to_string(),
         api_method: "bedrock".to_string(),
@@ -226,7 +226,7 @@ fn test_remote_placeholder_only_openai_routes_are_replaced_with_real_routes() {
         app.is_remote = true;
         app.remote_provider_name = Some("OpenAI".to_string());
         app.remote_available_entries = vec![model.to_string()];
-        app.remote_model_options = vec![crate::provider::ModelRoute {
+        app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
             model: model.to_string(),
             provider: "OpenAI".to_string(),
             api_method: "remote-catalog".to_string(),
@@ -264,7 +264,7 @@ fn test_remote_hydrated_catalog_restores_missing_direct_bedrock_route() {
         app.is_remote = true;
         app.remote_provider_name = Some("OpenAI".to_string());
         app.remote_available_entries = vec![model.to_string()];
-        app.remote_model_options = vec![crate::provider::ModelRoute {
+        app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
             model: model.to_string(),
             provider: "OpenAI".to_string(),
             api_method: "remote-catalog".to_string(),
@@ -387,7 +387,7 @@ fn test_remote_cached_oauth_only_claude_route_gains_api_key_route_in_picker() {
         let mut app = create_test_app();
         app.is_remote = true;
         app.remote_available_entries = vec!["claude-fable-5".to_string()];
-        app.remote_model_options = vec![crate::provider::ModelRoute {
+        app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
             model: "claude-fable-5".to_string(),
             provider: "Anthropic".to_string(),
             api_method: "claude-oauth".to_string(),
@@ -438,7 +438,7 @@ fn test_remote_jcode_subscription_catalog_is_not_augmented_with_local_auth_route
             "gpt-5.5".to_string(),
             "gpt-5.6-sol".to_string(),
         ];
-        app.remote_model_options = vec![crate::provider::ModelRoute {
+        app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
             model: "claude-opus-4-8".to_string(),
             provider: "Anthropic".to_string(),
             api_method: "claude-api".to_string(),
@@ -503,7 +503,7 @@ fn test_remote_mixed_catalog_keeps_jcode_subscription_separate_from_other_provid
         "deepseek/deepseek-v4-pro".to_string(),
     ];
     app.remote_model_options = vec![
-        crate::provider::ModelRoute {
+        crate::provider::ModelRoute { capability: None,
             model: "claude-fable-5".to_string(),
             provider: "Anthropic".to_string(),
             api_method: "claude-oauth".to_string(),
@@ -511,7 +511,7 @@ fn test_remote_mixed_catalog_keeps_jcode_subscription_separate_from_other_provid
             detail: String::new(),
             cheapness: None,
         },
-        crate::provider::ModelRoute {
+        crate::provider::ModelRoute { capability: None,
             model: "claude-opus-4-8".to_string(),
             provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
             api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
@@ -519,7 +519,7 @@ fn test_remote_mixed_catalog_keeps_jcode_subscription_separate_from_other_provid
             detail: "managed subscription route".to_string(),
             cheapness: None,
         },
-        crate::provider::ModelRoute {
+        crate::provider::ModelRoute { capability: None,
             model: "gpt-5.5".to_string(),
             provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
             api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
@@ -527,7 +527,7 @@ fn test_remote_mixed_catalog_keeps_jcode_subscription_separate_from_other_provid
             detail: "managed subscription route".to_string(),
             cheapness: None,
         },
-        crate::provider::ModelRoute {
+        crate::provider::ModelRoute { capability: None,
             model: "gpt-5.6-sol".to_string(),
             provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
             api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
@@ -535,7 +535,7 @@ fn test_remote_mixed_catalog_keeps_jcode_subscription_separate_from_other_provid
             detail: "managed subscription route".to_string(),
             cheapness: None,
         },
-        crate::provider::ModelRoute {
+        crate::provider::ModelRoute { capability: None,
             model: "deepseek/deepseek-v4-pro".to_string(),
             provider: "auto".to_string(),
             api_method: "openrouter".to_string(),
@@ -606,7 +606,7 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
             "deepseek/deepseek-v4-pro".to_string(),
         ];
         app.remote_model_options = vec![
-            crate::provider::ModelRoute {
+            crate::provider::ModelRoute { capability: None,
                 model: "claude-opus-4-8".to_string(),
                 provider: "Anthropic".to_string(),
                 api_method: "claude-api".to_string(),
@@ -614,7 +614,7 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
                 detail: String::new(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute {
+            crate::provider::ModelRoute { capability: None,
                 model: "gpt-5.5".to_string(),
                 provider: "OpenAI".to_string(),
                 api_method: "openai-oauth".to_string(),
@@ -622,7 +622,7 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
                 detail: String::new(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute {
+            crate::provider::ModelRoute { capability: None,
                 model: "gpt-5.6-sol".to_string(),
                 provider: "OpenAI".to_string(),
                 api_method: "openai-oauth".to_string(),
@@ -630,7 +630,7 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
                 detail: String::new(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute {
+            crate::provider::ModelRoute { capability: None,
                 model: "deepseek/deepseek-v4-pro".to_string(),
                 provider: "auto".to_string(),
                 api_method: "openrouter".to_string(),
@@ -715,7 +715,7 @@ fn test_remote_non_jcode_catalog_repairs_poisoned_all_jcode_routes() {
         app.remote_model_options = app
             .remote_available_entries
             .iter()
-            .map(|model| crate::provider::ModelRoute {
+            .map(|model| crate::provider::ModelRoute { capability: None,
                 model: model.clone(),
                 provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
                 api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
@@ -772,7 +772,7 @@ fn test_model_picker_ctrl_b_bedrock_selection_saves_bedrock_default() {
         let mut app = create_test_app();
         app.is_remote = true;
         app.remote_available_entries = vec!["amazon.nova-pro-v1:0".to_string()];
-        app.remote_model_options = vec![crate::provider::ModelRoute {
+        app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
             model: "amazon.nova-pro-v1:0".to_string(),
             provider: "AWS Bedrock".to_string(),
             api_method: "bedrock".to_string(),
@@ -1776,7 +1776,7 @@ fn test_model_picker_effort_variant_selection_stages_effort_in_remote_mode() {
 fn test_model_picker_effort_variants_follow_each_route_vocabulary() {
     let mut app = create_test_app();
     configure_test_remote_models_with_openai_recommendations(&mut app);
-    app.remote_model_options.push(crate::provider::ModelRoute {
+    app.remote_model_options.push(crate::provider::ModelRoute { capability: None,
         model: "gpt-5.5".to_string(),
         provider: "OpenRouter".to_string(),
         api_method: "openrouter".to_string(),
@@ -1820,7 +1820,7 @@ fn test_model_picker_plain_selection_stages_no_effort_in_remote_mode() {
     configure_test_remote_models_with_openai_recommendations(&mut app);
     // A Copilot-backed route cannot apply per-request reasoning effort, so it
     // must render as a plain row (issue #458 route gating).
-    app.remote_model_options.push(crate::provider::ModelRoute {
+    app.remote_model_options.push(crate::provider::ModelRoute { capability: None,
         model: "claude-opus-4-8".to_string(),
         provider: "Copilot".to_string(),
         api_method: "copilot".to_string(),
@@ -1871,7 +1871,7 @@ fn test_model_switch_notice_omits_placeholder_route_details() {
         app.remote_provider_name = Some("Some Server".to_string());
         app.remote_provider_model = Some("other-model".to_string());
         app.remote_available_entries = vec![model.to_string()];
-        app.remote_model_options = vec![crate::provider::ModelRoute {
+        app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
             model: model.to_string(),
             provider: "Some Server".to_string(),
             api_method: "remote-catalog".to_string(),
@@ -1945,7 +1945,7 @@ fn test_catalog_update_rebuilds_open_model_picker_with_real_routes() {
         app.remote_provider_name = Some("OpenAI".to_string());
         app.remote_provider_model = Some(model.to_string());
         app.remote_available_entries = vec![model.to_string()];
-        app.remote_model_options = vec![crate::provider::ModelRoute {
+        app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
             model: model.to_string(),
             provider: "OpenAI".to_string(),
             api_method: "remote-catalog".to_string(),
@@ -1957,7 +1957,7 @@ fn test_catalog_update_rebuilds_open_model_picker_with_real_routes() {
         app.open_model_picker();
         assert!(app.inline_interactive_state.is_some());
 
-        app.remote_model_options = vec![crate::provider::ModelRoute {
+        app.remote_model_options = vec![crate::provider::ModelRoute { capability: None,
             model: model.to_string(),
             provider: "OpenAI".to_string(),
             api_method: "openai-api".to_string(),

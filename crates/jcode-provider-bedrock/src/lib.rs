@@ -1400,7 +1400,7 @@ impl Provider for BedrockProvider {
                 if info.supports_reasoning {
                     features.push("reasoning");
                 }
-                ModelRoute {
+                ModelRoute { capability: None,
                     model: model.clone(),
                     provider: "AWS Bedrock".to_string(),
                     api_method: "bedrock".to_string(),

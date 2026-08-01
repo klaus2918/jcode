@@ -224,6 +224,7 @@ fn direct_openai_compatible_profile_routes(
         }
 
         routes.push(ModelRoute {
+            capability: None,
             model,
             provider: provider.clone(),
             api_method: api_method.clone(),

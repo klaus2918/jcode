@@ -38,6 +38,7 @@ pub fn simplified_model_routes_for_picker(
             // Platform-API-only GPT Pro models: never advertise an OAuth route.
             if jcode_provider_core::is_openai_api_only_pro_model(&model) {
                 routes.push(ModelRoute {
+                    capability: None,
                     model: model.clone(),
                     provider: "OpenAI".to_string(),
                     api_method: "openai-api-key".to_string(),
@@ -53,6 +54,7 @@ pub fn simplified_model_routes_for_picker(
             }
             if auth.openai_has_oauth {
                 routes.push(ModelRoute {
+                    capability: None,
                     model: model.clone(),
                     provider: "OpenAI".to_string(),
                     api_method: "openai-oauth".to_string(),
@@ -63,6 +65,7 @@ pub fn simplified_model_routes_for_picker(
             }
             if auth.openai_has_api_key {
                 routes.push(ModelRoute {
+                    capability: None,
                     model: model.clone(),
                     provider: "OpenAI".to_string(),
                     api_method: "openai-api-key".to_string(),
@@ -73,6 +76,7 @@ pub fn simplified_model_routes_for_picker(
             }
             if auth.openai == AuthState::NotConfigured {
                 routes.push(ModelRoute {
+                    capability: None,
                     model,
                     provider: "OpenAI".to_string(),
                     api_method: "openai-oauth".to_string(),
@@ -139,6 +143,7 @@ pub fn simplified_model_routes_for_picker(
             };
 
         routes.push(ModelRoute {
+            capability: None,
             model,
             provider,
             api_method,
@@ -150,6 +155,7 @@ pub fn simplified_model_routes_for_picker(
 
     if routes.is_empty() && !current_model.is_empty() && current_model != "unknown" {
         routes.push(ModelRoute {
+            capability: None,
             model: current_model.to_string(),
             provider: current_provider_name.to_string(),
             api_method: "current".to_string(),
@@ -170,6 +176,7 @@ pub fn append_simplified_anthropic_model_routes(
     let model = model.into();
     if auth.anthropic.has_oauth {
         routes.push(ModelRoute {
+            capability: None,
             model: model.clone(),
             provider: "Anthropic".to_string(),
             api_method: "claude-oauth".to_string(),
@@ -180,6 +187,7 @@ pub fn append_simplified_anthropic_model_routes(
     }
     if auth.anthropic.has_api_key {
         routes.push(ModelRoute {
+            capability: None,
             model: model.clone(),
             provider: "Anthropic".to_string(),
             api_method: "claude-api".to_string(),
@@ -190,6 +198,7 @@ pub fn append_simplified_anthropic_model_routes(
     }
     if !auth.anthropic.has_oauth && !auth.anthropic.has_api_key {
         routes.push(ModelRoute {
+            capability: None,
             model,
             provider: "Anthropic".to_string(),
             api_method: "claude-oauth".to_string(),
@@ -251,6 +260,7 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
     if !has_openrouter && !added_direct_openai_compatible_routes {
         // OpenRouter not configured - show a placeholder as unavailable.
         routes.push(ModelRoute {
+            capability: None,
             model: "openrouter models".to_string(),
             provider: "—".to_string(),
             api_method: "openrouter".to_string(),
@@ -343,6 +353,7 @@ fn append_anthropic_routes(
         if has_api_key {
             let (ak_available, ak_detail) = anthropic_api_key_route_availability(&model);
             routes.push(ModelRoute {
+                capability: None,
                 model: model.to_string(),
                 provider: "Anthropic".to_string(),
                 api_method: "claude-api".to_string(),
@@ -353,6 +364,7 @@ fn append_anthropic_routes(
         }
         if !has_oauth && !has_api_key {
             routes.push(ModelRoute {
+                capability: None,
                 model: model.to_string(),
                 provider: "Anthropic".to_string(),
                 api_method: "claude-oauth".to_string(),
@@ -538,7 +550,18 @@ fn named_provider_profile_routes(
         if !is_listable_model_name(&model) || routes.iter().any(|route| route.model == model) {
             continue;
         }
+        let model_config = profile_config
+            .models
+            .iter()
+            .find(|candidate| candidate.id.trim().eq_ignore_ascii_case(&model));
+        let capability = super::models::resolve_model_capability_with_config(
+            &model,
+            Some(profile_name),
+            model_config,
+        )
+        .route_view();
         routes.push(ModelRoute {
+            capability,
             model,
             provider: profile_name.to_string(),
             api_method: api_method.clone(),
@@ -576,6 +599,7 @@ fn append_gemini_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) 
     if let Some(gemini) = provider.gemini_provider() {
         for model in gemini.available_models_display() {
             routes.push(ModelRoute {
+                capability: None,
                 model,
                 provider: "Gemini".to_string(),
                 api_method: "code-assist-oauth".to_string(),
@@ -597,6 +621,7 @@ fn append_cursor_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) 
     if let Some(cursor) = provider.cursor_provider() {
         for model in cursor.available_models_display() {
             routes.push(ModelRoute {
+                capability: None,
                 model,
                 provider: "Cursor".to_string(),
                 api_method: "cursor".to_string(),
@@ -698,6 +723,7 @@ fn append_openrouter_routes(
                     )
                 });
             routes.push(ModelRoute {
+                capability: None,
                 model: model.clone(),
                 provider,
                 api_method,
@@ -861,6 +887,7 @@ pub fn remote_model_routes_fallback(
             .iter()
             .filter(|model| is_listable_model_name(model))
             .map(|model| ModelRoute {
+                capability: None,
                 model: model.clone(),
                 provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
                 api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
@@ -887,6 +914,7 @@ pub fn remote_model_routes_fallback(
             let available = auth.bedrock != AuthState::NotConfigured
                 || super::bedrock::BedrockProvider::has_credentials();
             routes.push(ModelRoute {
+                capability: None,
                 model: model.clone(),
                 provider: "AWS Bedrock".to_string(),
                 api_method: "bedrock".to_string(),
@@ -948,6 +976,7 @@ pub fn remote_model_routes_fallback(
             if auth.anthropic.has_api_key {
                 let (available, detail) = anthropic_api_key_route_availability(model);
                 routes.push(ModelRoute {
+                    capability: None,
                     model: model.clone(),
                     provider: "Anthropic".to_string(),
                     api_method: "claude-api".to_string(),
@@ -1039,6 +1068,7 @@ pub fn remote_model_routes_fallback(
 
         if super::gemini::is_gemini_model_id(model) {
             routes.push(ModelRoute {
+                capability: None,
                 model: model.clone(),
                 provider: "Gemini".to_string(),
                 api_method: "code-assist-oauth".to_string(),
@@ -1051,6 +1081,7 @@ pub fn remote_model_routes_fallback(
 
         if !added_any {
             routes.push(ModelRoute {
+                capability: None,
                 model: model.clone(),
                 provider: "unknown".to_string(),
                 api_method: "unknown".to_string(),
@@ -1080,6 +1111,7 @@ pub fn remote_model_routes_lightweight_fallback(
             continue;
         }
         routes.push(ModelRoute {
+            capability: None,
             model: model.clone(),
             provider: provider.clone(),
             api_method: if is_jcode_subscription {
@@ -1099,6 +1131,7 @@ pub fn remote_model_routes_lightweight_fallback(
 
     if routes.is_empty() && !current_model.is_empty() && current_model != "unknown" {
         routes.push(ModelRoute {
+            capability: None,
             model: current_model.to_string(),
             provider,
             api_method: "current".to_string(),
@@ -1129,6 +1162,7 @@ pub fn remote_current_openai_compatible_route_for_model(
     let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
 
     Some(ModelRoute {
+        capability: None,
         model: model.to_string(),
         provider: resolved.display_name,
         api_method: format!("openai-compatible:{}", resolved.id),
@@ -1170,6 +1204,7 @@ pub fn remote_openai_compatible_route_for_model(model: &str) -> Option<ModelRout
             )
         };
         return Some(ModelRoute {
+            capability: None,
             model: model.to_string(),
             provider: resolved.display_name,
             api_method: format!("openai-compatible:{}", resolved.id),
