@@ -1772,6 +1772,7 @@ fn named_openai_compatible_model_context_window_overrides_default() {
             id: "custom-long-context".to_string(),
             context_window: Some(512_000),
             input: Vec::new(),
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -1799,6 +1800,7 @@ fn named_profile_context_window_survives_provider_qualified_model() {
             id: "qwen3.6-35b-a2000-128k".to_string(),
             context_window: Some(131_072),
             input: Vec::new(),
+            ..Default::default()
         }],
         ..Default::default()
     };
