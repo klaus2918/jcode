@@ -131,7 +131,7 @@ impl Agent {
                 });
             }
 
-            let tools = self.tool_definitions().await;
+            let tools = self.gated_tool_definitions().await;
             let messages: std::sync::Arc<[Message]> = messages.into();
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             let memory_pending = self.build_memory_prompt_nonblocking_shared(

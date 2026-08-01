@@ -1168,8 +1168,28 @@ pub fn resolve_model_capability_with_config(
         model,
         provider_hint,
         explicit.as_ref(),
-        |model, hint| context_limit_for_model_with_provider(model, hint),
+        context_limit_for_model_with_provider,
     )
+}
+
+/// Whether the current model on a provider should receive tool definitions.
+///
+/// Conservative by design: only an explicit `tools = false` in the named
+/// provider config or a registry declaration that disables tools turns this
+/// off. Unknown models keep tools enabled, preserving existing behavior.
+pub fn model_supports_tools(provider_name: &str, model: &str) -> bool {
+    let config = crate::config::config()
+        .providers
+        .get(provider_name)
+        .and_then(|profile| {
+            profile
+                .models
+                .iter()
+                .find(|candidate| candidate.id.trim().eq_ignore_ascii_case(model))
+        });
+    resolve_model_capability_with_config(model, Some(provider_name), config)
+        .capability
+        .supports_tools()
 }
 
 /// Detect which provider a model belongs to
@@ -1212,4 +1232,66 @@ pub fn provider_for_model_with_hint(
 /// Detect which provider a model belongs to
 pub fn provider_for_model(model: &str) -> Option<&'static str> {
     provider_for_model_with_hint(model, None)
+}
+
+#[cfg(test)]
+mod capability_gate_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_models_keep_tools_enabled() {
+        assert!(model_supports_tools(
+            "openai-compatible:custom",
+            "some-no-tools-model"
+        ));
+    }
+
+    #[test]
+    fn registry_models_keep_tools_enabled() {
+        assert!(model_supports_tools("openai-compatible:kimi", "kimi-k3"));
+        assert!(model_supports_tools("claude", "claude-opus-4-8"));
+    }
+
+    #[test]
+    fn explicit_tools_false_disables_tools() {
+        let config = crate::config::NamedProviderModelConfig {
+            id: "no-tools-model".to_string(),
+            tools: Some(false),
+            ..Default::default()
+        };
+        let resolved =
+            resolve_model_capability_with_config("no-tools-model", Some("gateway"), Some(&config));
+        assert!(!resolved.capability.supports_tools());
+        assert_eq!(
+            resolved.trace.tools,
+            Some(jcode_provider_core::CapabilitySource::ExplicitConfig)
+        );
+    }
+
+    #[test]
+    fn explicit_capability_fields_win_over_registry_and_heuristics() {
+        let config = crate::config::NamedProviderModelConfig {
+            id: "deepseek-v4-pro".to_string(),
+            context_window: Some(999_000),
+            vision: Some(true),
+            tools: Some(false),
+            supported_efforts: Some(vec!["low".to_string(), "high".to_string()]),
+            default_effort: Some("high".to_string()),
+            ..Default::default()
+        };
+        let resolved =
+            resolve_model_capability_with_config("deepseek-v4-pro", Some("gateway"), Some(&config));
+        assert!(resolved.capability.supports_image());
+        assert_eq!(resolved.capability.context_window, Some(999_000));
+        assert_eq!(resolved.capability.tools, Some(false));
+        assert_eq!(resolved.capability.reasoning.efforts, ["low", "high"]);
+        assert_eq!(
+            resolved.capability.reasoning.default_effort.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            resolved.trace.context_window,
+            Some(jcode_provider_core::CapabilitySource::ExplicitConfig)
+        );
+    }
 }
