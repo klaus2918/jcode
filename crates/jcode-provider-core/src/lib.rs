@@ -31,8 +31,9 @@ pub use auth_mode::{
 pub use capability::{
     CapabilitySource, CapabilityTrace, EMBEDDED_REGISTRY, ExplicitModelCapability, Modality,
     ModelCapability, ReasoningCapability, ReasoningProtocol, ResolvedModelCapability,
-    RouteCapabilityView, SamplingCapability, SamplingView, resolve_capability,
-    resolve_capability_with_context_fn,
+    RouteCapabilityView, SamplingCapability, SamplingView, UserRegistryEntry, UserRegistryFile,
+    clear_user_registry_entries, resolve_capability, resolve_capability_with_context_fn,
+    set_user_registry_entries,
 };
 pub use catalog_refresh::{ModelCatalogRefreshSummary, summarize_model_catalog_refresh};
 pub use failover::{

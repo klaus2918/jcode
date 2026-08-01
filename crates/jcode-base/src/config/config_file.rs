@@ -12,6 +12,9 @@ impl Config {
     pub fn load() -> Self {
         let mut config = Self::load_from_file().unwrap_or_default();
         config.apply_env_overrides();
+        // User capability registry follows the config file lifecycle so edits
+        // to modelcap.json take effect on the next config reload.
+        super::modelcap::load_user_modelcap_registry();
         config
     }
 

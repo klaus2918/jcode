@@ -17,6 +17,7 @@
 //! safe to project into remote descriptors.
 
 use serde::{Deserialize, Serialize};
+use std::sync::RwLock;
 
 /// Input modality a model can consume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,6 +382,106 @@ pub struct RegistryEntry {
     pub output_limit_field: Option<&'static str>,
 }
 
+/// A user-supplied registry entry (from `modelcap.json`).
+///
+/// Same field semantics as the embedded [`RegistryEntry`], but owned so it can
+/// be deserialized from disk. Entries are validated leniently: unknown JSON
+/// fields are ignored, unknown protocol/modality spellings fall back to the
+/// embedded/heuristic resolution, and only entries with a non-empty `model`
+/// participate. User entries take precedence over the embedded table for the
+/// same model key (exact before prefix), matching the design rule that the
+/// registry only supplies defaults and explicit config always wins.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UserRegistryEntry {
+    /// Exact model id, or a `prefix*` wildcard.
+    pub model: String,
+    /// Optional provider-key filter (same semantics as `RegistryEntry.provider`).
+    pub provider: Option<String>,
+    /// Explicit visual-capability declaration. `Some(false)` prevents the
+    /// vision heuristic from re-enabling image input for this model.
+    pub vision: Option<bool>,
+    pub chat: Option<bool>,
+    pub modalities: Vec<String>,
+    pub reasoning_protocol: Option<String>,
+    #[serde(default, alias = "supported_efforts", alias = "supported-efforts")]
+    pub efforts: Vec<String>,
+    #[serde(default, alias = "default-effort")]
+    pub default_effort: Option<String>,
+    pub round_trip: bool,
+    pub tool_call_replay: bool,
+    pub thinking_kind: Option<String>,
+    pub tools: Option<bool>,
+    pub context_window: Option<usize>,
+    pub output_window: Option<usize>,
+    pub temperature_supported: Option<bool>,
+    pub fixed_sampling: Option<bool>,
+    pub output_limit_field: Option<String>,
+}
+
+impl UserRegistryEntry {
+    fn to_model_capability(&self, model: &str) -> ModelCapability {
+        let mut capability = ModelCapability {
+            id: model.trim().to_string(),
+            chat: self.chat.unwrap_or(true),
+            tools: self.tools,
+            context_window: self.context_window,
+            output_window: self.output_window,
+            sampling: SamplingCapability {
+                temperature_supported: self.temperature_supported.unwrap_or(true),
+                fixed_sampling: self.fixed_sampling.unwrap_or(false),
+                output_limit_field: self.output_limit_field.clone(),
+            },
+            ..ModelCapability::default()
+        };
+        if let Some(vision) = self.vision {
+            set_image_modality(&mut capability, vision);
+        }
+        if self.vision.is_none() {
+            for modality in &self.modalities {
+                if let Some(modality) = Modality::parse(modality) {
+                    capability.modalities.push(modality);
+                }
+            }
+        }
+        capability.reasoning.protocol = self
+            .reasoning_protocol
+            .as_deref()
+            .and_then(ReasoningProtocol::parse);
+        capability.reasoning.efforts = self.efforts.clone();
+        capability.reasoning.default_effort = self.default_effort.clone();
+        capability.reasoning.round_trip = self.round_trip;
+        capability.reasoning.tool_call_replay = self.tool_call_replay;
+        capability.reasoning.thinking_kind = self.thinking_kind.clone();
+        capability
+    }
+}
+
+/// JSON envelope for user registry files (`modelcap.json`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UserRegistryFile {
+    pub entries: Vec<UserRegistryEntry>,
+}
+
+/// Process-wide user registry entries, installed by `jcode-base` when the
+/// user `modelcap.json` is loaded. Resolution consults this table before the
+/// embedded const registry, so users can extend or correct defaults without
+/// recompiling.
+static USER_REGISTRY: RwLock<Vec<UserRegistryEntry>> = RwLock::new(Vec::new());
+
+/// Install the user registry entries (called once at config load).
+pub fn set_user_registry_entries(entries: Vec<UserRegistryEntry>) {
+    if let Ok(mut registry) = USER_REGISTRY.write() {
+        *registry = entries;
+    }
+}
+
+/// Test hook: clear any installed user registry.
+pub fn clear_user_registry_entries() {
+    set_user_registry_entries(Vec::new());
+}
+
 #[allow(clippy::too_many_arguments)]
 const fn entry(
     model: &'static str,
@@ -686,6 +787,75 @@ fn registry_entry_for(model: &str, provider_hint: Option<&str>) -> Option<&'stat
     })
 }
 
+fn user_registry_entry_for(model: &str, provider_hint: Option<&str>) -> Option<UserRegistryEntry> {
+    let normalized = model.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    // User registry entries scope by *raw* provider names (arbitrary gateways),
+    // unlike the embedded table which uses canonical keys. Match the hint
+    // case-insensitively, allowing `openai-compatible:acme-gateway` style
+    // prefixed hints to hit an `acme-gateway` entry.
+    let raw_provider = provider_hint.map(|hint| hint.to_ascii_lowercase());
+    let provider_matches =
+        |entry_provider: Option<&String>| match (entry_provider, raw_provider.as_deref()) {
+            (None, _) => true,
+            (Some(expected), Some(actual)) => {
+                let expected = expected.to_ascii_lowercase();
+                actual == &expected || actual.ends_with(&format!(":{expected}"))
+            }
+            (Some(_), None) => false,
+        };
+    let entries = USER_REGISTRY.read().ok()?;
+    if let Some(found) = entries.iter().find(|entry| {
+        !entry.model.ends_with('*')
+            && entry.model.eq_ignore_ascii_case(&normalized)
+            && provider_matches(entry.provider.as_ref())
+    }) {
+        return Some(found.clone());
+    }
+    entries
+        .iter()
+        .find(|entry| {
+            entry
+                .model
+                .strip_suffix('*')
+                .is_some_and(|prefix| !prefix.is_empty() && normalized.starts_with(prefix))
+                && provider_matches(entry.provider.as_ref())
+        })
+        .cloned()
+}
+
+/// Registry capability for a model: user entries first (exact > prefix), then
+/// the embedded table (exact > prefix).
+///
+/// The returned `Option<bool>` is the *declared* vision state: `Some(true)`
+/// when the entry explicitly lists image as a modality, `Some(false)` when the
+/// entry explicitly excludes it, and `None` when the entry carries no modality
+/// declaration (heuristics stay in charge).
+fn registry_capability_for(
+    model: &str,
+    provider_hint: Option<&str>,
+) -> Option<(ModelCapability, Option<bool>)> {
+    if let Some(entry) = user_registry_entry_for(model, provider_hint) {
+        let declared_vision = entry.vision.or_else(|| {
+            (!entry.modalities.is_empty()).then(|| {
+                entry
+                    .modalities
+                    .iter()
+                    .any(|m| Modality::parse(m) == Some(Modality::Image))
+            })
+        });
+        return Some((entry.to_model_capability(model), declared_vision));
+    }
+    registry_entry_for(model, provider_hint).map(|entry| {
+        let capability = registry_capability(entry, model);
+        let declared_vision =
+            (!entry.modalities.is_empty()).then(|| entry.modalities.contains(&Modality::Image));
+        (capability, declared_vision)
+    })
+}
+
 fn registry_capability(entry: &RegistryEntry, model: &str) -> ModelCapability {
     let mut capability = ModelCapability {
         id: model.trim().to_string(),
@@ -806,8 +976,9 @@ pub fn resolve_capability_with_context_fn<F>(
 where
     F: Fn(&str, Option<&str>) -> Option<usize>,
 {
-    let registry =
-        registry_entry_for(model, provider_hint).map(|entry| registry_capability(entry, model));
+    let registry = registry_capability_for(model, provider_hint);
+    let registry_capability = registry.as_ref().map(|(capability, _)| capability);
+    let registry_vision = registry.as_ref().and_then(|(_, vision)| *vision);
     let mut capability = default_capability(model);
     let mut trace = CapabilityTrace::default();
 
@@ -815,7 +986,7 @@ where
     if let Some(window) = explicit.and_then(|e| e.context_window) {
         capability.context_window = Some(window);
         trace.context_window = Some(CapabilitySource::ExplicitConfig);
-    } else if let Some(window) = registry.as_ref().and_then(|r| r.context_window) {
+    } else if let Some(window) = registry_capability.and_then(|r| r.context_window) {
         capability.context_window = Some(window);
         trace.context_window = Some(CapabilitySource::Registry);
     } else if let Some(window) = context_fn(model, provider_hint) {
@@ -829,7 +1000,7 @@ where
     if let Some(window) = explicit.and_then(|e| e.output_window) {
         capability.output_window = Some(window);
         trace.output_window = Some(CapabilitySource::ExplicitConfig);
-    } else if let Some(window) = registry.as_ref().and_then(|r| r.output_window) {
+    } else if let Some(window) = registry_capability.and_then(|r| r.output_window) {
         capability.output_window = Some(window);
         trace.output_window = Some(CapabilitySource::Registry);
     } else {
@@ -847,11 +1018,8 @@ where
     } else if explicit_input_image {
         set_image_modality(&mut capability, true);
         trace.vision = Some(CapabilitySource::ExplicitConfig);
-    } else if registry
-        .as_ref()
-        .is_some_and(|registry| registry.supports_image())
-    {
-        set_image_modality(&mut capability, true);
+    } else if let Some(vision) = registry_vision {
+        set_image_modality(&mut capability, vision);
         trace.vision = Some(CapabilitySource::Registry);
     } else if heuristic_vision(model, provider_hint) {
         set_image_modality(&mut capability, true);
@@ -864,7 +1032,7 @@ where
     if let Some(tools) = explicit.and_then(|e| e.tools) {
         capability.tools = Some(tools);
         trace.tools = Some(CapabilitySource::ExplicitConfig);
-    } else if let Some(tools) = registry.as_ref().and_then(|r| r.tools) {
+    } else if let Some(tools) = registry_capability.and_then(|r| r.tools) {
         capability.tools = Some(tools);
         trace.tools = Some(CapabilitySource::Registry);
     } else {
@@ -875,7 +1043,7 @@ where
     if let Some(protocol) = explicit.and_then(|e| e.reasoning_protocol) {
         capability.reasoning.protocol = Some(protocol);
         trace.reasoning_protocol = Some(CapabilitySource::ExplicitConfig);
-    } else if let Some(protocol) = registry.as_ref().and_then(|r| r.reasoning.protocol) {
+    } else if let Some(protocol) = registry_capability.and_then(|r| r.reasoning.protocol) {
         capability.reasoning.protocol = Some(protocol);
         trace.reasoning_protocol = Some(CapabilitySource::Registry);
     } else if let Some(protocol) = heuristic_reasoning_protocol(provider_hint, model) {
@@ -891,7 +1059,7 @@ where
     if let Some(efforts) = explicit_efforts {
         capability.reasoning.efforts = efforts;
         trace.efforts = Some(CapabilitySource::ExplicitConfig);
-    } else if let Some(registry) = registry.as_ref()
+    } else if let Some(registry) = registry_capability
         && !registry.reasoning.efforts.is_empty()
     {
         capability.reasoning.efforts = registry.reasoning.efforts.clone();
@@ -907,15 +1075,14 @@ where
     // --- default effort: explicit > registry ---
     if let Some(effort) = explicit.and_then(|e| e.default_effort.as_ref()) {
         capability.reasoning.default_effort = Some(effort.clone());
-    } else if let Some(effort) = registry
-        .as_ref()
-        .and_then(|r| r.reasoning.default_effort.clone())
+    } else if let Some(effort) =
+        registry_capability.and_then(|r| r.reasoning.default_effort.clone())
     {
         capability.reasoning.default_effort = Some(effort);
     }
 
     // --- round-trip flags from registry (not user-configurable) ---
-    if let Some(registry) = registry.as_ref() {
+    if let Some(registry) = registry_capability {
         capability.reasoning.round_trip = registry.reasoning.round_trip;
         capability.reasoning.tool_call_replay = registry.reasoning.tool_call_replay;
         capability.reasoning.thinking_kind = registry
@@ -949,7 +1116,7 @@ where
         }
     }
     if trace.sampling.is_none()
-        && let Some(registry) = registry.as_ref()
+        && let Some(registry) = registry_capability
         && (registry.sampling.fixed_sampling
             || !registry.sampling.temperature_supported
             || registry.sampling.output_limit_field.is_some())
@@ -973,6 +1140,10 @@ fn set_image_modality(capability: &mut ModelCapability, enabled: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests that install/clear the process-wide user registry.
+    static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn modality_and_protocol_parse_round_trip() {
@@ -1115,5 +1286,100 @@ mod tests {
             output_limit_field: Some("max_completion_tokens".to_string()),
         });
         assert!(!view.is_empty());
+    }
+
+    #[test]
+    fn user_registry_entries_win_over_embedded_and_heuristics() {
+        let _guard = REGISTRY_TEST_LOCK.lock().unwrap();
+        set_user_registry_entries(vec![UserRegistryEntry {
+            model: "deepseek-v4-pro".to_string(),
+            tools: Some(false),
+            context_window: Some(777_000),
+            ..UserRegistryEntry::default()
+        }]);
+
+        let resolved = resolve_capability("deepseek-v4-pro", Some("deepseek"), None);
+        assert_eq!(resolved.capability.tools, Some(false));
+        assert!(!resolved.capability.supports_tools());
+        assert_eq!(resolved.capability.context_window, Some(777_000));
+        assert_eq!(resolved.trace.tools, Some(CapabilitySource::Registry));
+        assert_eq!(
+            resolved.trace.context_window,
+            Some(CapabilitySource::Registry)
+        );
+
+        clear_user_registry_entries();
+    }
+
+    #[test]
+    fn user_registry_wildcard_and_provider_scope() {
+        let _guard = REGISTRY_TEST_LOCK.lock().unwrap();
+        set_user_registry_entries(vec![
+            UserRegistryEntry {
+                model: "acme-*".to_string(),
+                provider: Some("acme-gateway".to_string()),
+                vision: Some(true),
+                tools: Some(false),
+                context_window: Some(64_000),
+                ..UserRegistryEntry::default()
+            },
+            UserRegistryEntry {
+                model: "acme-*".to_string(),
+                provider: Some("other-gateway".to_string()),
+                vision: Some(false),
+                ..UserRegistryEntry::default()
+            },
+        ]);
+
+        let scoped = resolve_capability("acme-vlm", Some("acme-gateway"), None);
+        assert!(scoped.capability.supports_image());
+        assert!(!scoped.capability.supports_tools());
+        assert_eq!(scoped.capability.context_window, Some(64_000));
+
+        let other = resolve_capability("acme-vlm", Some("other-gateway"), None);
+        assert!(!other.capability.supports_image());
+
+        let unscoped = resolve_capability("acme-vlm", Some("unrelated"), None);
+        assert_eq!(
+            unscoped.trace.vision,
+            Some(CapabilitySource::Heuristic),
+            "provider-scoped user entries must not leak to other providers"
+        );
+        assert!(
+            unscoped.capability.supports_image(),
+            "without a matching user entry the vision heuristic still applies"
+        );
+
+        clear_user_registry_entries();
+    }
+
+    #[test]
+    fn user_registry_does_not_shadow_explicit_config() {
+        let _guard = REGISTRY_TEST_LOCK.lock().unwrap();
+        set_user_registry_entries(vec![UserRegistryEntry {
+            model: "custom-vlm".to_string(),
+            vision: Some(false),
+            tools: Some(false),
+            ..UserRegistryEntry::default()
+        }]);
+
+        let resolved = resolve_capability(
+            "custom-vlm",
+            Some("gateway"),
+            Some(&ExplicitModelCapability {
+                vision: Some(true),
+                tools: Some(true),
+                ..ExplicitModelCapability::default()
+            }),
+        );
+        assert!(resolved.capability.supports_image());
+        assert!(resolved.capability.supports_tools());
+        assert_eq!(
+            resolved.trace.vision,
+            Some(CapabilitySource::ExplicitConfig)
+        );
+        assert_eq!(resolved.trace.tools, Some(CapabilitySource::ExplicitConfig));
+
+        clear_user_registry_entries();
     }
 }
