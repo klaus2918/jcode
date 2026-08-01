@@ -3300,7 +3300,7 @@ pub async fn run_model_command(
         if verbose && !capable_routes.is_empty() {
             println!();
             println!("Capabilities (config > registry > heuristic):");
-            for route in capable_routes {
+            for route in &capable_routes {
                 let cap = route.capability.as_ref().expect("filtered for capability");
                 let mut parts = Vec::new();
                 if !cap.modalities.is_empty() {
@@ -3327,6 +3327,29 @@ pub async fn run_model_command(
                     }
                     if let Some(field) = sampling.output_limit_field.as_deref() {
                         parts.push(format!("output-field={field}"));
+                    }
+                }
+                println!("  {}: {}", route.model, parts.join(", "));
+            }
+            println!();
+            println!("Capability sources (explicit config > registry > heuristic > default):");
+            for route in &capable_routes {
+                let resolved = crate::provider::models::model_capability_resolution_trace(
+                    &route.provider,
+                    &route.model,
+                );
+                let mut parts = Vec::new();
+                for (label, source) in [
+                    ("context", resolved.trace.context_window),
+                    ("output", resolved.trace.output_window),
+                    ("vision", resolved.trace.vision),
+                    ("tools", resolved.trace.tools),
+                    ("reasoning", resolved.trace.reasoning_protocol),
+                    ("efforts", resolved.trace.efforts),
+                    ("sampling", resolved.trace.sampling),
+                ] {
+                    if let Some(source) = source {
+                        parts.push(format!("{label}={}", source.as_str()));
                     }
                 }
                 println!("  {}: {}", route.model, parts.join(", "));

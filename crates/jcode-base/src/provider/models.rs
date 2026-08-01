@@ -1192,6 +1192,27 @@ pub fn model_supports_tools(provider_name: &str, model: &str) -> bool {
         .supports_tools()
 }
 
+/// Resolve the full capability record (with per-field provenance) for a
+/// model on a named provider, for diagnostics (`model list --verbose` /
+/// `provider-doctor`). Mirrors the route projection but keeps the
+/// `CapabilityTrace` so UIs can show where each field came from
+/// (config > registry > heuristic > default).
+pub fn model_capability_resolution_trace(
+    provider_name: &str,
+    model: &str,
+) -> jcode_provider_core::ResolvedModelCapability {
+    let config = crate::config::config()
+        .providers
+        .get(provider_name)
+        .and_then(|profile| {
+            profile
+                .models
+                .iter()
+                .find(|candidate| candidate.id.trim().eq_ignore_ascii_case(model))
+        });
+    resolve_model_capability_with_config(model, Some(provider_name), config)
+}
+
 /// Detect which provider a model belongs to
 pub fn provider_for_model_with_hint(
     model: &str,
@@ -1292,6 +1313,39 @@ mod capability_gate_tests {
         assert_eq!(
             resolved.trace.context_window,
             Some(jcode_provider_core::CapabilitySource::ExplicitConfig)
+        );
+    }
+
+    #[test]
+    fn resolution_trace_reports_per_field_sources() {
+        let resolved = model_capability_resolution_trace("deepseek", "deepseek-v4-pro");
+        assert_eq!(
+            resolved.trace.context_window,
+            Some(jcode_provider_core::CapabilitySource::Registry)
+        );
+        assert_eq!(
+            resolved.trace.reasoning_protocol,
+            Some(jcode_provider_core::CapabilitySource::Registry)
+        );
+        assert_eq!(
+            resolved.trace.vision,
+            Some(jcode_provider_core::CapabilitySource::Default)
+        );
+
+        let unknown = model_capability_resolution_trace("gateway", "brand-new-model");
+        assert_eq!(
+            unknown.trace.context_window,
+            Some(jcode_provider_core::CapabilitySource::Default)
+        );
+        assert_eq!(
+            unknown.trace.tools,
+            Some(jcode_provider_core::CapabilitySource::Default)
+        );
+
+        let heuristic = model_capability_resolution_trace("zai", "glm-4.7");
+        assert_eq!(
+            heuristic.trace.context_window,
+            Some(jcode_provider_core::CapabilitySource::Heuristic)
         );
     }
 }
