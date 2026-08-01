@@ -240,6 +240,14 @@ impl CompactionManager {
         self
     }
 
+    /// Override the compaction config (useful for tests that exercise custom
+    /// thresholds without touching the global config).
+    pub fn with_compaction_config(mut self, cfg: crate::config::CompactionConfig) -> Self {
+        self.mode = cfg.mode.clone();
+        self.compaction_config = cfg;
+        self
+    }
+
     /// Update the token budget (e.g., when model changes)
     pub fn set_budget(&mut self, budget: usize) {
         self.token_budget = budget;
@@ -518,7 +526,7 @@ impl CompactionManager {
 
         let cfg = &self.compaction_config;
         let budget = self.token_budget as f64;
-        let threshold = COMPACTION_THRESHOLD as f64 * budget;
+        let threshold = self.compaction_threshold() as f64 * budget;
 
         // Compute EWMA of per-turn token deltas.
         // We need at least 2 snapshots to get a delta.
@@ -834,6 +842,19 @@ impl CompactionManager {
         self.effective_token_count() as f32 / self.token_budget as f32
     }
 
+    /// Effective compaction trigger ratio for this session.
+    ///
+    /// The ratio is applied to the token budget (the provider's context
+    /// window), so it scales with the model. It is clamped into a safe band:
+    /// the lower bound avoids pathological constant compaction, and the upper
+    /// bound (the critical hard-compact threshold) keeps the background path
+    /// from ever firing *after* the synchronous hard-compact path would.
+    fn compaction_threshold(&self) -> f32 {
+        self.compaction_config
+            .threshold
+            .clamp(0.05, CRITICAL_THRESHOLD)
+    }
+
     /// Check if we should start compaction
     pub fn should_compact_with(&self, all_messages: &[Message]) -> bool {
         use crate::config::CompactionMode;
@@ -844,7 +865,7 @@ impl CompactionManager {
         match self.mode {
             CompactionMode::Reactive => {
                 self.pending_task.is_none()
-                    && self.context_usage_with(all_messages) >= COMPACTION_THRESHOLD
+                    && self.context_usage_with(all_messages) >= self.compaction_threshold()
                     && active.len() > RECENT_TURNS_TO_KEEP
             }
             CompactionMode::Proactive => {

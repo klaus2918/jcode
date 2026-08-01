@@ -121,6 +121,63 @@ fn test_should_compact() {
 }
 
 #[test]
+fn test_custom_threshold_triggers_compaction_early() {
+    let mut messages = Vec::new();
+    for i in 0..20 {
+        messages.push(make_text_message(
+            Role::User,
+            &format!("Message {} with some content", i),
+        ));
+    }
+
+    // 对照组：默认阈值 80%，usage 28%（14000/50000）不触发
+    let mut default_manager = CompactionManager::new().with_budget(50_000);
+    for _ in 0..20 {
+        default_manager.notify_message_added();
+    }
+    default_manager.update_observed_input_tokens(14_000);
+    assert!(!default_manager.should_compact_with(&messages));
+
+    // 实验组：阈值配置为 26%，usage 28% 触发
+    let cfg = crate::config::CompactionConfig {
+        threshold: 0.26,
+        ..Default::default()
+    };
+    let mut early_manager = CompactionManager::new()
+        .with_compaction_config(cfg)
+        .with_budget(50_000);
+    for _ in 0..20 {
+        early_manager.notify_message_added();
+    }
+    early_manager.update_observed_input_tokens(14_000);
+    assert!(early_manager.should_compact_with(&messages));
+}
+
+#[test]
+fn test_compaction_threshold_is_clamped_to_safe_band() {
+    // 超过临界阈值（0.95）被夹回，保证后台压缩不会晚于同步硬压缩
+    let over = CompactionManager::new().with_compaction_config(crate::config::CompactionConfig {
+        threshold: 1.5,
+        ..Default::default()
+    });
+    assert_eq!(over.compaction_threshold(), 0.95);
+
+    // 过低的阈值被夹到 0.05，避免病态地频繁压缩
+    let under = CompactionManager::new().with_compaction_config(crate::config::CompactionConfig {
+        threshold: 0.0,
+        ..Default::default()
+    });
+    assert_eq!(under.compaction_threshold(), 0.05);
+
+    // 正常值原样返回
+    let normal = CompactionManager::new().with_compaction_config(crate::config::CompactionConfig {
+        threshold: 0.26,
+        ..Default::default()
+    });
+    assert_eq!(normal.compaction_threshold(), 0.26);
+}
+
+#[test]
 fn test_context_usage_prefers_observed_tokens() {
     let mut manager = CompactionManager::new().with_budget(1_000);
     let messages = vec![make_text_message(Role::User, "short message")];
