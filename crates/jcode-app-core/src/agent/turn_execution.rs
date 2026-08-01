@@ -393,6 +393,27 @@ impl Agent {
         tools
     }
 
+    /// Build the tool definitions for the next provider request, honoring the
+    /// model's declared tool capability.
+    ///
+    /// Models declared `tools = false` (explicit config or the embedded
+    /// capability registry) receive an empty toolset so the request never
+    /// carries tool definitions. Unknown models keep tools enabled
+    /// (conservative default, matching prior behavior).
+    pub(super) async fn gated_tool_definitions(&mut self) -> Vec<ToolDefinition> {
+        let mut tools = self.tool_definitions().await;
+        let provider_name = self.provider.name();
+        let model = self.provider.model();
+        if !crate::provider::models::model_supports_tools(provider_name, &model) {
+            logging::info(&format!(
+                "Model '{model}' on provider '{provider_name}' does not support tool calls; \
+                 sending the request without tools"
+            ));
+            tools.clear();
+        }
+        tools
+    }
+
     /// Build the agent's tool definitions from the registry, applying the
     /// session's `allowed_tools`, `disabled_tools`, and self-dev filters.
     async fn build_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {

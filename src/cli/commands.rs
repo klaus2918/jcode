@@ -1981,6 +1981,8 @@ struct ModelListRouteReport {
     model: String,
     method: String,
     available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capability: Option<crate::provider::RouteCapabilityView>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3268,6 +3270,7 @@ pub async fn run_model_command(
                     model: route.model.clone(),
                     method: cli_api_method_display(&route.api_method),
                     available: route.available,
+                    capability: route.capability.clone(),
                 })
                 .collect(),
         };
@@ -3284,6 +3287,50 @@ pub async fn run_model_command(
         }
         for model in models {
             println!("{}", model);
+        }
+        let capable_routes: Vec<&crate::provider::ModelRoute> = filtered_routes
+            .iter()
+            .filter(|route| {
+                route
+                    .capability
+                    .as_ref()
+                    .is_some_and(|cap| !cap.is_default())
+            })
+            .collect();
+        if verbose && !capable_routes.is_empty() {
+            println!();
+            println!("Capabilities (config > registry > heuristic):");
+            for route in capable_routes {
+                let cap = route.capability.as_ref().expect("filtered for capability");
+                let mut parts = Vec::new();
+                if !cap.modalities.is_empty() {
+                    parts.push(format!("modalities={}", cap.modalities.join("+")));
+                }
+                if let Some(tools) = cap.tools {
+                    parts.push(format!("tools={tools}"));
+                }
+                if let Some(window) = cap.context_window {
+                    parts.push(format!("context={window}"));
+                }
+                if let Some(window) = cap.output_window {
+                    parts.push(format!("output={window}"));
+                }
+                if let Some(protocol) = cap.reasoning_protocol.as_deref() {
+                    parts.push(format!("reasoning={protocol}"));
+                }
+                if let Some(sampling) = cap.sampling.as_ref() {
+                    if sampling.fixed_sampling == Some(true) {
+                        parts.push("fixed-sampling".to_string());
+                    }
+                    if sampling.temperature_supported == Some(false) {
+                        parts.push("no-temperature".to_string());
+                    }
+                    if let Some(field) = sampling.output_limit_field.as_deref() {
+                        parts.push(format!("output-field={field}"));
+                    }
+                }
+                println!("  {}: {}", route.model, parts.join(", "));
+            }
         }
     }
 

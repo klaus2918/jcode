@@ -95,7 +95,7 @@ impl ReasoningProtocol {
 }
 
 /// Reasoning behavior for one model.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReasoningCapability {
     pub protocol: Option<ReasoningProtocol>,
@@ -109,19 +109,6 @@ pub struct ReasoningCapability {
     pub tool_call_replay: bool,
     /// `thinking` knob shape: `enabled`/`disabled`/`adaptive`/`binary`.
     pub thinking_kind: Option<String>,
-}
-
-impl Default for ReasoningCapability {
-    fn default() -> Self {
-        Self {
-            protocol: None,
-            efforts: Vec::new(),
-            default_effort: None,
-            round_trip: false,
-            tool_call_replay: false,
-            thinking_kind: None,
-        }
-    }
 }
 
 /// Sampling constraints for one model.
@@ -394,6 +381,7 @@ pub struct RegistryEntry {
     pub output_limit_field: Option<&'static str>,
 }
 
+#[allow(clippy::too_many_arguments)]
 const fn entry(
     model: &'static str,
     provider: Option<&'static str>,
