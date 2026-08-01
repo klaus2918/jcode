@@ -936,7 +936,7 @@ pub(super) fn maybe_show_windows_setup_hints(
     state: &mut SetupHintsState,
     startup_hints: Option<StartupHints>,
 ) -> Option<StartupHints> {
-    if state.launch_count % 3 != 0 {
+    if !state.launch_count.is_multiple_of(3) {
         return startup_hints;
     }
 

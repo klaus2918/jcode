@@ -1513,7 +1513,7 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
                 let after_key =
                     crate::provider::MultiProvider::session_provider_key_after_model_switch(
                         model_name,
-                        &after_provider,
+                        after_provider,
                         before_key.as_deref(),
                     );
                 // The request may use a provider-prefixed spelling that
