@@ -889,7 +889,7 @@ fn user_registry_entry_for(model: &str, provider_hint: Option<&str>) -> Option<U
             (None, _) => true,
             (Some(expected), Some(actual)) => {
                 let expected = expected.to_ascii_lowercase();
-                actual == &expected || actual.ends_with(&format!(":{expected}"))
+                actual == expected || actual.ends_with(&format!(":{expected}"))
             }
             (Some(_), None) => false,
         };

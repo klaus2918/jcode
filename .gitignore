@@ -28,3 +28,4 @@ dist/
 target-check/
 target-msvc/
 .build-tools/
+.tmp-*/
