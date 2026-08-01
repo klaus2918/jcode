@@ -24,3 +24,7 @@ captures/
 /*.png
 # Internal task notes / configs (never commit: may contain credentials)
 000-task/
+dist/
+target-check/
+target-msvc/
+.build-tools/
