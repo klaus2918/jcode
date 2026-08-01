@@ -1,6 +1,7 @@
 pub mod anthropic;
 pub mod attempt_tracker;
 pub mod auth_mode;
+pub mod capability;
 pub mod catalog_refresh;
 pub mod failover;
 pub mod fallback_pick;
@@ -26,6 +27,12 @@ pub use anthropic::{
 pub use auth_mode::{
     AuthMode, AuthRoute, DualAuthProvider, pinned_mode_for, runtime_env_auth_route,
     runtime_env_pinned_mode,
+};
+pub use capability::{
+    CapabilitySource, CapabilityTrace, EMBEDDED_REGISTRY, ExplicitModelCapability, Modality,
+    ModelCapability, ReasoningCapability, ReasoningProtocol, ResolvedModelCapability,
+    RouteCapabilityView, SamplingCapability, SamplingView, resolve_capability,
+    resolve_capability_with_context_fn,
 };
 pub use catalog_refresh::{ModelCatalogRefreshSummary, summarize_model_catalog_refresh};
 pub use failover::{
@@ -827,6 +834,11 @@ pub struct ModelRoute {
     pub detail: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cheapness: Option<RouteCheapnessEstimate>,
+    /// Optional capability projection for this route (modalities, tools,
+    /// reasoning, context window, sampling). Omitted when the route carries
+    /// only the conservative default so existing wire bytes stay stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<RouteCapabilityView>,
 }
 
 /// Exact runtime identity for a selected model route.
@@ -1774,6 +1786,7 @@ mod tests {
 
         fn model_routes(&self) -> Vec<ModelRoute> {
             vec![ModelRoute {
+                capability: None,
                 model: "snapshot-model".to_string(),
                 provider: "Snapshot".to_string(),
                 api_method: "snapshot-api".to_string(),
@@ -1819,6 +1832,7 @@ mod tests {
     #[test]
     fn route_selection_preserves_runtime_identity_from_model_route() {
         let selection = RouteSelection::from_model_route(&ModelRoute {
+            capability: None,
             model: "openrouter/owl-alpha".to_string(),
             provider: "OpenRouter".to_string(),
             api_method: "openrouter".to_string(),
@@ -1831,6 +1845,7 @@ mod tests {
         assert_eq!(selection.api_method, "openrouter");
 
         let selection = RouteSelection::from_model_route(&ModelRoute {
+            capability: None,
             model: "nvidia/example".to_string(),
             provider: "NVIDIA NIM".to_string(),
             api_method: "openai-compatible:nvidia-nim".to_string(),

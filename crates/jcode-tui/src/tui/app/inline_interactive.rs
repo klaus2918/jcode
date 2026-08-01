@@ -564,6 +564,7 @@ impl App {
             })
         {
             routes.push(crate::provider::ModelRoute {
+                capability: None,
                 model: model.id.to_string(),
                 provider: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
                 api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
@@ -1339,6 +1340,7 @@ impl App {
 
         let routes = if routes.is_empty() && self.is_remote && current_model != "unknown" {
             vec![crate::provider::ModelRoute {
+                capability: None,
                 model: current_model.clone(),
                 provider: self
                     .remote_provider_name
@@ -4047,6 +4049,7 @@ mod tests {
 
     fn model_route(model: &str, provider: &str, api_method: &str) -> crate::provider::ModelRoute {
         crate::provider::ModelRoute {
+            capability: None,
             model: model.to_string(),
             provider: provider.to_string(),
             api_method: api_method.to_string(),

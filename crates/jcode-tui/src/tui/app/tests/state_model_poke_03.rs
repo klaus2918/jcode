@@ -100,7 +100,7 @@ impl AuthUxStateSpaceProvider {
         let authed = self.authed.load(Ordering::SeqCst);
         let mut routes = Vec::new();
         if self.include_wrong_profile_first {
-            routes.push(crate::provider::ModelRoute {
+            routes.push(crate::provider::ModelRoute { capability: None,
                 model: "wrong-profile-first".to_string(),
                 provider: self.provider_label.to_string(),
                 api_method: "openai-compatible:other-provider".to_string(),
@@ -114,7 +114,7 @@ impl AuthUxStateSpaceProvider {
             });
         }
         for model in self.models {
-            routes.push(crate::provider::ModelRoute {
+            routes.push(crate::provider::ModelRoute { capability: None,
                 model: (*model).to_string(),
                 provider: self.provider_label.to_string(),
                 api_method: format!("openai-compatible:{}", self.provider_id),
@@ -127,7 +127,7 @@ impl AuthUxStateSpaceProvider {
                 cheapness: None,
             });
             if self.include_generic_profile_duplicate {
-                routes.push(crate::provider::ModelRoute {
+                routes.push(crate::provider::ModelRoute { capability: None,
                     model: (*model).to_string(),
                     provider: self.provider_label.to_string(),
                     api_method: "openai-compatible".to_string(),
@@ -148,7 +148,7 @@ impl AuthUxStateSpaceProvider {
 impl MixedModelRoutesProvider {
     fn routes() -> Vec<crate::provider::ModelRoute> {
         vec![
-            crate::provider::ModelRoute {
+            crate::provider::ModelRoute { capability: None,
                 model: "gpt-5.5".to_string(),
                 provider: "OpenAI".to_string(),
                 api_method: "openai-oauth".to_string(),
@@ -156,7 +156,7 @@ impl MixedModelRoutesProvider {
                 detail: String::new(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute {
+            crate::provider::ModelRoute { capability: None,
                 model: "claude-opus-4-6".to_string(),
                 provider: "Anthropic".to_string(),
                 api_method: "claude-oauth".to_string(),
@@ -164,7 +164,7 @@ impl MixedModelRoutesProvider {
                 detail: String::new(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute {
+            crate::provider::ModelRoute { capability: None,
                 model: "Qwen/Qwen3-Coder-480B-A35B-Instruct".to_string(),
                 provider: "Chutes".to_string(),
                 api_method: "openai-compatible:chutes".to_string(),
@@ -172,7 +172,7 @@ impl MixedModelRoutesProvider {
                 detail: "https://llm.chutes.ai/v1".to_string(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute {
+            crate::provider::ModelRoute { capability: None,
                 model: "deepseek/deepseek-v4-pro".to_string(),
                 provider: "auto".to_string(),
                 api_method: "openrouter".to_string(),
@@ -422,7 +422,7 @@ impl Provider for CountingModelRoutesProvider {
             std::thread::sleep(self.delay);
         }
         (0..self.route_count)
-            .map(|idx| crate::provider::ModelRoute {
+            .map(|idx| crate::provider::ModelRoute { capability: None,
                 model: format!("counting-{}", (b'a' + idx as u8) as char),
                 provider: "Counting".to_string(),
                 api_method: "test".to_string(),
@@ -1444,7 +1444,7 @@ impl Provider for AzureLoginMockProvider {
     }
 
     fn model_routes(&self) -> Vec<crate::provider::ModelRoute> {
-        vec![crate::provider::ModelRoute {
+        vec![crate::provider::ModelRoute { capability: None,
             model: self.model(),
             provider: "Azure OpenAI".to_string(),
             api_method: "openai-compatible".to_string(),

@@ -942,6 +942,7 @@ impl Provider for StubExternalRuntime {
         self.available_models_display()
             .into_iter()
             .map(|model| ModelRoute {
+                capability: None,
                 model,
                 provider: self.provider_label.to_string(),
                 api_method: self.api_method.to_string(),

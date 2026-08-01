@@ -556,7 +556,7 @@ fn test_summarize_model_catalog_refresh_ignores_display_only_age_suffix_changes(
     let summary = summarize_model_catalog_refresh(
         vec!["anthropic/claude-sonnet-4".to_string()],
         vec!["anthropic/claude-sonnet-4".to_string()],
-        vec![ModelRoute {
+        vec![ModelRoute { capability: None,
             model: "anthropic/claude-sonnet-4".to_string(),
             provider: "Fireworks".to_string(),
             api_method: "openrouter".to_string(),
@@ -564,7 +564,7 @@ fn test_summarize_model_catalog_refresh_ignores_display_only_age_suffix_changes(
             detail: "fast, 5m ago".to_string(),
             cheapness: None,
         }],
-        vec![ModelRoute {
+        vec![ModelRoute { capability: None,
             model: "anthropic/claude-sonnet-4".to_string(),
             provider: "Fireworks".to_string(),
             api_method: "openrouter".to_string(),
@@ -585,7 +585,7 @@ fn test_summarize_model_catalog_refresh_still_counts_meaningful_detail_changes()
     let summary = summarize_model_catalog_refresh(
         vec!["anthropic/claude-sonnet-4".to_string()],
         vec!["anthropic/claude-sonnet-4".to_string()],
-        vec![ModelRoute {
+        vec![ModelRoute { capability: None,
             model: "anthropic/claude-sonnet-4".to_string(),
             provider: "Fireworks".to_string(),
             api_method: "openrouter".to_string(),
@@ -593,7 +593,7 @@ fn test_summarize_model_catalog_refresh_still_counts_meaningful_detail_changes()
             detail: "fast, 5m ago".to_string(),
             cheapness: None,
         }],
-        vec![ModelRoute {
+        vec![ModelRoute { capability: None,
             model: "anthropic/claude-sonnet-4".to_string(),
             provider: "Fireworks".to_string(),
             api_method: "openrouter".to_string(),

@@ -430,7 +430,7 @@ fn test_remote_connectivity_error_without_auto_retry_still_waits_for_network() {
 }
 
 fn openai_oauth_route(model: &str) -> crate::provider::ModelRoute {
-    crate::provider::ModelRoute {
+    crate::provider::ModelRoute { capability: None,
         model: model.to_string(),
         provider: "OpenAI".to_string(),
         api_method: "openai-oauth".to_string(),
@@ -441,7 +441,7 @@ fn openai_oauth_route(model: &str) -> crate::provider::ModelRoute {
 }
 
 fn claude_oauth_route(model: &str) -> crate::provider::ModelRoute {
-    crate::provider::ModelRoute {
+    crate::provider::ModelRoute { capability: None,
         model: model.to_string(),
         provider: "Anthropic".to_string(),
         api_method: "claude-oauth".to_string(),
@@ -731,7 +731,7 @@ fn test_guardrail_reroute_prefers_native_anthropic_route() {
     app.remote_provider_model = Some("gpt-5.5".to_string());
     app.remote_model_options = vec![
         openai_oauth_route("gpt-5.5"),
-        crate::provider::ModelRoute {
+        crate::provider::ModelRoute { capability: None,
             model: "claude-opus-4-8".to_string(),
             provider: "OpenRouter".to_string(),
             api_method: "openrouter".to_string(),

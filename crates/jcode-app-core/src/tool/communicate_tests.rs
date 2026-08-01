@@ -1130,6 +1130,7 @@ fn description_includes_swarm_prompt_guidance() {
 fn format_swarm_model_list_renders_routes_and_pin() {
     let routes = vec![
         jcode_provider_core::ModelRoute {
+            capability: None,
             model: "gpt-5.5".to_string(),
             provider: "OpenAI".to_string(),
             api_method: "openai-api-key".to_string(),
@@ -1138,6 +1139,7 @@ fn format_swarm_model_list_renders_routes_and_pin() {
             cheapness: None,
         },
         jcode_provider_core::ModelRoute {
+            capability: None,
             model: "claude-fable-5".to_string(),
             provider: "Anthropic".to_string(),
             api_method: "anthropic-api-key".to_string(),

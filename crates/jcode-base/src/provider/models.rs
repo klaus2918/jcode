@@ -1125,6 +1125,53 @@ pub fn resolve_model_capabilities(model: &str, provider_hint: Option<&str>) -> M
     }
 }
 
+/// Project a user-configured model entry into the explicit capability
+/// override consumed by the unified capability resolution pipeline.
+pub fn explicit_model_capability(
+    config: &crate::config::NamedProviderModelConfig,
+) -> jcode_provider_core::ExplicitModelCapability {
+    use jcode_provider_core::{ExplicitModelCapability, Modality, ReasoningProtocol};
+    ExplicitModelCapability {
+        vision: config.vision,
+        tools: config.tools,
+        reasoning_protocol: config
+            .reasoning_protocol
+            .as_deref()
+            .and_then(ReasoningProtocol::parse),
+        supported_efforts: config.supported_efforts.clone(),
+        default_effort: config.default_effort.clone(),
+        context_window: config.context_window,
+        output_window: config.output_window,
+        temperature_supported: config.temperature_supported,
+        fixed_sampling: config.fixed_sampling,
+        output_limit_field: config.output_limit_field.clone(),
+        input_modalities: Some(
+            config
+                .input
+                .iter()
+                .filter_map(|input| Modality::parse(input))
+                .collect(),
+        ),
+    }
+}
+
+/// Resolve the full capability for a model using the unified pipeline
+/// (explicit config > embedded registry > heuristics > conservative default),
+/// with the base crate's live-catalog context cache as the heuristic layer.
+pub fn resolve_model_capability_with_config(
+    model: &str,
+    provider_hint: Option<&str>,
+    config: Option<&crate::config::NamedProviderModelConfig>,
+) -> jcode_provider_core::ResolvedModelCapability {
+    let explicit = config.map(explicit_model_capability);
+    jcode_provider_core::resolve_capability_with_context_fn(
+        model,
+        provider_hint,
+        explicit.as_ref(),
+        |model, hint| context_limit_for_model_with_provider(model, hint),
+    )
+}
+
 /// Detect which provider a model belongs to
 pub fn provider_for_model_with_hint(
     model: &str,
