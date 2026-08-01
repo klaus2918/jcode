@@ -1395,3 +1395,72 @@ async fn refresh_models_emits_available_models_updated_after_prefetch() {
             && route.api_method == "mock-auth"
     }));
 }
+
+#[tokio::test]
+async fn same_model_set_request_is_noop_and_keeps_provider_session() {
+    crate::bus::reset_models_updated_publish_state_for_tests();
+    let provider_concrete = Arc::new(AuthChangeMockProvider::new());
+    *provider_concrete.state.logged_in.write().unwrap() = true;
+    *provider_concrete.state.selected_model.write().unwrap() =
+        Some("user-picked-model".to_string());
+    let provider: Arc<dyn Provider> = provider_concrete;
+    let registry = Registry::empty();
+    let agent = Arc::new(Mutex::new(Agent::new(provider, registry)));
+    agent
+        .lock()
+        .await
+        .set_provider_session_id_for_tests(Some("upstream-session-1".to_string()));
+    let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+
+    // Requesting the already-active model must succeed without resetting the
+    // provider session id (design: same-model switch is a no-op).
+    handle_set_model(
+        71,
+        "user-picked-model".to_string(),
+        &agent,
+        &client_event_tx,
+    )
+    .await;
+    match client_event_rx.recv().await.expect("model changed event") {
+        ServerEvent::ModelChanged {
+            id: 71,
+            model,
+            provider_name,
+            error,
+            ..
+        } => {
+            assert_eq!(error, None, "same-model switch must succeed");
+            assert_eq!(model, "user-picked-model");
+            assert_eq!(provider_name.as_deref(), Some("mock-auth"));
+        }
+        other => panic!("expected ModelChanged, got {other:?}"),
+    }
+    let agent_guard = agent.lock().await;
+    assert_eq!(
+        agent_guard.provider_session_id(),
+        Some("upstream-session-1"),
+        "same-model switch must keep the provider session id"
+    );
+
+    // A real model switch still resets the provider session id so the next
+    // turn sends full context to the new model.
+    drop(agent_guard);
+    handle_set_model(72, "second-model".to_string(), &agent, &client_event_tx).await;
+    match client_event_rx.recv().await.expect("model changed event") {
+        ServerEvent::ModelChanged {
+            id: 72,
+            model,
+            error,
+            ..
+        } => {
+            assert_eq!(error, None, "real switch must succeed");
+            assert_eq!(model, "second-model");
+        }
+        other => panic!("expected ModelChanged, got {other:?}"),
+    }
+    assert_eq!(
+        agent.lock().await.provider_session_id(),
+        None,
+        "real switch must reset the provider session id"
+    );
+}

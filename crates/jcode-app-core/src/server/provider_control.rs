@@ -422,6 +422,38 @@ fn send_model_changed_result(
     }
 }
 
+/// Runs one provider/model switch and reports whether the effective
+/// provider/model/provider-key actually changed.
+///
+/// Same-model requests (including provider-prefixed spellings that resolve
+/// back to the active route) must not reset the provider session id: doing so
+/// would drop the warm upstream conversation for no reason. Callers reset the
+/// provider session only when `switched` is true.
+fn apply_model_switch_and_detect_noop<F>(
+    agent: &mut Agent,
+    apply: F,
+) -> (anyhow::Result<(String, String)>, bool)
+where
+    F: FnOnce(&mut Agent) -> anyhow::Result<()>,
+{
+    let before_model = agent.provider_model();
+    let before_provider = agent.provider_name();
+    let before_key = agent.session_provider_key();
+    let result = apply(agent);
+    match result {
+        Ok(()) => {
+            let switched = before_model != agent.provider_model()
+                || before_provider != agent.provider_name()
+                || before_key != agent.session_provider_key();
+            (
+                Ok((agent.provider_model(), agent.provider_name())),
+                switched,
+            )
+        }
+        Err(error) => (Err(error), false),
+    }
+}
+
 fn apply_cycle_model(
     id: u64,
     direction: i8,
@@ -459,11 +491,21 @@ fn apply_cycle_model(
         ],
     );
     let result = {
-        let result = agent.set_model(&next_model);
-        if result.is_ok() {
+        let (result, switched) =
+            apply_model_switch_and_detect_noop(agent, |agent| agent.set_model(&next_model));
+        if switched {
             agent.reset_provider_session();
+        } else if result.is_ok() {
+            crate::logging::event_info(
+                "server_model_switch_noop",
+                vec![
+                    ("id", id.to_string()),
+                    ("requested_model", next_model.clone()),
+                    ("current_model", current.clone()),
+                ],
+            );
         }
-        result.map(|_| (agent.provider_model(), agent.provider_name()))
+        result
     };
     send_model_changed_result(id, result, current, client_event_tx);
 }
@@ -578,11 +620,21 @@ fn apply_set_model(
 
     let current = agent.provider_model();
     let result = {
-        let result = agent.set_model(&model);
-        if result.is_ok() {
+        let (result, switched) =
+            apply_model_switch_and_detect_noop(agent, |agent| agent.set_model(&model));
+        if switched {
             agent.reset_provider_session();
+        } else if result.is_ok() {
+            crate::logging::event_info(
+                "server_model_switch_noop",
+                vec![
+                    ("id", id.to_string()),
+                    ("requested_model", model.clone()),
+                    ("current_model", current.clone()),
+                ],
+            );
         }
-        result.map(|_| (agent.provider_model(), agent.provider_name()))
+        result
     };
     send_model_changed_result(id, result, current, client_event_tx);
 }
@@ -626,11 +678,22 @@ fn apply_set_route(
 
     let current = agent.provider_model();
     let result = {
-        let result = agent.set_route_selection(&selection);
-        if result.is_ok() {
+        let (result, switched) = apply_model_switch_and_detect_noop(agent, |agent| {
+            agent.set_route_selection(&selection)
+        });
+        if switched {
             agent.reset_provider_session();
+        } else if result.is_ok() {
+            crate::logging::event_info(
+                "server_model_switch_noop",
+                vec![
+                    ("id", id.to_string()),
+                    ("requested_model", selection.model.clone()),
+                    ("current_model", current.clone()),
+                ],
+            );
         }
-        result.map(|_| (agent.provider_model(), agent.provider_name()))
+        result
     };
     send_model_changed_result(id, result, current, client_event_tx);
 }

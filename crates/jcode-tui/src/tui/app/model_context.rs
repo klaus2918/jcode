@@ -1459,6 +1459,19 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    let is_model_command = trimmed == "/model"
+        || trimmed == "/models"
+        || trimmed.starts_with("/model ")
+        || trimmed.starts_with("/models ");
+    if is_model_command && let Some(reason) = runtime_switch_busy_reason(app) {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Cannot switch models while {}. Wait for the session to become idle, then try /model again.",
+            reason
+        )));
+        app.set_status_notice("Model switch busy");
+        return true;
+    }
+
     if trimmed == "/model" || trimmed == "/models" {
         app.record_keybinding_slow(crate::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
         app.open_model_picker();
@@ -1468,9 +1481,70 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
     if let Some(model_name) = trimmed.strip_prefix("/model ") {
         app.record_keybinding_slow(crate::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
         let model_name = model_name.trim();
+        if model_name.is_empty() {
+            app.push_display_message(DisplayMessage::error("Usage: /model <name>"));
+            app.set_status_notice("Model switch failed");
+            return true;
+        }
+
+        // Same-model switch is a no-op: keep the provider session id (and the
+        // warm upstream conversation) instead of resetting it for nothing.
+        if model_name == app.provider.model() {
+            let active_model = app.provider.model();
+            app.push_display_message(DisplayMessage::system(format!(
+                "Already using model: {}",
+                active_model
+            )));
+            app.set_status_notice(format!("Already using model: {}", active_model));
+            return true;
+        }
+
+        // Snapshot the current session before the provider changes so the
+        // carried history is on disk even if the switch itself fails.
+        let _ = app.session.save();
+
+        let before_model = app.provider.model();
+        let before_provider = app.provider.name();
+        let before_key = app.session.provider_key.clone();
         match app.provider.set_model(model_name) {
             Ok(()) => {
+                let active_model = app.provider.model();
+                let after_provider = app.provider.name();
+                let after_key =
+                    crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                        model_name,
+                        &after_provider,
+                        before_key.as_deref(),
+                    );
+                // The request may use a provider-prefixed spelling that
+                // resolves back to the already-active model/route (e.g.
+                // `openai-api:gpt-5.5` while gpt-5.5 is active). Treat that as
+                // a no-op too instead of resetting the session.
+                if before_model == active_model
+                    && before_provider == after_provider
+                    && before_key == after_key
+                {
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "Already using model: {}",
+                        active_model
+                    )));
+                    app.set_status_notice(format!("Already using model: {}", active_model));
+                    return true;
+                }
+
                 let active_model = app.finalize_model_switch(model_name);
+                // Best-effort persistence: /model switches also become the
+                // default for future sessions. A failed write must not block
+                // the in-memory switch.
+                if let Err(error) = crate::config::Config::set_default_model(
+                    Some(&active_model),
+                    after_key.as_deref(),
+                ) {
+                    app.push_display_message(DisplayMessage::system(format!(
+                        "Switched to {}; failed to save as default model: {}",
+                        active_model, error
+                    )));
+                }
                 let auth_suffix = app
                     .provider
                     .active_auth_method_label()
@@ -1738,6 +1812,25 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     false
+}
+
+/// Short user-facing reason when a runtime model switch must be rejected.
+///
+/// Mirrors the design invariant that model switches are refused while a turn
+/// is running, follow-ups are queued, or a provider auto-switch is pending;
+/// mutating the shared provider mid-turn would corrupt the in-flight request.
+pub(super) fn runtime_switch_busy_reason(app: &App) -> Option<&'static str> {
+    if app.is_processing {
+        Some("a turn is currently running")
+    } else if app.pending_turn {
+        Some("a turn is pending")
+    } else if app.has_queued_followups() {
+        Some("follow-up messages are queued")
+    } else if app.pending_provider_failover.is_some() {
+        Some("a provider auto-switch is pending")
+    } else {
+        None
+    }
 }
 
 async fn refresh_model_catalog_with_progress(

@@ -1,0 +1,248 @@
+// Runtime `/model` switch invariants (design: model switch handling logic):
+// - busy sessions reject the switch instead of mutating the shared provider
+//   mid-turn;
+// - same-model requests are no-ops that keep the provider session id;
+// - a real switch snapshots/saves the session and best-effort persists the
+//   new default model.
+
+/// Minimal provider that records `set_model` calls and exposes a mutable
+/// active model so tests can observe no-op detection and persistence.
+#[derive(Clone)]
+struct ModelSwitchProbeProvider {
+    model: StdArc<StdMutex<String>>,
+    set_model_calls: StdArc<StdMutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for ModelSwitchProbeProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        unimplemented!("ModelSwitchProbeProvider")
+    }
+
+    fn name(&self) -> &str {
+        "probe"
+    }
+
+    fn model(&self) -> String {
+        self.model.lock().unwrap().clone()
+    }
+
+    fn set_model(&self, model: &str) -> Result<()> {
+        self.set_model_calls.lock().unwrap().push(model.to_string());
+        *self.model.lock().unwrap() = model.trim().to_string();
+        Ok(())
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+fn create_model_switch_probe_app() -> (
+    App,
+    StdArc<StdMutex<String>>,
+    StdArc<StdMutex<Vec<String>>>,
+) {
+    ensure_test_jcode_home_if_unset();
+    clear_persisted_test_ui_state();
+    crate::tui::ui::clear_test_render_state_for_tests();
+
+    let model = StdArc::new(StdMutex::new("gpt-5.5".to_string()));
+    let set_model_calls = StdArc::new(StdMutex::new(Vec::new()));
+    let provider: Arc<dyn Provider> = Arc::new(ModelSwitchProbeProvider {
+        model: model.clone(),
+        set_model_calls: set_model_calls.clone(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+    let mut app = App::new_for_test_harness(provider, registry);
+    app.queue_mode = false;
+    (app, model, set_model_calls)
+}
+
+#[test]
+fn model_switch_rejects_while_turn_is_running() {
+    let (mut app, _, set_model_calls) = create_model_switch_probe_app();
+    app.is_processing = true;
+
+    assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
+
+    let last = app.display_messages.last().expect("error message");
+    assert!(
+        last.content.contains("Cannot switch models"),
+        "expected busy rejection, got: {}",
+        last.content
+    );
+    assert_eq!(app.status_notice(), Some("Model switch busy".to_string()));
+    assert!(
+        set_model_calls.lock().unwrap().is_empty(),
+        "no set_model call may be issued while a turn is running"
+    );
+    assert_eq!(app.session.model.as_deref(), Some("gpt-5.5"));
+}
+
+#[test]
+fn model_switch_rejects_while_followups_are_queued() {
+    let (mut app, _, set_model_calls) = create_model_switch_probe_app();
+    app.queued_messages.push("follow-up".to_string());
+
+    assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
+
+    let last = app.display_messages.last().expect("error message");
+    assert!(
+        last.content.contains("Cannot switch models"),
+        "expected busy rejection, got: {}",
+        last.content
+    );
+    assert!(set_model_calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn model_switch_same_model_is_noop_and_keeps_provider_session() {
+    let (mut app, _, set_model_calls) = create_model_switch_probe_app();
+    app.provider_session_id = Some("upstream-session-9".to_string());
+    app.session.provider_session_id = Some("upstream-session-9".to_string());
+
+    assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.5"));
+
+    let last = app.display_messages.last().expect("notice");
+    assert!(
+        last.content.contains("Already using model"),
+        "expected no-op notice, got: {}",
+        last.content
+    );
+    assert_eq!(
+        app.status_notice(),
+        Some("Already using model: gpt-5.5".to_string())
+    );
+    assert!(
+        set_model_calls.lock().unwrap().is_empty(),
+        "same-model switch must not call set_model"
+    );
+    assert_eq!(
+        app.provider_session_id.as_deref(),
+        Some("upstream-session-9"),
+        "same-model switch must keep the provider session id"
+    );
+    assert_eq!(
+        app.session.provider_session_id.as_deref(),
+        Some("upstream-session-9")
+    );
+}
+
+#[test]
+fn model_switch_updates_session_and_persists_default_model() {
+    with_temp_jcode_home(|| {
+        let (mut app, model, set_model_calls) = create_model_switch_probe_app();
+        app.provider_session_id = Some("stale-session".to_string());
+
+        assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
+
+        assert_eq!(*model.lock().unwrap(), "gpt-5.6");
+        assert_eq!(
+            set_model_calls.lock().unwrap().as_slice(),
+            &["gpt-5.6".to_string()]
+        );
+        assert_eq!(app.session.model.as_deref(), Some("gpt-5.6"));
+        assert_eq!(
+            app.provider_session_id, None,
+            "a real switch must reset the provider session id"
+        );
+        let cfg = crate::config::config();
+        assert_eq!(
+            cfg.provider.default_model.as_deref(),
+            Some("gpt-5.6"),
+            "/model switch must persist the new default model"
+        );
+    });
+}
+
+#[test]
+fn model_switch_persist_failure_does_not_block_the_switch() {
+    with_temp_jcode_home(|| {
+        let (mut app, model, _) = create_model_switch_probe_app();
+        // Make the config path unwritable by pointing JCODE_HOME at a file so
+        // `Config::save` cannot create config.toml underneath it.
+        let home = crate::storage::jcode_dir().expect("test home");
+        std::fs::create_dir_all(&home).expect("home dir");
+        let config_path = home.join("config.toml");
+        std::fs::write(&config_path, b"[provider]\n").expect("seed config");
+        // Replace the config file with a directory so load/save fails cleanly.
+        std::fs::remove_file(&config_path).expect("remove seed config");
+        std::fs::create_dir(&config_path).expect("config path as directory");
+        crate::config::invalidate_config_cache();
+
+        assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
+
+        assert_eq!(*model.lock().unwrap(), "gpt-5.6", "switch must still apply");
+        assert!(app.display_messages.iter().any(|message| {
+            message
+                .content
+                .contains("failed to save as default model")
+        }));
+    });
+}
+
+#[test]
+fn remote_model_switch_rejects_while_turn_is_running() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.is_remote = true;
+        // Seed a concrete current model + provider key so the ranked command
+        // suggestions are non-empty; the provider-prefixed request below then
+        // matches no suggestion, leaving Enter to reach the runtime switch
+        // handler instead of being consumed by the suggestion system.
+        app.remote_provider_model = Some("gpt-5.5".to_string());
+        app.session.provider_key = Some("openai-api".to_string());
+        app.is_processing = true;
+        app.input = "/model openai-api:gpt-5.6".to_string();
+        rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut remote))
+        .expect("remote key handling should not error");
+
+        let last = app.display_messages.last().expect("error message");
+        assert!(
+            last.content.contains("Cannot switch models"),
+            "expected busy rejection, got: {}",
+            last.content
+        );
+        assert_eq!(app.status_notice(), Some("Model switch busy".to_string()));
+    });
+}
+
+#[test]
+fn remote_model_switch_same_model_is_noop() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.is_remote = true;
+        app.remote_provider_model = Some("gpt-5.5".to_string());
+        app.session.provider_key = Some("openai-api".to_string());
+        app.input = "/model openai-api:gpt-5.5".to_string();
+        rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut remote))
+        .expect("remote key handling should not error");
+
+        let last = app.display_messages.last().expect("notice");
+        assert!(
+            last.content.contains("Already using model"),
+            "expected no-op notice, got: {}",
+            last.content
+        );
+        assert_eq!(
+            app.status_notice(),
+            Some("Already using model: gpt-5.5".to_string())
+        );
+    });
+}

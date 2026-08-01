@@ -187,6 +187,20 @@ impl Agent {
         self.session.provider_key.clone()
     }
 
+    /// Current provider-side conversation resume id, when one is active.
+    #[cfg(test)]
+    pub(crate) fn provider_session_id(&self) -> Option<&str> {
+        self.provider_session_id.as_deref()
+    }
+
+    /// Test-only injection so server tests can observe that a same-model
+    /// switch no longer clears the provider session id.
+    #[cfg(test)]
+    pub(crate) fn set_provider_session_id_for_tests(&mut self, session_id: Option<String>) {
+        self.provider_session_id = session_id.clone();
+        self.session.provider_session_id = session_id;
+    }
+
     /// API method/runtime route used to select the active model (e.g.
     /// "openai-api", "claude-oauth", "openai-compatible:nvidia-nim"). Spawned
     /// swarm agents inherit this so they reconstruct the coordinator's exact

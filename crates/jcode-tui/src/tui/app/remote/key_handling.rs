@@ -1030,6 +1030,14 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/model" || trimmed == "/models" {
+                    if let Some(reason) = app_mod::model_context::runtime_switch_busy_reason(app) {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Cannot switch models while {}. Wait for the session to become idle, then try /model again.",
+                            reason
+                        )));
+                        app.set_status_notice("Model switch busy");
+                        return Ok(());
+                    }
                     let _ = remote.refresh_models().await;
                     // `refresh_models` re-queries providers and pushes the
                     // result over the bus, where oversized frames get
@@ -1131,6 +1139,39 @@ async fn handle_remote_key_internal(
                     let model_name = model_name.trim();
                     if model_name.is_empty() {
                         app.push_display_message(DisplayMessage::error("Usage: /model <name>"));
+                        return Ok(());
+                    }
+                    if let Some(reason) = app_mod::model_context::runtime_switch_busy_reason(app) {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Cannot switch models while {}. Wait for the session to become idle, then try /model again.",
+                            reason
+                        )));
+                        app.set_status_notice("Model switch busy");
+                        return Ok(());
+                    }
+                    // Same-model switches are no-ops: do not round-trip to the
+                    // server (which would still work, but would also reset the
+                    // provider session for nothing).
+                    let current_model = app
+                        .remote_provider_model
+                        .clone()
+                        .unwrap_or_else(|| app.provider.model());
+                    let same_route = model_name == current_model
+                        || app
+                            .session
+                            .provider_key
+                            .as_deref()
+                            .is_some_and(|provider_key| {
+                                model_name.rsplit_once(':').is_some_and(|(prefix, model)| {
+                                    prefix == provider_key && model == current_model
+                                })
+                            });
+                    if same_route {
+                        app.push_display_message(DisplayMessage::system(format!(
+                            "Already using model: {}",
+                            current_model
+                        )));
+                        app.set_status_notice(format!("Already using model: {}", current_model));
                         return Ok(());
                     }
                     app.upstream_provider = None;
