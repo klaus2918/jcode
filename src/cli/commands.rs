@@ -3301,7 +3301,9 @@ pub async fn run_model_command(
             println!();
             println!("Capabilities (config > registry > heuristic):");
             for route in &capable_routes {
-                let cap = route.capability.as_ref().expect("filtered for capability");
+                let Some(cap) = route.capability.as_ref() else {
+                    continue;
+                };
                 let mut parts = Vec::new();
                 if !cap.modalities.is_empty() {
                     parts.push(format!("modalities={}", cap.modalities.join("+")));
