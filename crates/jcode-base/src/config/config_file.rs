@@ -15,6 +15,7 @@ impl Config {
         // User capability registry follows the config file lifecycle so edits
         // to modelcap.json take effect on the next config reload.
         super::modelcap::load_user_modelcap_registry();
+        warn_on_inline_api_keys(&config);
         config
     }
 
@@ -742,5 +743,23 @@ impl Config {
             ));
         }
         Ok(())
+    }
+}
+
+/// P2 deprecation notice: inline `api_key` values keep credentials in TOML.
+/// Recommend `api_key_env` (or `env_file`) so keys stay in the environment.
+/// The field is intentionally not removed: old configs keep working.
+fn warn_on_inline_api_keys(config: &Config) {
+    for (name, profile) in &config.providers {
+        if profile
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+        {
+            crate::logging::warn(&format!(
+                "Provider '{name}' stores an inline api_key in TOML; prefer \
+                 api_key_env / env_file so the key value never lives in config"
+            ));
+        }
     }
 }

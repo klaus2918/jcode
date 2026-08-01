@@ -755,6 +755,93 @@ pub const EMBEDDED_REGISTRY: &[RegistryEntry] = &[
         None,
         None,
     ),
+    // --- OpenAI o-series reasoning models (tools + selectable efforts) ---
+    entry(
+        "o1*",
+        Some("openai"),
+        &[],
+        Some(ReasoningProtocol::OpenAi),
+        crate::reasoning::OPENAI_SELECTABLE_EFFORTS,
+        None,
+        false,
+        false,
+        None,
+        Some(true),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    entry(
+        "o3*",
+        Some("openai"),
+        &[],
+        Some(ReasoningProtocol::OpenAi),
+        crate::reasoning::OPENAI_SELECTABLE_EFFORTS,
+        None,
+        false,
+        false,
+        None,
+        Some(true),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    entry(
+        "o4*",
+        Some("openai"),
+        &[],
+        Some(ReasoningProtocol::OpenAi),
+        crate::reasoning::OPENAI_SELECTABLE_EFFORTS,
+        None,
+        false,
+        false,
+        None,
+        Some(true),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    entry(
+        "o5*",
+        Some("openai"),
+        &[],
+        Some(ReasoningProtocol::OpenAi),
+        crate::reasoning::OPENAI_SELECTABLE_EFFORTS,
+        None,
+        false,
+        false,
+        None,
+        Some(true),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
+    // --- Google Gemini family: multimodal + tool calling ---
+    entry(
+        "gemini-*",
+        Some("gemini"),
+        &[Modality::Image],
+        Some(ReasoningProtocol::OpenAi),
+        &[],
+        None,
+        false,
+        false,
+        None,
+        Some(true),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
 ];
 
 fn registry_entry_for(model: &str, provider_hint: Option<&str>) -> Option<&'static RegistryEntry> {
@@ -1223,6 +1310,22 @@ mod tests {
             resolved.capability.reasoning.protocol,
             Some(ReasoningProtocol::Anthropic)
         );
+    }
+
+    #[test]
+    fn registry_prefix_matches_o_series_and_gemini() {
+        let o3 = resolve_capability("o3-mini", Some("openai"), None);
+        assert_eq!(o3.capability.tools, Some(true));
+        assert_eq!(
+            o3.capability.reasoning.protocol,
+            Some(ReasoningProtocol::OpenAi)
+        );
+        assert!(!o3.capability.reasoning.efforts.is_empty());
+
+        let gemini = resolve_capability("gemini-2.5-pro", Some("gemini"), None);
+        assert_eq!(gemini.capability.tools, Some(true));
+        assert!(gemini.capability.supports_image());
+        assert_eq!(gemini.trace.vision, Some(CapabilitySource::Registry));
     }
 
     #[test]
