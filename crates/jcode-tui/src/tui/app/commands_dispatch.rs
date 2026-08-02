@@ -3,7 +3,7 @@
 //!
 //! There used to be two hand-maintained copies of this chain: one in the local
 //! TUI submit path and one for a remote client whose connection had dropped.
-//! They drifted, so commands like `/cancel`, `/ssh`, `/productivity`, and
+//! They drifted, so commands like `/cancel`, `/ssh`, and
 //! `/model-status` silently did nothing in the remote-disconnected case while
 //! working locally. Both call sites now share this list, so adding a handler
 //! here makes it reachable from every in-process entry point at once.
@@ -32,7 +32,6 @@ pub(super) fn dispatch_local_command(app: &mut App, trimmed: &str) -> bool {
         || super::debug::handle_debug_command(app, trimmed)
         || super::model_context::handle_model_command(app, trimmed)
         || super::commands::handle_usage_command(app, trimmed)
-        || super::productivity::handle_productivity_command(app, trimmed)
         || super::commands::handle_feedback_command(app, trimmed)
         || super::commands::handle_telemetry_command(app, trimmed)
         || super::support::handle_support_command(app, trimmed)
