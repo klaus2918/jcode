@@ -147,9 +147,7 @@ impl ExternalAuthAutoImportOutcome {
             "openrouter",
         ];
         ORDER.iter().copied().find(|provider| {
-            self.imported_providers
-                .iter()
-                .any(|imported| *imported == *provider)
+            self.imported_providers.contains(provider)
         })
     }
 

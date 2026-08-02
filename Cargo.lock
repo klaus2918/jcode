@@ -939,9 +939,6 @@ name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "bitvec"
@@ -1434,15 +1431,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "crossbeam-channel"
-version = "0.5.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
-dependencies = [
- "crossbeam-utils",
 ]
 
 [[package]]
@@ -2499,23 +2487,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
-name = "global-hotkey"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9247516746aa8e53411a0db9b62b0e24efbcf6a76e0ba73e5a91b512ddabed7"
-dependencies = [
- "crossbeam-channel",
- "keyboard-types",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "once_cell",
- "thiserror 2.0.19",
- "windows-sys 0.59.0",
- "x11rb",
- "xkeysym",
-]
-
-[[package]]
 name = "globset"
 version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3251,13 +3222,11 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
- "block2 0.6.2",
  "chrono",
  "clap",
  "crossterm",
  "dirs",
  "futures",
- "global-hotkey",
  "hex",
  "jcode-build-meta",
  "jcode-provider-anthropic-runtime",
@@ -3274,9 +3243,6 @@ dependencies = [
  "jcode-tui-session-picker",
  "jcode-tui-style",
  "libc",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
  "open",
  "ratatui",
  "reqwest 0.12.28",
@@ -3325,7 +3291,6 @@ dependencies = [
  "flate2",
  "futures",
  "glob",
- "global-hotkey",
  "jcode-agent-runtime",
  "jcode-ambient-types",
  "jcode-base",
@@ -3342,7 +3307,6 @@ dependencies = [
  "jcode-provider-core",
  "jcode-selfdev-types",
  "jcode-session-types",
- "jcode-setup-hints",
  "jcode-swarm-core",
  "jcode-task-types",
  "jcode-terminal-image",
@@ -3405,7 +3369,6 @@ dependencies = [
  "crossterm",
  "dirs",
  "futures",
- "global-hotkey",
  "hex",
  "image",
  "jcode-agent-runtime",
@@ -4043,26 +4006,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jcode-setup-hints"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "global-hotkey",
- "jcode-build-meta",
- "jcode-config-types",
- "jcode-core",
- "jcode-logging",
- "jcode-storage",
- "jcode-terminal-launch",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "jcode-side-panel-types"
 version = "0.1.0"
 dependencies = [
@@ -4147,7 +4090,6 @@ dependencies = [
  "crossterm",
  "dirs",
  "futures",
- "global-hotkey",
  "hex",
  "image",
  "jcode-app-core",
@@ -4464,17 +4406,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "portable-atomic",
  "thiserror 2.0.19",
-]
-
-[[package]]
-name = "keyboard-types"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b750dcadc39a09dbadd74e118f6dd6598df77fa01df0cfcdc52c28dece74528a"
-dependencies = [
- "bitflags 2.10.0",
- "serde",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -5155,8 +5086,8 @@ dependencies = [
  "block2 0.5.1",
  "libc",
  "objc2 0.5.2",
- "objc2-core-data 0.2.2",
- "objc2-core-image 0.2.2",
+ "objc2-core-data",
+ "objc2-core-image",
  "objc2-foundation 0.2.2",
  "objc2-quartz-core 0.2.2",
 ]
@@ -5168,18 +5099,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.10.0",
- "block2 0.6.2",
- "libc",
  "objc2 0.6.4",
- "objc2-cloud-kit 0.3.2",
- "objc2-core-data 0.3.2",
- "objc2-core-foundation",
  "objc2-core-graphics",
- "objc2-core-image 0.3.2",
- "objc2-core-text",
- "objc2-core-video",
  "objc2-foundation 0.3.2",
- "objc2-quartz-core 0.3.2",
 ]
 
 [[package]]
@@ -5193,17 +5115,6 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
-]
-
-[[package]]
-name = "objc2-cloud-kit"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73ad74d880bb43877038da939b7427bba67e9dd42004a18b809ba7d87cee241c"
-dependencies = [
- "bitflags 2.10.0",
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -5227,17 +5138,6 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
-]
-
-[[package]]
-name = "objc2-core-data"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b402a653efbb5e82ce4df10683b6b28027616a2715e90009947d50b8dd298fa"
-dependencies = [
- "bitflags 2.10.0",
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -5277,16 +5177,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc2-core-image"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5d563b38d2b97209f8e861173de434bd0214cf020e3423a52624cd1d989f006"
-dependencies = [
- "objc2 0.6.4",
- "objc2-foundation 0.3.2",
-]
-
-[[package]]
 name = "objc2-core-location"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5305,22 +5195,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
 dependencies = [
  "bitflags 2.10.0",
- "objc2 0.6.4",
  "objc2-core-foundation",
- "objc2-core-graphics",
-]
-
-[[package]]
-name = "objc2-core-video"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
-dependencies = [
- "bitflags 2.10.0",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-io-surface",
 ]
 
 [[package]]
@@ -5349,8 +5224,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.10.0",
- "block2 0.6.2",
- "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
@@ -5447,9 +5320,9 @@ dependencies = [
  "bitflags 2.10.0",
  "block2 0.5.1",
  "objc2 0.5.2",
- "objc2-cloud-kit 0.2.2",
- "objc2-core-data 0.2.2",
- "objc2-core-image 0.2.2",
+ "objc2-cloud-kit",
+ "objc2-core-data",
+ "objc2-core-image",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
  "objc2-link-presentation",

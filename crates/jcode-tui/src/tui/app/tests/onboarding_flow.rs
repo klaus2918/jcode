@@ -934,10 +934,9 @@ fn local_post_import_validation_waits_for_model_activation() {
 #[test]
 fn startup_check_skips_user_with_established_session_history() {
     with_temp_jcode_home(|| {
-        // A low/missing launch_count alone must NOT classify someone as a new
-        // user when their jcode home has a substantial native session history
-        // (e.g. setup_hints.json was reset or lost). Seed >=10 native session
-        // files in the temp home.
+        // A missing/short launch history alone must NOT classify someone as a
+        // new user when their jcode home has a substantial native session
+        // history. Seed >=10 native session files in the temp home.
         let sessions_dir = crate::storage::jcode_dir()
             .expect("jcode dir")
             .join("sessions");

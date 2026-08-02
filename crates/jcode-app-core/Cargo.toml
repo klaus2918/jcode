@@ -94,7 +94,6 @@ jcode-plan = { path = "../jcode-plan" }
 jcode-swarm-core = { path = "../jcode-swarm-core" }
 jcode-selfdev-types = { path = "../jcode-selfdev-types" }
 jcode-session-types = { path = "../jcode-session-types" }
-jcode-setup-hints = { path = "../jcode-setup-hints" }
 jcode-task-types = { path = "../jcode-task-types" }
 jcode-tool-core = { path = "../jcode-tool-core" }
 jcode-tool-types = { path = "../jcode-tool-types" }
@@ -137,7 +136,6 @@ jcode-base = { path = "../jcode-base", default-features = false, features = ["te
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-global-hotkey = "0.7"
 # Native desktop control for the `macos_computer_use` tool (synthetic mouse/keyboard
 # events, cursor positioning, display bounds). `highsierra` enables the
 # CGEventCreateScrollWheelEvent2 binding used for scroll.

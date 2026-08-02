@@ -125,13 +125,9 @@ impl App {
 
     /// Whether this install looks like a brand-new user.
     ///
-    /// Primary signal is `launch_count` in `setup_hints.json`, but that file
-    /// only counts interactive `jcode` launches (TTY-gated) and can be reset
-    /// or lag far behind reality. So before concluding "new user" we also look
-    /// for independent evidence of an established install: a meaningful number
-    /// of persisted native sessions. A user with a long session history must
-    /// never be dragged through first-run onboarding just because their
-    /// launch counter looks low.
+    /// Looks for independent evidence of an established install: a meaningful
+    /// number of persisted native sessions. A user with a long session
+    /// history must never be dragged through first-run onboarding.
     fn is_new_user_for_onboarding(&self) -> bool {
         Self::is_new_user_install()
     }
@@ -139,16 +135,10 @@ impl App {
     /// Shared "does this install look brand-new?" check (see
     /// [`Self::is_new_user_for_onboarding`] for the rationale). Also used by
     /// the welcome-screen suggestion prompts.
-    ///
-    /// Loads via [`crate::setup_hints::SetupHintsState`] so the `.bak`
-    /// fallback applies when `setup_hints.json` is missing or corrupt.
     pub(super) fn is_new_user_install() -> bool {
         let Ok(dir) = crate::storage::jcode_dir() else {
             return true;
         };
-        if crate::setup_hints::SetupHintsState::load().launch_count > 5 {
-            return false;
-        }
         !Self::has_established_native_session_history(&dir)
     }
 
@@ -176,11 +166,8 @@ impl App {
 
     /// Whether this is a self-dev / canary session.
     ///
-    /// These are launched by developers working on jcode itself (for example the
-    /// niri `jcode self-dev` hotkey). That launch path bypasses
-    /// `maybe_show_setup_hints`, so `launch_count` never advances and the
-    /// new-user heuristic above would otherwise treat every spawn as a first run.
-    /// Such sessions should never auto-start the guided onboarding flow.
+    /// These are launched by developers working on jcode itself. They should
+    /// never auto-start the guided onboarding flow.
     fn is_selfdev_canary_session(&self) -> bool {
         if self.is_remote {
             self.remote_is_canary.unwrap_or(self.session.is_canary)
