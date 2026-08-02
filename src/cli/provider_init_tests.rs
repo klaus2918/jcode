@@ -128,6 +128,137 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
     crate::auth::AuthStatus::invalidate_cache();
 }
 
+#[test]
+fn resolve_provider_input_hits_named_profile_config() {
+    // `--provider <config profile>`（本轮新增能力）应解析为 NamedProfile。
+    let _guard = lock_env();
+    let _env_guard = crate::storage::lock_test_env();
+    let dir = TempDir::new().expect("temp dir");
+    let saved: Vec<(&str, Option<String>)> = [
+        "JCODE_HOME",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+    ]
+    .iter()
+    .map(|key| (*key, std::env::var(key).ok()))
+    .collect();
+
+    crate::env::set_var("JCODE_HOME", dir.path());
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+    std::fs::write(
+        dir.path().join("config.toml"),
+        r#"
+[providers.anth-gw]
+type = "openai-compatible"
+base_url = "https://gateway.example.com/v1"
+api = "anthropic"
+auth = "bearer"
+api_key_env = "ANTH_GW_KEY"
+default_model = "claude-sonnet-4-6"
+"#,
+    )
+    .expect("write config");
+    crate::config::invalidate_config_cache();
+
+    assert!(matches!(
+        resolve_provider_input("anth-gw").unwrap(),
+        ResolvedProviderInput::NamedProfile(name) if name == "anth-gw"
+    ));
+    // 未配置的字符串不命中 NamedProfile。
+    assert!(resolve_provider_input("no-such-profile").is_err());
+
+    for (key, value) in saved {
+        if let Some(value) = value {
+            crate::env::set_var(key, value);
+        } else {
+            crate::env::remove_var(key);
+        }
+    }
+    crate::config::invalidate_config_cache();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "test env locks intentionally stay held across provider init to isolate process-global auth env"
+)]
+async fn explicit_provider_named_profile_initializes_anthropic_runtime() {
+    // `--provider <name>` 直接走 NamedProfile 分支，与 `--provider-profile`
+    // 双通道殊途同归：都构造 NamedAnthropicProvider。
+    let _guard = lock_env();
+    let _env_guard = crate::storage::lock_test_env();
+    let dir = TempDir::new().expect("temp dir");
+    let saved: Vec<(&str, Option<String>)> = [
+        "JCODE_HOME",
+        "ANTH_GW_KEY",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_RUNTIME_PROVIDER",
+        "JCODE_ACTIVE_PROVIDER",
+    ]
+    .iter()
+    .map(|key| (*key, std::env::var(key).ok()))
+    .collect();
+
+    crate::env::set_var("JCODE_HOME", dir.path());
+    crate::env::set_var("ANTH_GW_KEY", "sk-ant-gateway-test");
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+    crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
+    std::fs::write(
+        dir.path().join("config.toml"),
+        r#"
+[providers.anth-gw]
+type = "openai-compatible"
+base_url = "https://gateway.example.com/v1"
+api = "anthropic"
+auth = "bearer"
+api_key_env = "ANTH_GW_KEY"
+default_model = "claude-sonnet-4-6"
+"#,
+    )
+    .expect("write config");
+    crate::config::invalidate_config_cache();
+    crate::auth::AuthStatus::invalidate_cache();
+
+    let provider = init_provider_for_validation("anth-gw", None)
+        .await
+        .expect("explicit named profile should initialize");
+
+    assert_eq!(provider.name(), "anthropic");
+    assert_eq!(provider.runtime_display_name(), "anth-gw");
+    assert_eq!(provider.model(), "claude-sonnet-4-6");
+
+    for (key, value) in saved {
+        if let Some(value) = value {
+            crate::env::set_var(key, value);
+        } else {
+            crate::env::remove_var(key);
+        }
+    }
+    crate::config::invalidate_config_cache();
+    crate::auth::AuthStatus::invalidate_cache();
+}
+
+#[test]
+fn auto_import_login_provider_is_string_resolvable() {
+    // `jcode login auto-import` / `--provider auto-import` 由旧 clap 拒绝变为
+    // 注册表可解析（登录菜单专用动作），固化该行为。
+    let provider = crate::provider_catalog::resolve_login_provider("auto-import")
+        .expect("auto-import should resolve");
+    assert_eq!(provider.id, "auto-import");
+    assert!(matches!(
+        resolve_provider_input("auto-import").unwrap(),
+        ResolvedProviderInput::Login(desc) if desc.id == "auto-import"
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::await_holding_lock,

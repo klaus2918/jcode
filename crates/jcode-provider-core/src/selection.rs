@@ -122,14 +122,15 @@ pub fn provider_from_model_key(key: &str) -> Option<ActiveProvider> {
 /// Translate a persisted session/runtime provider key (the `RuntimeKey`
 /// stable-id or `ModelRouteApiMethod` vocabulary, e.g. `anthropic-api-key`,
 /// `claude-oauth`, `openai-api-key`) into the CLI `--provider` argument value
-/// (the `ProviderChoice` vocabulary, e.g. `anthropic-api`, `claude`,
+/// (the CLI `--provider` vocabulary, e.g. `anthropic-api`, `claude`,
 /// `openai-api`).
 ///
 /// These two vocabularies overlap but are NOT identical: the runtime key
 /// distinguishes auth method (`anthropic-api-key` vs `claude-oauth`) while the
-/// CLI `--provider` enum uses `anthropic-api` / `claude`. Passing a raw runtime
-/// key straight to `--provider` makes clap reject it (`invalid value
-/// 'anthropic-api-key'`) and the spawned process exits immediately.
+/// CLI `--provider` argument uses `anthropic-api` / `claude`. Passing a raw
+/// runtime key straight to `--provider` makes the runtime
+/// `resolve_provider_input` reject it (`Unknown provider 'anthropic-api-key'`)
+/// and the spawned process exits immediately.
 ///
 /// Returns `None` when there is no clean, unambiguous CLI provider to pass; in
 /// that case callers should omit the flag entirely and rely on the persisted

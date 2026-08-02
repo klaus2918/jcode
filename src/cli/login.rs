@@ -160,7 +160,10 @@ pub async fn run_login(
     account_label: Option<&str>,
     options: LoginOptions,
 ) -> Result<()> {
-    if choice.trim().eq_ignore_ascii_case("claude-subprocess") {
+    if choice
+        .trim()
+        .eq_ignore_ascii_case(super::provider_init::CLAUDE_SUBPROCESS_ID)
+    {
         eprintln!(
             "Warning: Claude subprocess transport is deprecated and will be removed. Direct Anthropic API is already the default for `--provider claude`."
         );
@@ -205,7 +208,8 @@ pub async fn run_login(
         }
     } else {
         anyhow::bail!(
-            "Unknown provider '{}'. Use a registered provider id (claude, openai, openrouter, ...), or a [providers.{}] config profile.",
+            "Unknown provider '{}'. Use a registered provider id (claude, openai, openrouter, ...), or `jcode provider add {} --base-url ...` to define a config profile and use `jcode --provider {} run`.",
+            choice.trim(),
             choice.trim(),
             choice.trim()
         );

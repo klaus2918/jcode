@@ -561,8 +561,16 @@ fn usage_provider_report(provider: &crate::usage::ProviderUsage) -> UsageProvide
 pub(super) fn list_cli_providers() -> Vec<ProviderListEntry> {
     // 注册表驱动：CLI 登录 provider（含内置 openai-compatible 条目）+
     // `auto` 自动探测。厂商名只存在于注册表数据，核心不硬编码名单。
+    // AutoImport 是登录菜单动作（导入其他工具的凭据），不是模型 provider，
+    // 不在 `--provider` 列表中展示。
     let mut entries = crate::provider_catalog::cli_login_providers()
         .into_iter()
+        .filter(|provider| {
+            !matches!(
+                provider.target,
+                crate::provider_catalog::LoginProviderTarget::AutoImport
+            )
+        })
         .map(|provider| ProviderListEntry {
             id: provider.id.to_string(),
             display_name: provider.display_name.to_string(),

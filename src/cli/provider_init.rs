@@ -21,6 +21,12 @@ use crate::external_auth::{
     can_prompt_for_external_auth, external_auth_blocked_message, prompt_to_trust_external_auth,
 };
 
+/// 已废弃的 Claude Code CLI 子进程传输的 CLI id（兼容入口）。
+///
+/// 散落在 provider_init/login/auth_test/commands 的该魔法字符串统一引用
+/// 此常量，避免改名或删除时遗漏。
+pub const CLAUDE_SUBPROCESS_ID: &str = "claude-subprocess";
+
 /// 运行时解析的 provider 选择（resonix 思路：二进制不硬编码厂商名，
 /// `--provider` 接受任意字符串，按注册表 + 用户配置解析）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +54,7 @@ pub fn resolve_provider_input(input: &str) -> Result<ResolvedProviderInput> {
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
         return Ok(ResolvedProviderInput::Auto);
     }
-    if trimmed.eq_ignore_ascii_case("claude-subprocess") {
+    if trimmed.eq_ignore_ascii_case(CLAUDE_SUBPROCESS_ID) {
         return Ok(ResolvedProviderInput::ClaudeSubprocess);
     }
     if let Some(provider) = crate::provider_catalog::resolve_login_provider(trimmed) {

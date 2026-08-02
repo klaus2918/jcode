@@ -2008,21 +2008,30 @@ fn filter_cli_model_routes_for_choice(
     routes: &[crate::provider::ModelRoute],
 ) -> Vec<crate::provider::ModelRoute> {
     let choice = choice.trim();
-    let keep = |route: &&crate::provider::ModelRoute| match choice {
-        "claude" | "claude-subprocess" | "anthropic-api" => {
-            route.api_method_kind().is_anthropic_credential_route()
-        }
-        "openai" => {
+    // 归一化：注册表 id/alias/大小写变体统一解析为规范 id 再按协议 kind 过滤，
+    // 与 `resolve_provider_input` 的解析链保持一致（alias 如 `anthropic` 也会
+    // 命中 anthropic-api 分支）。未知/auto/配置 profile 名解析为 None → 全保留。
+    let choice = if choice.eq_ignore_ascii_case(super::provider_init::CLAUDE_SUBPROCESS_ID) {
+        Some(super::provider_init::CLAUDE_SUBPROCESS_ID.to_string())
+    } else {
+        crate::provider_catalog::resolve_login_provider(choice)
+            .map(|provider| provider.id.to_string())
+    };
+    let keep = |route: &&crate::provider::ModelRoute| match choice.as_deref() {
+        Some("claude")
+        | Some(super::provider_init::CLAUDE_SUBPROCESS_ID)
+        | Some("anthropic-api") => route.api_method_kind().is_anthropic_credential_route(),
+        Some("openai") => {
             let method = route.api_method_kind();
             matches!(method, crate::provider::ModelRouteApiMethod::OpenAIOAuth)
                 || matches!(method, crate::provider::ModelRouteApiMethod::Other(ref value) if value == "chatgpt-web")
         }
-        "openai-api" => matches!(
+        Some("openai-api") => matches!(
             route.api_method_kind(),
             crate::provider::ModelRouteApiMethod::OpenAIApiKey
         ),
-        "openrouter" | "azure" => route.api_method_kind().is_openrouter(),
-        "copilot" => route.api_method_kind().is_copilot(),
+        Some("openrouter") | Some("azure") => route.api_method_kind().is_openrouter(),
+        Some("copilot") => route.api_method_kind().is_copilot(),
         _ => true,
     };
 

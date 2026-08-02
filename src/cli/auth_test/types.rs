@@ -53,7 +53,7 @@ impl AuthTestTarget {
 
     fn from_provider_id(choice: &str) -> Option<Self> {
         match choice.trim() {
-            "claude" | "claude-subprocess" => Some(Self::Claude),
+            "claude" | crate::cli::provider_init::CLAUDE_SUBPROCESS_ID => Some(Self::Claude),
             "openai" => Some(Self::Openai),
             "gemini" => Some(Self::Gemini),
             "antigravity" => Some(Self::Antigravity),
@@ -231,7 +231,7 @@ impl AuthTestProviderReport {
 impl ResolvedAuthTestTarget {
     fn from_choice(choice: &str) -> Option<Self> {
         let trimmed = choice.trim();
-        if trimmed.eq_ignore_ascii_case("claude-subprocess") {
+        if trimmed.eq_ignore_ascii_case(super::provider_init::CLAUDE_SUBPROCESS_ID) {
             return Some(Self::Detailed(AuthTestTarget::Claude));
         }
         let provider = crate::provider_catalog::resolve_login_provider(trimmed)?;
