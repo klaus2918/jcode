@@ -402,10 +402,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             speed,
             timeline,
             auto_edit,
-            video,
-            cols,
-            rows,
-            fps,
             centered,
             no_centered,
         }) => {
@@ -423,10 +419,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 auto_edit,
                 speed,
                 timeline.as_deref(),
-                video.as_deref(),
-                cols,
-                rows,
-                fps,
                 centered_override,
             )
             .await?;

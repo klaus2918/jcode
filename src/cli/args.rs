@@ -416,22 +416,6 @@ pub(crate) enum Command {
         #[arg(long)]
         auto_edit: bool,
 
-        /// Export as video file (auto-generates name if no path given)
-        #[arg(long, default_missing_value = "auto", num_args = 0..=1)]
-        video: Option<String>,
-
-        /// Video width in columns (default: 120)
-        #[arg(long, default_value = "120")]
-        cols: u16,
-
-        /// Video height in rows (default: 40)
-        #[arg(long, default_value = "40")]
-        rows: u16,
-
-        /// Video frames per second (default: 60)
-        #[arg(long, default_value = "60")]
-        fps: u32,
-
         /// Force centered layout (overrides config)
         #[arg(long, conflicts_with = "no_centered")]
         centered: bool,

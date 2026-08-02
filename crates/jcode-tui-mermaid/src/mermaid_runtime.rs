@@ -365,11 +365,7 @@ pub fn protocol_type() -> Option<ProtocolType> {
     if real.is_some() {
         return real;
     }
-    if VIDEO_EXPORT_MODE.load(Ordering::Relaxed) {
-        Some(ProtocolType::Halfblocks)
-    } else {
-        None
-    }
+    None
 }
 
 thread_local! {
@@ -401,18 +397,14 @@ pub fn image_protocol_available() -> bool {
     if let Some(enabled) = IMAGE_PROTOCOL_OVERRIDE.with(|cell| cell.get()) {
         return enabled;
     }
-    PICKER.get().and_then(|p| p.as_ref()).is_some() || VIDEO_EXPORT_MODE.load(Ordering::Relaxed)
+    PICKER.get().and_then(|p| p.as_ref()).is_some()
 }
 
-fn protocol_supports_native_images(
-    protocol: Option<ProtocolType>,
-    video_export_mode: bool,
-) -> bool {
-    video_export_mode
-        || matches!(
-            protocol,
-            Some(ProtocolType::Kitty | ProtocolType::Iterm2 | ProtocolType::Sixel)
-        )
+fn protocol_supports_native_images(protocol: Option<ProtocolType>) -> bool {
+    matches!(
+        protocol,
+        Some(ProtocolType::Kitty | ProtocolType::Iterm2 | ProtocolType::Sixel)
+    )
 }
 
 /// Whether Mermaid and other image-only content can use a real terminal image
@@ -423,32 +415,23 @@ pub fn native_image_protocol_available() -> bool {
     if let Some(enabled) = IMAGE_PROTOCOL_OVERRIDE.with(|cell| cell.get()) {
         return enabled;
     }
-    protocol_supports_native_images(protocol_type(), VIDEO_EXPORT_MODE.load(Ordering::Relaxed))
+    protocol_supports_native_images(protocol_type())
 }
 
-fn protocol_uses_text_image_fallback(
-    protocol: Option<ProtocolType>,
-    video_export_mode: bool,
-) -> bool {
-    !video_export_mode && matches!(protocol, Some(ProtocolType::Halfblocks))
+fn protocol_uses_text_image_fallback(protocol: Option<ProtocolType>) -> bool {
+    matches!(protocol, Some(ProtocolType::Halfblocks))
 }
 
 /// Whether images are currently rendered through ratatui-image's Unicode
 /// half-block fallback instead of a native terminal image protocol.
 pub fn uses_text_image_fallback() -> bool {
-    protocol_uses_text_image_fallback(protocol_type(), VIDEO_EXPORT_MODE.load(Ordering::Relaxed))
+    protocol_uses_text_image_fallback(protocol_type())
 }
 
 /// Enable video-export mode: mermaid images produce hash-placeholder lines
 /// even without a real terminal image protocol.
-pub fn set_video_export_mode(enabled: bool) {
-    VIDEO_EXPORT_MODE.store(enabled, Ordering::Relaxed);
-}
 
 /// Check if video export mode is active.
-pub fn is_video_export_mode() -> bool {
-    VIDEO_EXPORT_MODE.load(Ordering::Relaxed)
-}
 
 /// Look up a cached PNG for the given mermaid content hash.
 /// Returns (path, width, height) if a cached render exists on disk.
@@ -862,49 +845,20 @@ mod tests {
 
     #[test]
     fn only_halfblocks_uses_the_user_facing_text_image_fallback() {
-        assert!(protocol_uses_text_image_fallback(
-            Some(ProtocolType::Halfblocks),
-            false
-        ));
-        assert!(!protocol_uses_text_image_fallback(
-            Some(ProtocolType::Kitty),
-            false
-        ));
-        assert!(!protocol_uses_text_image_fallback(
-            Some(ProtocolType::Iterm2),
-            false
-        ));
-        assert!(!protocol_uses_text_image_fallback(
-            Some(ProtocolType::Sixel),
-            false
-        ));
-        assert!(!protocol_uses_text_image_fallback(None, false));
-        assert!(!protocol_uses_text_image_fallback(
-            Some(ProtocolType::Halfblocks),
-            true
-        ));
+        assert!(protocol_uses_text_image_fallback(Some(ProtocolType::Halfblocks)));
+        assert!(!protocol_uses_text_image_fallback(Some(ProtocolType::Kitty)));
+        assert!(!protocol_uses_text_image_fallback(Some(ProtocolType::Iterm2)));
+        assert!(!protocol_uses_text_image_fallback(Some(ProtocolType::Sixel)));
+        assert!(!protocol_uses_text_image_fallback(None));
     }
 
     #[test]
-    fn native_image_capability_excludes_halfblocks_but_allows_video_export() {
-        assert!(protocol_supports_native_images(
-            Some(ProtocolType::Kitty),
-            false
-        ));
-        assert!(protocol_supports_native_images(
-            Some(ProtocolType::Iterm2),
-            false
-        ));
-        assert!(protocol_supports_native_images(
-            Some(ProtocolType::Sixel),
-            false
-        ));
-        assert!(!protocol_supports_native_images(
-            Some(ProtocolType::Halfblocks),
-            false
-        ));
-        assert!(!protocol_supports_native_images(None, false));
-        assert!(protocol_supports_native_images(None, true));
+    fn native_image_capability_excludes_halfblocks() {
+        assert!(protocol_supports_native_images(Some(ProtocolType::Kitty)));
+        assert!(protocol_supports_native_images(Some(ProtocolType::Iterm2)));
+        assert!(protocol_supports_native_images(Some(ProtocolType::Sixel)));
+        assert!(!protocol_supports_native_images(Some(ProtocolType::Halfblocks)));
+        assert!(!protocol_supports_native_images(None));
     }
 
     #[test]
