@@ -754,6 +754,7 @@ fn maybe_enable_claude_auth_for_auto(has_other_provider: bool) -> Result<bool> {
     Ok(false)
 }
 
+#[cfg(feature = "extra-providers")]
 fn ensure_gemini_auth_allowed_for_explicit_choice() -> Result<()> {
     // An official Gemini Developer API key (GEMINI_API_KEY) authenticates
     // directly against generativelanguage.googleapis.com and needs no OAuth

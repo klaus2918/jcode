@@ -81,13 +81,11 @@ struct NamedProviderArrayEntry {
 impl NamedProviderArrayEntry {
     fn into_config(self) -> NamedProviderConfig {
         let mut models = self.models;
-        if models.is_empty() {
-            if let Some(model) = &self.default_model {
-                models.push(NamedProviderModelConfig {
-                    id: model.clone(),
-                    ..NamedProviderModelConfig::default()
-                });
-            }
+        if models.is_empty() && let Some(model) = &self.default_model {
+            models.push(NamedProviderModelConfig {
+                id: model.clone(),
+                ..NamedProviderModelConfig::default()
+            });
         }
         if let Some(context_window) = self.context_window {
             for model in &mut models {
