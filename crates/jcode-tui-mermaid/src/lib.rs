@@ -58,7 +58,7 @@ use std::fs;
 use std::hash::{Hash as _, Hasher};
 use std::panic;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, mpsc};
 use std::time::Instant;
 
@@ -243,7 +243,7 @@ pub use content_render::{
     inline_transcript_aspect_goal, inline_transcript_aspect_goal_with_font,
     parse_image_placeholder, parse_inline_image_placeholder, result_to_content, result_to_lines,
     text_image_fallback_note_line, transcript_preferred_aspect_ratio,
-    transcript_preferred_aspect_ratio_with_font, write_video_export_marker,
+    transcript_preferred_aspect_ratio_with_font,
 };
 pub use inline_image::{
     inline_image_dims, inline_image_id, inline_image_is_materialized, materialize_inline_image,
@@ -252,9 +252,9 @@ pub use inline_image::{
 pub use runtime::force_test_kitty_picker;
 pub use runtime::{
     error_lines_for, get_cached_png, get_font_size, image_protocol_available, init_picker,
-    is_video_export_mode, native_image_protocol_available, protocol_type,
+    native_image_protocol_available, protocol_type,
     rediscover_external_image, register_external_image, register_inline_image,
-    set_video_export_mode, uses_text_image_fallback, with_image_protocol_override,
+    uses_text_image_fallback, with_image_protocol_override,
 };
 pub use viewport_render::{
     InlineFitReadiness, inline_fit_readiness, invalidate_render_state, prewarm_inline_fit_state,
@@ -404,11 +404,6 @@ const RENDER_SUPERSAMPLE: f64 = 1.1;
 const DEFAULT_RENDER_WIDTH: u32 = 2400;
 const DEFAULT_RENDER_HEIGHT: u32 = 1800;
 const DEFAULT_PICKER_FONT_SIZE: (u16, u16) = (8, 16);
-
-/// When true, mermaid placeholders include image hashes even without a
-/// terminal image protocol (used by the video export pipeline so it can
-/// embed cached PNGs into the SVG frames).
-static VIDEO_EXPORT_MODE: AtomicBool = AtomicBool::new(false);
 
 /// Global picker for terminal capability detection
 /// Initialized once on first use
