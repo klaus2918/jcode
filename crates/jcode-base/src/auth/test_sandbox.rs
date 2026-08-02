@@ -188,12 +188,12 @@ mod tests {
 
         assert_eq!(
             crate::provider_catalog::load_api_key_from_env_or_config(
-                "CEREBRAS_API_KEY",
-                "cerebras.env",
+                "OLLAMA_API_KEY",
+                "ollama.env",
             )
             .as_deref(),
             Some("test-cerebras-key")
         );
-        assert!(sandbox.env_file_path("cerebras.env").exists());
+        assert!(sandbox.env_file_path("ollama.env").exists());
     }
 }

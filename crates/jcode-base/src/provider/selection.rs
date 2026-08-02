@@ -611,7 +611,7 @@ mod tests {
                 Some("claude-oauth"),
             ),
             (
-                "cerebras:gemini-2.5-pro",
+                "gemini-api:gemini-2.5-pro",
                 "OpenRouter",
                 None,
                 Some("gemini-api"),
@@ -657,7 +657,7 @@ mod tests {
             (
                 "gemini-2.5-pro",
                 Some("gemini-api"),
-                "cerebras:gemini-2.5-pro",
+                "gemini-api:gemini-2.5-pro",
             ),
             ("openai-api:gpt-5.5", Some("openai"), "openai-api:gpt-5.5"),
         ] {
