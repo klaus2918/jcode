@@ -541,6 +541,34 @@ pub struct NamedProviderModelConfig {
     pub output_limit_field: Option<String>,
 }
 
+/// Deserialize `[[providers.<name>.models]]` (array-of-table) or a resonix-style
+/// string array `models = ["a", "b"]` into model config entries. The string
+/// form is an input-friendly alias: each id becomes a `NamedProviderModelConfig`
+/// with default capabilities, letting resonix configs parse almost verbatim.
+fn deserialize_named_provider_models<'de, D>(
+    deserializer: D,
+) -> Result<Vec<NamedProviderModelConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Models {
+        Table(Vec<NamedProviderModelConfig>),
+        Strings(Vec<String>),
+    }
+    match Models::deserialize(deserializer)? {
+        Models::Table(models) => Ok(models),
+        Models::Strings(ids) => Ok(ids
+            .into_iter()
+            .map(|id| NamedProviderModelConfig {
+                id,
+                ..Default::default()
+            })
+            .collect()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct NamedProviderConfig {
@@ -555,6 +583,7 @@ pub struct NamedProviderConfig {
         alias = "api-format",
         alias = "api_format",
         alias = "format",
+        alias = "kind",
         skip_serializing_if = "Option::is_none"
     )]
     pub api_format: Option<ProviderApiFormat>,
@@ -569,6 +598,7 @@ pub struct NamedProviderConfig {
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
     pub env_file: Option<String>,
+    #[serde(default, alias = "model", skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     pub requires_api_key: Option<bool>,
     #[serde(default)]
@@ -577,7 +607,11 @@ pub struct NamedProviderConfig {
     pub model_catalog: bool,
     #[serde(default)]
     pub allow_provider_pinning: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_named_provider_models",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub models: Vec<NamedProviderModelConfig>,
     /// Extra top-level JSON fields merged into every chat/completions request
     /// body sent to this provider. Lets users inject non-standard parameters
@@ -1851,5 +1885,38 @@ mod named_provider_model_config_tests {
         assert!(json.contains("\"tools\":false"));
         assert!(!json.contains("vision"));
         assert!(!json.contains("supported_efforts"));
+    }
+
+    #[test]
+    fn named_provider_config_parses_resonix_style_kind_model_and_string_models() {
+        // resonix `[[providers]]`-style fields map onto jcode config:
+        // `kind` -> api_format, `model` -> default_model, string `models` list.
+        let json_str = r#"{
+            "type": "openai-compatible",
+            "base_url": "https://api.deepseek.com",
+            "kind": "openai",
+            "model": "deepseek-v4-flash",
+            "models": ["deepseek-v4-flash", "deepseek-v4-pro"]
+        }"#;
+        let config: NamedProviderConfig = serde_json::from_str(json_str).unwrap();
+        assert_eq!(config.api_format, Some(ProviderApiFormat::OpenAiCompatible));
+        assert_eq!(config.default_model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(config.models.len(), 2);
+        assert_eq!(config.models[0].id, "deepseek-v4-flash");
+        assert_eq!(config.models[1].id, "deepseek-v4-pro");
+
+        // `kind = "anthropic"` maps to the Anthropic Messages format.
+        let anthropic_json = r#"{
+            "type": "openai-compatible",
+            "base_url": "https://gateway.example.com",
+            "kind": "anthropic",
+            "model": "claude-sonnet-4-6"
+        }"#;
+        let anthropic: NamedProviderConfig = serde_json::from_str(anthropic_json).unwrap();
+        assert_eq!(anthropic.api_format, Some(ProviderApiFormat::Anthropic));
+        assert_eq!(
+            anthropic.default_model.as_deref(),
+            Some("claude-sonnet-4-6")
+        );
     }
 }
