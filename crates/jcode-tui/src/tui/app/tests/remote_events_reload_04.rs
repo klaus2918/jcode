@@ -1924,56 +1924,7 @@ fn test_debug_command_mermaid_flicker_bench_returns_json() {
     );
 }
 
-#[test]
-fn test_remote_transcript_send_uses_remote_submission_path() {
-    let mut app = create_test_app();
-    app.is_remote = true;
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
 
-    rt.block_on(async {
-        let mut remote = crate::tui::backend::RemoteConnection::dummy();
-        super::remote::apply_remote_transcript_event(
-            &mut app,
-            &mut remote,
-            "dictated hello".to_string(),
-            crate::protocol::TranscriptMode::Send,
-        )
-        .await
-    })
-    .expect("remote transcript send should succeed");
-
-    let last = app
-        .display_messages()
-        .last()
-        .expect("user message displayed");
-    assert_eq!(last.role, "user");
-    assert_eq!(last.content, "[transcription] dictated hello");
-    assert!(
-        app.is_processing,
-        "remote send should enter processing state"
-    );
-    assert!(matches!(app.status, ProcessingStatus::Sending));
-    assert!(
-        app.current_message_id.is_some(),
-        "remote request id should be assigned"
-    );
-    assert!(
-        app.last_stream_activity.is_some(),
-        "remote send should start stall timer from a real send"
-    );
-    assert!(
-        !app.pending_turn,
-        "remote transcript send must not use local pending_turn path"
-    );
-    assert!(
-        app.input.is_empty(),
-        "submitted transcript should clear input"
-    );
-    assert!(
-        app.rate_limit_pending_message.is_some(),
-        "remote send should populate retry state for the in-flight request"
-    );
-}
 
 #[test]
 fn test_remote_review_shows_processing_until_split_response() {

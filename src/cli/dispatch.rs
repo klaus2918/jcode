@@ -8,7 +8,6 @@ use std::time::Instant;
 use super::args::{
     AmbientCommand, Args, AuthCommand, CloudCommand, CloudSessionsCommand, Command, MemoryCommand,
     ModelCommand, ProviderCommand, RestartCommand, ServerCommand, SessionCommand,
-    TranscriptModeArg,
 };
 use crate::{
     agent, auth, build, provider, provider_catalog, server, session, setup_hints, startup_profile,
@@ -365,16 +364,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         }
         Some(Command::Permissions) => {
             tui::permissions::run_permissions()?;
-        }
-        Some(Command::Transcript {
-            text,
-            mode,
-            session,
-        }) => {
-            commands::run_transcript_command(text, map_transcript_mode(mode), session).await?;
-        }
-        Some(Command::Dictate { r#type }) => {
-            commands::run_dictate_command(r#type).await?;
         }
         Some(Command::SetupHotkey {
             listen_macos_hotkey,
@@ -793,15 +782,6 @@ fn map_cloud_sessions_subcommand(
             region: jade.region,
             helper: jade.helper,
         },
-    }
-}
-
-fn map_transcript_mode(mode: TranscriptModeArg) -> crate::protocol::TranscriptMode {
-    match mode {
-        TranscriptModeArg::Insert => crate::protocol::TranscriptMode::Insert,
-        TranscriptModeArg::Append => crate::protocol::TranscriptMode::Append,
-        TranscriptModeArg::Replace => crate::protocol::TranscriptMode::Replace,
-        TranscriptModeArg::Send => crate::protocol::TranscriptMode::Send,
     }
 }
 

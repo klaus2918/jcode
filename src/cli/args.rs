@@ -3,14 +3,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use super::provider_init::ProviderChoice;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub(crate) enum TranscriptModeArg {
-    Insert,
-    Append,
-    Replace,
-    Send,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum GoogleAccessTierArg {
     Full,
     Readonly,
@@ -340,27 +332,6 @@ pub(crate) enum Command {
 
     /// Review and respond to pending ambient permission requests
     Permissions,
-
-    /// Inject externally transcribed text into the active Jcode TUI
-    Transcript {
-        /// Transcript text. If omitted, reads from stdin.
-        text: Option<String>,
-
-        /// How to apply the transcript inside Jcode
-        #[arg(long, value_enum, default_value = "send")]
-        mode: TranscriptModeArg,
-
-        /// Target a specific live session instead of the active TUI
-        #[arg(short = 'S', long)]
-        session: Option<String>,
-    },
-
-    /// Run configured dictation: send to last-focused jcode client or type raw text
-    Dictate {
-        /// Type the transcript into the focused app instead of sending to jcode
-        #[arg(long)]
-        r#type: bool,
-    },
 
     /// Set up the platform global hotkey to launch jcode
     SetupHotkey {

@@ -103,7 +103,6 @@ impl App {
         self.centered_toggle_keys = keybind::load_centered_toggle_key();
         self.toggle_keys = keybind::load_toggle_keys();
         self.workspace_navigation_keys = keybind::load_workspace_navigation_keys();
-        self.dictation_key = keybind::load_dictation_key();
         self.new_terminal_key = keybind::load_new_terminal_key();
         self.open_resume_key = keybind::load_open_resume_key();
         self.fallback_switch_key = keybind::load_fallback_switch_key();
@@ -607,8 +606,6 @@ impl App {
             pinned_todos_rendered_hash: 0,
             pinned_todos_checked_at: None,
             last_side_panel_refresh: None,
-            last_client_focus_recorded_at: None,
-            last_client_focus_session_id: None,
             last_side_panel_focus_id: None,
             side_panel_user_hidden: false,
             side_panel_explicit_hidden: false,
@@ -640,16 +637,11 @@ impl App {
             centered_toggle_keys: keybind::load_centered_toggle_key(),
             toggle_keys: keybind::load_toggle_keys(),
             workspace_navigation_keys: keybind::load_workspace_navigation_keys(),
-            dictation_key: keybind::load_dictation_key(),
             new_terminal_key: keybind::load_new_terminal_key(),
             open_resume_key: keybind::load_open_resume_key(),
             fallback_switch_key: keybind::load_fallback_switch_key(),
             scroll_keys: keybind::load_scroll_keys(),
             keybindings_config_generation: crate::config::config_reload_generation(),
-            dictation_session: None,
-            dictation_in_flight: false,
-            dictation_request_id: None,
-            dictation_target_session_id: None,
             scroll_bookmark: None,
             typing_scroll_lock: false,
             stashed_input: None,
@@ -1039,8 +1031,6 @@ impl App {
             pinned_todos_rendered_hash: 0,
             pinned_todos_checked_at: None,
             last_side_panel_refresh: None,
-            last_client_focus_recorded_at: None,
-            last_client_focus_session_id: None,
             last_side_panel_focus_id: None,
             side_panel_user_hidden: false,
             side_panel_explicit_hidden: false,
@@ -1072,16 +1062,11 @@ impl App {
             centered_toggle_keys: keybind::load_centered_toggle_key(),
             toggle_keys: keybind::load_toggle_keys(),
             workspace_navigation_keys: keybind::load_workspace_navigation_keys(),
-            dictation_key: keybind::load_dictation_key(),
             new_terminal_key: keybind::load_new_terminal_key(),
             open_resume_key: keybind::load_open_resume_key(),
             fallback_switch_key: keybind::load_fallback_switch_key(),
             scroll_keys: keybind::load_scroll_keys(),
             keybindings_config_generation: crate::config::config_reload_generation(),
-            dictation_session: None,
-            dictation_in_flight: false,
-            dictation_request_id: None,
-            dictation_target_session_id: None,
             scroll_bookmark: None,
             typing_scroll_lock: false,
             stashed_input: None,

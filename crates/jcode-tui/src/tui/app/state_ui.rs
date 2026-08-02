@@ -87,27 +87,6 @@ impl App {
         }
     }
 
-    pub(super) fn note_client_focus(&mut self, force: bool) {
-        let Some(session_id) = self.active_client_session_id() else {
-            return;
-        };
-        let session_id = session_id.to_string();
-
-        if !force
-            && self.last_client_focus_session_id.as_deref() == Some(session_id.as_str())
-            && self
-                .last_client_focus_recorded_at
-                .is_some_and(|last| last.elapsed() < Self::CLIENT_FOCUS_RECORD_DEBOUNCE)
-        {
-            return;
-        }
-
-        if crate::dictation::remember_last_focused_session(&session_id).is_ok() {
-            self.last_client_focus_recorded_at = Some(Instant::now());
-            self.last_client_focus_session_id = Some(session_id);
-        }
-    }
-
     pub(super) fn note_client_interaction(&mut self) {
         // Every key/mouse/paste event routes through here, which makes this the
         // one place that reliably knows the user is actively driving the UI.
@@ -122,9 +101,6 @@ impl App {
         // repaints about once a second -- the intermittent "can't scroll" bug.
         if !self.client_focused {
             self.set_client_focused(true);
-        }
-        if !crate::perf::tui_policy().enable_focus_change {
-            self.note_client_focus(false);
         }
     }
 
@@ -146,7 +122,6 @@ impl App {
             // Repaint immediately so a newly-focused window is not stuck on the
             // last paused frame, and resume animation timing from "now".
             self.request_full_redraw();
-            self.note_client_focus(true);
             true
         } else {
             false
