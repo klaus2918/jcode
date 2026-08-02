@@ -15,6 +15,66 @@ fn restore_env_var(key: &str, previous: Option<OsString>) {
 }
 
 #[test]
+fn resonix_style_top_level_providers_array_table_parses() {
+    // resonix `[[providers]]` entries map onto the same named-provider map.
+    let toml_str = r#"
+        [[providers]]
+        name = "deepseek"
+        kind = "openai"
+        base_url = "https://api.deepseek.com"
+        model = "deepseek-v4-flash"
+        api_key_env = "DEEPSEEK_API_KEY"
+        context_window = 1000000
+
+        [[providers]]
+        name = "my-anth-gw"
+        kind = "anthropic"
+        base_url = "https://gateway.example.com/v1"
+        model = "claude-sonnet-4-6"
+        models = ["claude-sonnet-4-6", "claude-haiku-4-5"]
+    "#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+
+    let deepseek = config.providers.get("deepseek").expect("deepseek entry");
+    assert_eq!(
+        deepseek.api_format,
+        Some(super::ProviderApiFormat::OpenAiCompatible)
+    );
+    assert_eq!(deepseek.default_model.as_deref(), Some("deepseek-v4-flash"));
+    assert_eq!(deepseek.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+
+    let anth = config
+        .providers
+        .get("my-anth-gw")
+        .expect("my-anth-gw entry");
+    assert_eq!(anth.api_format, Some(super::ProviderApiFormat::Anthropic));
+    assert_eq!(anth.default_model.as_deref(), Some("claude-sonnet-4-6"));
+    // string `models` list expands into model config entries.
+    assert_eq!(anth.models.len(), 2);
+    assert_eq!(anth.models[0].id, "claude-sonnet-4-6");
+    assert_eq!(anth.models[1].id, "claude-haiku-4-5");
+    // provider-wide context_window applies to declared models.
+    assert_eq!(deepseek.models.len(), 1);
+    assert_eq!(deepseek.models[0].id, "deepseek-v4-flash");
+    assert_eq!(deepseek.models[0].context_window, Some(1_000_000));
+}
+
+#[test]
+fn existing_providers_mapping_table_still_parses() {
+    let toml_str = r#"
+        [providers.my-gw]
+        type = "openai-compatible"
+        base_url = "https://llm.example.com/v1"
+        api = "anthropic"
+        default_model = "claude-sonnet-4-6"
+    "#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let gw = config.providers.get("my-gw").expect("my-gw entry");
+    assert_eq!(gw.api_format, Some(super::ProviderApiFormat::Anthropic));
+    assert_eq!(gw.default_model.as_deref(), Some("claude-sonnet-4-6"));
+}
+
+#[test]
 fn test_openai_reasoning_effort_defaults_to_low() {
     assert_eq!(
         ProviderConfig::default().openai_reasoning_effort.as_deref(),

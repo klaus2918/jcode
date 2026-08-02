@@ -18,6 +18,121 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{LazyLock, RwLock};
+
+/// Deserialize the `providers` config section as either the jcode-style
+/// `[providers.<name>]` mapping table or a resonix-style top-level
+/// `[[providers]]` array table (`name`/`kind`/`base_url`/`model`/`models`/
+/// `api_key_env`). The array form is converted into the equivalent mapping so
+/// every downstream consumer sees the same `BTreeMap`.
+fn deserialize_providers<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, NamedProviderConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ProvidersField {
+        Map(BTreeMap<String, NamedProviderConfig>),
+        Array(Vec<NamedProviderArrayEntry>),
+    }
+    match ProvidersField::deserialize(deserializer)? {
+        ProvidersField::Map(map) => Ok(map),
+        ProvidersField::Array(entries) => {
+            let mut map = BTreeMap::new();
+            for entry in entries {
+                map.insert(entry.name.clone(), entry.into_config());
+            }
+            Ok(map)
+        }
+    }
+}
+
+/// One entry of a resonix-style top-level `[[providers]]` array table.
+#[derive(Deserialize)]
+struct NamedProviderArrayEntry {
+    name: String,
+    #[serde(rename = "type", default)]
+    provider_type: NamedProviderType,
+    base_url: String,
+    /// `kind` is the resonix protocol selector; it maps onto `api_format`
+    /// ("openai" / "anthropic" values are already aliased there).
+    #[serde(
+        default,
+        alias = "kind",
+        alias = "api",
+        alias = "api-format",
+        alias = "api_format",
+        alias = "format"
+    )]
+    api_format: Option<ProviderApiFormat>,
+    #[serde(default, alias = "model")]
+    default_model: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_array_models")]
+    models: Vec<NamedProviderModelConfig>,
+    #[serde(default)]
+    api_key_env: Option<String>,
+    /// Provider-wide fallback context window applied to every declared model
+    /// that does not set its own.
+    #[serde(default, alias = "context-window", alias = "context_window")]
+    context_window: Option<usize>,
+}
+
+impl NamedProviderArrayEntry {
+    fn into_config(self) -> NamedProviderConfig {
+        let mut models = self.models;
+        if models.is_empty() {
+            if let Some(model) = &self.default_model {
+                models.push(NamedProviderModelConfig {
+                    id: model.clone(),
+                    ..NamedProviderModelConfig::default()
+                });
+            }
+        }
+        if let Some(context_window) = self.context_window {
+            for model in &mut models {
+                if model.context_window.is_none() {
+                    model.context_window = Some(context_window);
+                }
+            }
+        }
+        NamedProviderConfig {
+            provider_type: self.provider_type,
+            base_url: self.base_url,
+            api_format: self.api_format,
+            default_model: self.default_model,
+            api_key_env: self.api_key_env,
+            models,
+            ..NamedProviderConfig::default()
+        }
+    }
+}
+
+/// String-array form of `models = ["a", "b"]` for `[[providers]]` entries,
+/// alongside the normal array-of-table form.
+fn deserialize_array_models<'de, D>(
+    deserializer: D,
+) -> Result<Vec<NamedProviderModelConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Models {
+        Table(Vec<NamedProviderModelConfig>),
+        Strings(Vec<String>),
+    }
+    match Models::deserialize(deserializer)? {
+        Models::Table(models) => Ok(models),
+        Models::Strings(ids) => Ok(ids
+            .into_iter()
+            .map(|id| NamedProviderModelConfig {
+                id,
+                ..NamedProviderModelConfig::default()
+            })
+            .collect()),
+    }
+}
 use std::time::{Duration, Instant, SystemTime};
 
 const CONFIG_CACHE_CHECK_INTERVAL: Duration = if cfg!(test) {
@@ -492,6 +607,7 @@ pub struct Config {
     /// type = "openai-compatible"
     /// base_url = "https://llm.example.com/v1"
     /// api_key_env = "MY_GATEWAY_API_KEY"
+    #[serde(deserialize_with = "deserialize_providers")]
     pub providers: BTreeMap<String, NamedProviderConfig>,
 
     /// Agent-specific model defaults
