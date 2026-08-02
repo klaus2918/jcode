@@ -59,15 +59,13 @@ pub(crate) struct AuthLifecycleSpec {
 }
 
 impl AuthLifecycleSpec {
-    pub(crate) fn cerebras_fixture(auth_path: AuthLifecycleAuthPath) -> Self {
+    pub(crate) fn gemini_api_fixture(auth_path: AuthLifecycleAuthPath) -> Self {
         let mut spec = Self::openai_compatible_fixture(
             jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
             auth_path,
         );
-        spec.catalog_models_after_auth = vec![
-            "qwen-3-235b-a22b-instruct-2507".to_string(),
-            "llama3.1-8b".to_string(),
-        ];
+        spec.catalog_models_after_auth =
+            vec!["gemini-2.5-flash".to_string(), "gemini-2.5-pro".to_string()];
         spec.selected_model_override = None;
         spec
     }
@@ -572,15 +570,15 @@ mod tests {
         auth: jcode_base::live_tests::LiveVerificationAuth,
     }
 
-    fn live_cerebras_api_key() -> Option<LiveTestApiKey> {
-        std::env::var("JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY")
+    fn live_gemini_api_key() -> Option<LiveTestApiKey> {
+        std::env::var("JCODE_AUTH_LIFECYCLE_GEMINI_API_KEY")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(|secret| LiveTestApiKey {
                 auth: jcode_base::live_tests::LiveVerificationAuth::from_secret(
-                    "env:JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY",
-                    Some("JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY"),
+                    "env:JCODE_AUTH_LIFECYCLE_GEMINI_API_KEY",
+                    Some("JCODE_AUTH_LIFECYCLE_GEMINI_API_KEY"),
                     &secret,
                 ),
                 secret,
@@ -743,37 +741,41 @@ mod tests {
     }
 
     #[test]
-    fn cerebras_remote_tui_paste_key_fixture_covers_catalog_picker_and_switch() {
+    fn gemini_api_remote_tui_paste_key_fixture_covers_catalog_picker_and_switch() {
         let driver = AuthLifecycleDriver::new().expect("driver");
-        let spec = AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
+        let spec =
+            AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
 
         let result = driver
             .run_openai_compatible_fixture(&spec)
             .expect("lifecycle result");
 
         result.assert_success(&spec);
-        assert!(result.transcript_text().contains("**Cerebras API Key**"));
+        assert!(result.transcript_text().contains("**Gemini API API Key**"));
         assert!(
             result
                 .transcript_text()
-                .contains("**Cerebras API key saved.**")
+                .contains("**Gemini API API key saved.**")
         );
         assert_eq!(
             result.picker.selected_model.as_deref(),
-            Some("qwen-3-235b-a22b-instruct-2507")
+            Some("gemini-2.5-flash")
         );
-        assert_eq!(result.picker.switch_target.as_deref(), Some("llama3.1-8b"));
+        assert_eq!(
+            result.picker.switch_target.as_deref(),
+            Some("gemini-2.5-pro")
+        );
         assert_eq!(
             result.picker.switch_request.as_deref(),
-            Some("cerebras:llama3.1-8b")
+            Some("gemini-api:gemini-2.5-pro")
         );
     }
 
     #[test]
-    fn cerebras_state_space_catches_stale_openai_catalog_after_auth() {
+    fn gemini_api_state_space_catches_stale_openai_catalog_after_auth() {
         let driver = AuthLifecycleDriver::new().expect("driver");
         let mut spec =
-            AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
+            AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
         spec.catalog_models_after_auth.clear();
         spec.selected_model_override = Some("gpt-5.5".to_string());
 
@@ -795,7 +797,7 @@ mod tests {
 
         assert!(!result.catalog_report.ok());
         let failure = result.failure_report(&spec);
-        assert!(failure.contains("Expected selectable Cerebras model routes"));
+        assert!(failure.contains("Expected selectable Gemini API model routes"));
         assert!(failure.contains("Selected model: `gpt-5.5`"));
         assert!(failure.contains("OpenAI"));
     }
@@ -803,14 +805,15 @@ mod tests {
     #[test]
     fn auth_lifecycle_failure_contracts_reject_degraded_success_states() {
         let driver = AuthLifecycleDriver::new().expect("driver");
-        let spec = AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
+        let spec =
+            AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
         let success = driver
             .run_openai_compatible_fixture(&spec)
             .expect("lifecycle result");
 
         let mut invalid_key = success.clone();
         invalid_key.transcript.push(
-            "**Login: Cerebras failed**\n\nInvalid API key. No model catalog was activated."
+            "**Login: Gemini API failed**\n\nInvalid API key. No model catalog was activated."
                 .to_string(),
         );
         assert_rejected_success(&spec, invalid_key, "invalid api key", "failed");
@@ -889,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn cerebras_env_file_and_process_env_paths_share_same_lifecycle_invariants() {
+    fn gemini_api_env_file_and_process_env_paths_share_same_lifecycle_invariants() {
         for auth_path in [
             AuthLifecycleAuthPath::TuiPasteApiKey,
             AuthLifecycleAuthPath::CliLogin,
@@ -897,7 +900,7 @@ mod tests {
             AuthLifecycleAuthPath::ProcessEnvPreseeded,
         ] {
             let driver = AuthLifecycleDriver::new().expect("driver");
-            let spec = AuthLifecycleSpec::cerebras_fixture(auth_path);
+            let spec = AuthLifecycleSpec::gemini_api_fixture(auth_path);
 
             let result = driver
                 .run_openai_compatible_fixture(&spec)
@@ -905,12 +908,12 @@ mod tests {
 
             result.assert_success(&spec);
             if auth_path.shows_paste_prompt() {
-                assert!(result.transcript_text().contains("**Cerebras API Key**"));
+                assert!(result.transcript_text().contains("**Gemini API API Key**"));
             } else {
                 assert!(
                     result
                         .transcript_text()
-                        .contains("**Cerebras credentials detected.**")
+                        .contains("**Gemini API credentials detected.**")
                 );
             }
         }
@@ -1071,7 +1074,8 @@ mod tests {
 
     #[test]
     fn picker_switch_target_uses_profile_route_not_matching_label_only_route() {
-        let spec = AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
+        let spec =
+            AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
         let auth = AuthChanged {
             provider: jcode_base::protocol::AuthProviderId::new(spec.provider_id),
             credential_source: Some(spec.auth_path.credential_source()),
@@ -1084,7 +1088,7 @@ mod tests {
             ModelRoute {
                 capability: None,
                 model: "wrong-profile-first".to_string(),
-                provider: "Cerebras".to_string(),
+                provider: "Gemini API".to_string(),
                 api_method: "openai-compatible:other-provider".to_string(),
                 available: true,
                 detail: "wrong namespace".to_string(),
@@ -1092,42 +1096,34 @@ mod tests {
             },
             ModelRoute {
                 capability: None,
-                model: "qwen-3-235b-a22b-instruct-2507".to_string(),
-                provider: "Cerebras".to_string(),
-                api_method: "openai-compatible:cerebras".to_string(),
+                model: "gemini-2.5-flash".to_string(),
+                provider: "Gemini API".to_string(),
+                api_method: "openai-compatible:gemini-api".to_string(),
                 available: true,
                 detail: "correct namespace".to_string(),
                 cheapness: None,
             },
             ModelRoute {
                 capability: None,
-                model: "llama3.1-8b".to_string(),
-                provider: "Cerebras".to_string(),
-                api_method: "openai-compatible:cerebras".to_string(),
+                model: "gemini-2.5-pro".to_string(),
+                provider: "Gemini API".to_string(),
+                api_method: "openai-compatible:gemini-api".to_string(),
                 available: true,
                 detail: "correct namespace".to_string(),
                 cheapness: None,
             },
         ];
 
-        let picker = PickerSnapshot::build(
-            &spec,
-            &activation,
-            Some("qwen-3-235b-a22b-instruct-2507"),
-            &routes,
-        );
+        let picker = PickerSnapshot::build(&spec, &activation, Some("gemini-2.5-flash"), &routes);
 
         assert_eq!(
             picker.provider_entries,
-            vec![
-                "qwen-3-235b-a22b-instruct-2507".to_string(),
-                "llama3.1-8b".to_string()
-            ]
+            vec!["gemini-2.5-flash".to_string(), "gemini-2.5-pro".to_string()]
         );
-        assert_eq!(picker.switch_target.as_deref(), Some("llama3.1-8b"));
+        assert_eq!(picker.switch_target.as_deref(), Some("gemini-2.5-pro"));
         assert_eq!(
             picker.switch_route_api_method.as_deref(),
-            Some("openai-compatible:cerebras")
+            Some("openai-compatible:gemini-api")
         );
         assert!(
             !picker
@@ -1140,7 +1136,8 @@ mod tests {
     #[test]
     fn auth_lifecycle_success_rejects_static_fallback_route_sources() {
         let driver = AuthLifecycleDriver::new().expect("driver");
-        let spec = AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
+        let spec =
+            AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
         let mut result = driver
             .run_openai_compatible_fixture(&spec)
             .expect("lifecycle result");
@@ -1168,17 +1165,18 @@ mod tests {
     #[test]
     fn auth_lifecycle_success_rejects_provider_routes_not_returned_by_live_catalog() {
         let driver = AuthLifecycleDriver::new().expect("driver");
-        let spec = AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
+        let spec =
+            AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
         let mut result = driver
             .run_openai_compatible_fixture(&spec)
             .expect("lifecycle result");
         result.catalog_routes.push(ModelRoute {
             capability: None,
             model: "zai-glm-4.7".to_string(),
-            provider: "Cerebras".to_string(),
-            api_method: "openai-compatible:cerebras".to_string(),
+            provider: "Gemini API".to_string(),
+            api_method: "openai-compatible:gemini-api".to_string(),
             available: true,
-            detail: "https://api.cerebras.ai/v1".to_string(),
+            detail: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
             cheapness: None,
         });
         result.catalog_report = validate_catalog_invariants(
@@ -1216,7 +1214,8 @@ mod tests {
     #[test]
     fn auth_lifecycle_success_rejects_duplicate_or_out_of_order_transcript_markers() {
         let driver = AuthLifecycleDriver::new().expect("driver");
-        let spec = AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
+        let spec =
+            AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
         let result = driver
             .run_openai_compatible_fixture(&spec)
             .expect("lifecycle result");
@@ -1253,15 +1252,15 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox() {
+    async fn gemini_api_live_opt_in_catalog_lifecycle_uses_isolated_sandbox() {
         if !env_truthy("JCODE_AUTH_LIFECYCLE_LIVE") {
             eprintln!(
-                "skipping live Cerebras auth lifecycle test; set JCODE_AUTH_LIFECYCLE_LIVE=1 and JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY"
+                "skipping live Cerebras auth lifecycle test; set JCODE_AUTH_LIFECYCLE_LIVE=1 and JCODE_AUTH_LIFECYCLE_GEMINI_API_KEY"
             );
             return;
         }
-        let api_key = live_cerebras_api_key()
-            .expect("JCODE_AUTH_LIFECYCLE_LIVE=1 requires JCODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY");
+        let api_key = live_gemini_api_key()
+            .expect("JCODE_AUTH_LIFECYCLE_LIVE=1 requires JCODE_AUTH_LIFECYCLE_GEMINI_API_KEY");
 
         let spend_smoke = env_truthy("JCODE_AUTH_LIFECYCLE_SMOKE");
         let stream_smoke = env_truthy("JCODE_AUTH_LIFECYCLE_STREAM_SMOKE");
@@ -1290,7 +1289,7 @@ mod tests {
                 ));
                 let capabilities = covered_stage_names(&stages);
                 let event = live_event(
-                    "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
+                    "gemini_api_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
                     jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
                     api_key.auth.clone(),
                     None,
@@ -1321,7 +1320,7 @@ mod tests {
 
         let driver = AuthLifecycleDriver::new().expect("driver");
         let mut spec =
-            AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
+            AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::RemoteTuiPasteApiKey);
         spec.api_key = api_key.secret.clone();
         spec.catalog_models_after_auth = models;
         spec.selected_model_override = Some(selected.clone());
@@ -1417,7 +1416,7 @@ mod tests {
                     ));
                     let capabilities = covered_stage_names(&stages);
                     let event = live_event(
-                        "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
+                        "gemini_api_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
                         jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
                         api_key.auth.clone(),
                         Some(&selected),
@@ -1447,7 +1446,7 @@ mod tests {
                     ));
                     let capabilities = covered_stage_names(&stages);
                     let event = live_event(
-                        "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
+                        "gemini_api_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
                         jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
                         api_key.auth.clone(),
                         Some(&selected),
@@ -1463,7 +1462,7 @@ mod tests {
 
         let capabilities = covered_stage_names(&stages);
         let event = live_event(
-            "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
+            "gemini_api_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
             jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
             api_key.auth.clone(),
             Some(&selected),
@@ -1918,7 +1917,7 @@ mod tests {
     #[test]
     fn fresh_start_sandbox_is_unconfigured_then_tui_key_lifecycle_configures_provider() {
         let driver = AuthLifecycleDriver::new().expect("driver");
-        let spec = AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::TuiPasteApiKey);
+        let spec = AuthLifecycleSpec::gemini_api_fixture(AuthLifecycleAuthPath::TuiPasteApiKey);
         let resolved =
             jcode_base::provider_catalog::resolve_openai_compatible_profile(spec.profile);
         let env_file = driver.sandbox.env_file_path(&resolved.env_file);
@@ -1968,7 +1967,7 @@ mod tests {
         assert!(
             result
                 .transcript_text()
-                .contains("**Cerebras API key saved.**"),
+                .contains("**Gemini API API key saved.**"),
             "fresh-start lifecycle should show the user that the key was saved: {}",
             result.transcript_text()
         );

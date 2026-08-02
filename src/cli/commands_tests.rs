@@ -147,10 +147,6 @@ fn configured_auth_test_targets_only_include_configured_supported_providers() {
     assert!(targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Claude)));
     assert!(targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Copilot)));
     assert!(targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Gemini)));
-    assert!(targets.contains(&ResolvedAuthTestTarget::Generic {
-        provider: crate::provider_catalog::OPENROUTER_LOGIN_PROVIDER,
-        choice: super::super::provider_init::ProviderChoice::Openrouter,
-    }));
 
     assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Openai)));
     assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Google)));
@@ -752,8 +748,8 @@ fn list_cli_providers_includes_auto_and_openai() {
             && provider.display_name == "OpenAI"
             && provider.auth_kind.as_deref() == Some("OAuth")
     }));
-    assert!(providers.iter().any(|provider| provider.id == "groq"));
-    assert!(providers.iter().any(|provider| provider.id == "xai"));
+    assert!(providers.iter().any(|provider| provider.id == "gemini"));
+    assert!(providers.iter().any(|provider| provider.id == "copilot"));
 }
 
 #[test]

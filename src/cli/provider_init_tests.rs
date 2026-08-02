@@ -225,24 +225,28 @@ fn test_auto_init_login_selection_preserves_order() {
         Some("anthropic-api")
     );
     assert_eq!(
-        resolve_login_selection("11", &providers).map(|provider| provider.id),
-        Some("alibaba-coding-plan")
+        resolve_login_selection("4", &providers).map(|provider| provider.id),
+        Some("jcode")
     );
     assert_eq!(
-        resolve_login_selection("12", &providers).map(|provider| provider.id),
-        Some("cursor")
+        resolve_login_selection("5", &providers).map(|provider| provider.id),
+        Some("openrouter")
     );
     assert_eq!(
-        resolve_login_selection("13", &providers).map(|provider| provider.id),
-        Some("copilot")
-    );
-    assert_eq!(
-        resolve_login_selection("14", &providers).map(|provider| provider.id),
+        resolve_login_selection("8", &providers).map(|provider| provider.id),
         Some("gemini")
     );
     assert_eq!(
-        resolve_login_selection("15", &providers).map(|provider| provider.id),
-        Some("antigravity")
+        resolve_login_selection("11", &providers).map(|provider| provider.id),
+        Some("ollama")
+    );
+    assert_eq!(
+        resolve_login_selection("12", &providers).map(|provider| provider.id),
+        Some("gemini-api")
+    );
+    assert_eq!(
+        resolve_login_selection("13", &providers).map(|provider| provider.id),
+        Some("openai-api")
     );
 }
 

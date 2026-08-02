@@ -1293,6 +1293,7 @@ async fn init_provider_with_options(
                     init_notice("Using Gemini provider (native Google Code Assist OAuth)");
                 }
                 clear_initial_model_provider();
+                crate::env::set_var("JCODE_ACTIVE_PROVIDER", "gemini");
                 Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
             }
             #[cfg(not(feature = "extra-providers"))]
