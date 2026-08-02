@@ -336,7 +336,6 @@ impl crate::tui::TuiState for TestState {
     fn remote_startup_phase_active(&self) -> bool {
         self.remote_startup_phase_active
     }
-   }
     fn animation_elapsed(&self) -> f32 {
         self.anim_elapsed
     }

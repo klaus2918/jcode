@@ -383,23 +383,13 @@ export -f cargo
                             &repo_dir,
                             &source_after_build,
                         )?;
-                        let desktop_binary = Self::desktop_binary_name(&command);
-                        let published = if let Some(binary_name) = desktop_binary {
-                            Self::validate_desktop_selfdev_binary(
-                                &repo_dir,
-                                &source_after_build,
-                                binary_name,
-                            )?;
-                            None
-                        } else {
-                            let published = build::publish_local_current_build_for_source(
-                                &repo_dir,
-                                &source_after_build,
-                            )?;
-                            let mut manifest = build::BuildManifest::load()?;
-                            manifest.add_to_history(build::current_build_info(&repo_dir)?)?;
-                            Some(published)
-                        };
+                        let published = build::publish_local_current_build_for_source(
+                            &repo_dir,
+                            &source_after_build,
+                        )?;
+                        let mut manifest = build::BuildManifest::load()?;
+                        manifest.add_to_history(build::current_build_info(&repo_dir)?)?;
+                        let published = Some(published);
                         let mut request = BuildRequest::load(&request_id)?.ok_or_else(|| {
                             anyhow::anyhow!("Missing queued build request {}", request_id)
                         })?;
@@ -467,62 +457,6 @@ export -f cargo
 
     /// Which desktop binary this build produced, or `None` when it is not a
     /// desktop-only build.
-    ///
-    /// Derived from the command rather than assumed: validating a desktop2
-    /// build against another package's binary reads a stale artefact from some earlier
-    /// build and fails a build that actually succeeded.
-    fn desktop_binary_name(command: &SelfDevBuildCommand) -> Option<&'static str> {
-        if command.display.contains("-p jcode ") {
-            return None;
-        }
-        if command.display.contains("-p jcode-desktop2") {
-            return Some(if cfg!(windows) {
-                "jcode-desktop2.exe"
-            } else {
-                "jcode-desktop2"
-            });
-        }
-        None
-    }
-
-    fn validate_desktop_selfdev_binary(
-        repo_dir: &Path,
-        source: &build::SourceState,
-        binary_name: &str,
-    ) -> Result<()> {
-        let binary = repo_dir
-            .join("target")
-            .join(build::SELFDEV_CARGO_PROFILE)
-            .join(binary_name);
-        if !binary.exists() {
-            anyhow::bail!("Desktop binary not found at {}", binary.display());
-        }
-
-        let output = std::process::Command::new(&binary)
-            .arg("--version")
-            .env("JCODE_NON_INTERACTIVE", "1")
-            .output()?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "Desktop binary smoke test failed for {} with exit code {:?}: {}",
-                binary.display(),
-                output.status.code(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.contains(&source.short_hash) {
-            anyhow::bail!(
-                "Refusing to validate desktop build {} as {}: --version output did not contain git hash {}: {}",
-                binary.display(),
-                source.version_label,
-                source.short_hash,
-                stdout.trim()
-            );
-        }
-        Ok(())
-    }
-
     pub(super) async fn do_build(
         &self,
         reason: Option<String>,
@@ -1129,47 +1063,5 @@ export -f cargo
             "cancelled": true,
             "cancelled_task": cancelled_task,
         })))
-    }
-}
-
-#[cfg(test)]
-mod desktop_binary_tests {
-    use super::*;
-
-    fn command(display: &str) -> SelfDevBuildCommand {
-        SelfDevBuildCommand {
-            program: "scripts/dev_cargo.sh".to_string(),
-            args: Vec::new(),
-            display: display.to_string(),
-        }
-    }
-
-    /// The bug this guards: a desktop build must be validated against its own
-    /// artefact, not whatever some earlier build left in `target/`.
-    #[test]
-    fn each_desktop_build_validates_its_own_binary() {
-        let desktop2 = SelfDevTool::desktop_binary_name(&command(
-            "scripts/dev_cargo.sh build --profile selfdev -p jcode-desktop2 --bin jcode-desktop2",
-        ));
-        assert!(
-            desktop2.is_some_and(|name| name.starts_with("jcode-desktop2")),
-            "desktop2 build resolved to {desktop2:?}"
-        );
-    }
-
-    /// A TUI build, or a combined build that includes the TUI, publishes
-    /// normally rather than going down the desktop validation path.
-    #[test]
-    fn tui_and_combined_builds_are_not_desktop_only() {
-        for display in [
-            "scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode",
-            "scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode -p jcode-desktop2",
-        ] {
-            assert_eq!(
-                SelfDevTool::desktop_binary_name(&command(display)),
-                None,
-                "{display} was treated as desktop-only"
-            );
-        }
     }
 }
