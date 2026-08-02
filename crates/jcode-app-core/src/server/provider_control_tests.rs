@@ -646,7 +646,7 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
 }
 
 #[test]
-fn cerebras_auth_hint_applies_openai_compatible_runtime_profile() {
+fn gemini_api_auth_hint_applies_openai_compatible_runtime_profile() {
     let _guard = EnvGuard::save(&[
         "JCODE_OPENROUTER_API_BASE",
         "JCODE_OPENROUTER_API_KEY_NAME",
@@ -664,12 +664,12 @@ fn cerebras_auth_hint_applies_openai_compatible_runtime_profile() {
     ]);
 
     let request =
-        crate::auth::lifecycle::AuthActivationRequest::new(Some("Cerebras".to_string()), None);
-    assert_eq!(request.provider_id().as_deref(), Some("cerebras"));
+        crate::auth::lifecycle::AuthActivationRequest::new(Some("gemini-api".to_string()), None);
+    assert_eq!(request.provider_id().as_deref(), Some("gemini-api"));
 
     let activation = crate::auth::lifecycle::activate_auth_change(&request);
     let default_model = activation.activated_model.as_deref();
-    assert_eq!(default_model, Some("gpt-oss-120b"));
+    assert_eq!(default_model, Some("gemini-2.5-flash"));
     assert_eq!(
         std::env::var("JCODE_RUNTIME_PROVIDER").as_deref(),
         Ok("openai-compatible")
@@ -680,28 +680,28 @@ fn cerebras_auth_hint_applies_openai_compatible_runtime_profile() {
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
-        Ok("https://api.cerebras.ai/v1")
+        Ok("https://generativelanguage.googleapis.com/v1beta/openai")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_KEY_NAME").as_deref(),
-        Ok("CEREBRAS_API_KEY")
+        Ok("GEMINI_API_KEY")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_ENV_FILE").as_deref(),
-        Ok("cerebras.env")
+        Ok("gemini.env")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref(),
-        Ok("cerebras")
+        Ok("gemini-api")
     );
     assert_eq!(
-        activation.model_switch_request("mock-auth", "llama3.1-8b"),
-        "cerebras:llama3.1-8b"
+        activation.model_switch_request("mock-auth", "gemini-2.5-pro"),
+        "gemini-api:gemini-2.5-pro"
     );
 }
 
 #[tokio::test]
-async fn notify_auth_changed_typed_cerebras_event_controls_user_visible_catalog_identity() {
+async fn notify_auth_changed_typed_gemini_api_event_controls_user_visible_catalog_identity() {
     let _guard = EnvGuard::save(&[
         "JCODE_OPENROUTER_API_BASE",
         "JCODE_OPENROUTER_API_KEY_NAME",
@@ -730,13 +730,13 @@ async fn notify_auth_changed_typed_cerebras_event_controls_user_visible_catalog_
     )])));
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-    let mut auth = crate::protocol::AuthChanged::new("cerebras");
+    let mut auth = crate::protocol::AuthChanged::new("gemini-api");
     auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
     auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
     auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
         "openai-compatible",
     ));
-    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("cerebras"));
+    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("gemini-api"));
 
     handle_notify_auth_changed(
         45,
@@ -760,7 +760,7 @@ async fn notify_auth_changed_typed_cerebras_event_controls_user_visible_catalog_
     let final_message = recv_final_catalog_notification(&mut client_event_rx).await;
 
     assert!(
-        final_message.contains("Cerebras catalog changed"),
+        final_message.contains("Gemini API catalog changed"),
         "typed auth event should control user-visible provider label, got: {}",
         final_message
     );
@@ -777,7 +777,7 @@ async fn notify_auth_changed_typed_cerebras_event_controls_user_visible_catalog_
     assert_eq!(final_message.lines().count(), 2);
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref(),
-        Ok("cerebras")
+        Ok("gemini-api")
     );
 }
 
@@ -802,8 +802,8 @@ async fn notify_auth_changed_switches_from_stale_model_to_matching_provider_rout
     crate::bus::reset_models_updated_publish_state_for_tests();
     let provider = Arc::new(AuthChangeMockProvider::new());
     *provider.state.selected_model.write().unwrap() = Some("gpt-5.5".to_string());
-    *provider.state.route_provider.write().unwrap() = "Cerebras".to_string();
-    *provider.state.route_api_method.write().unwrap() = "openai-compatible:cerebras".to_string();
+    *provider.state.route_provider.write().unwrap() = "gemini-api".to_string();
+    *provider.state.route_api_method.write().unwrap() = "openai-compatible:gemini-api".to_string();
     let provider: Arc<dyn Provider> = provider;
     let registry = Registry::empty();
     let agent = Arc::new(Mutex::new(Agent::new(provider.clone(), registry)));
@@ -814,13 +814,13 @@ async fn notify_auth_changed_switches_from_stale_model_to_matching_provider_rout
     )])));
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-    let mut auth = crate::protocol::AuthChanged::new("cerebras");
+    let mut auth = crate::protocol::AuthChanged::new("gemini-api");
     auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
     auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
     auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
         "openai-compatible",
     ));
-    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("cerebras"));
+    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("gemini-api"));
 
     handle_notify_auth_changed(
         46,
@@ -839,12 +839,12 @@ async fn notify_auth_changed_switches_from_stale_model_to_matching_provider_rout
     let final_message = recv_final_catalog_notification(&mut client_event_rx).await;
 
     assert!(
-        final_message.contains("Cerebras catalog changed"),
+        final_message.contains("Gemini API catalog changed"),
         "{}",
         final_message
     );
     assert!(
-        final_message.contains("**Model ready:** `gpt-oss-120b`"),
+        final_message.contains("**Model ready:** `gemini-2.5-flash`"),
         "final auth catalog update should switch away from stale OpenAI model: {}",
         final_message
     );
@@ -949,8 +949,8 @@ async fn notify_auth_changed_does_not_override_manual_model_selected_during_refr
         .auth_refresh_delay_ms
         .store(80, Ordering::Release);
     *provider.state.selected_model.write().unwrap() = Some("stale-model".to_string());
-    *provider.state.route_provider.write().unwrap() = "Cerebras".to_string();
-    *provider.state.route_api_method.write().unwrap() = "openai-compatible:cerebras".to_string();
+    *provider.state.route_provider.write().unwrap() = "gemini-api".to_string();
+    *provider.state.route_api_method.write().unwrap() = "openai-compatible:gemini-api".to_string();
     *provider
         .state
         .expose_selected_model_in_routes
@@ -966,13 +966,13 @@ async fn notify_auth_changed_does_not_override_manual_model_selected_during_refr
     )])));
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-    let mut auth = crate::protocol::AuthChanged::new("cerebras");
+    let mut auth = crate::protocol::AuthChanged::new("gemini-api");
     auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
     auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
     auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
         "openai-compatible",
     ));
-    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("cerebras"));
+    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("gemini-api"));
 
     handle_notify_auth_changed(
         48,
@@ -1076,9 +1076,9 @@ async fn auth_model_first_prompt_e2e_state_space_is_bounded_by_selection_source(
             .auth_refresh_delay_ms
             .store(80, Ordering::Release);
         *provider_concrete.state.selected_model.write().unwrap() = Some("stale-model".to_string());
-        *provider_concrete.state.route_provider.write().unwrap() = "Cerebras".to_string();
+        *provider_concrete.state.route_provider.write().unwrap() = "gemini-api".to_string();
         *provider_concrete.state.route_api_method.write().unwrap() =
-            "openai-compatible:cerebras".to_string();
+            "openai-compatible:gemini-api".to_string();
         *provider_concrete
             .state
             .expose_selected_model_in_routes
@@ -1094,13 +1094,14 @@ async fn auth_model_first_prompt_e2e_state_space_is_bounded_by_selection_source(
         )])));
         let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-        let mut auth = crate::protocol::AuthChanged::new("cerebras");
+        let mut auth = crate::protocol::AuthChanged::new("gemini-api");
         auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
         auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
         auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
             "openai-compatible",
         ));
-        auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("cerebras"));
+        auth.expected_catalog_namespace =
+            Some(crate::protocol::CatalogNamespace::new("gemini-api"));
 
         handle_notify_auth_changed(
             148,
@@ -1245,13 +1246,13 @@ async fn notify_auth_changed_switches_only_current_session_model() {
     let current_provider = Arc::new(AuthChangeMockProvider::new());
     let current_state = Arc::clone(&current_provider.state);
     *current_state.selected_model.write().unwrap() = Some("gpt-5.5".to_string());
-    *current_state.route_provider.write().unwrap() = "Groq".to_string();
-    *current_state.route_api_method.write().unwrap() = "openai-compatible:groq".to_string();
+    *current_state.route_provider.write().unwrap() = "gemini-api".to_string();
+    *current_state.route_api_method.write().unwrap() = "openai-compatible:gemini-api".to_string();
     let peer_provider = Arc::new(AuthChangeMockProvider::new());
     let peer_state = Arc::clone(&peer_provider.state);
     *peer_state.selected_model.write().unwrap() = Some("gpt-5.5".to_string());
-    *peer_state.route_provider.write().unwrap() = "Groq".to_string();
-    *peer_state.route_api_method.write().unwrap() = "openai-compatible:groq".to_string();
+    *peer_state.route_provider.write().unwrap() = "gemini-api".to_string();
+    *peer_state.route_api_method.write().unwrap() = "openai-compatible:gemini-api".to_string();
 
     let current_provider: Arc<dyn Provider> = current_provider;
     let peer_provider: Arc<dyn Provider> = peer_provider;
@@ -1268,13 +1269,13 @@ async fn notify_auth_changed_switches_only_current_session_model() {
     ])));
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-    let mut auth = crate::protocol::AuthChanged::new("groq");
+    let mut auth = crate::protocol::AuthChanged::new("gemini-api");
     auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
     auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
     auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
         "openai-compatible",
     ));
-    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("groq"));
+    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("gemini-api"));
 
     handle_notify_auth_changed(
         47,
@@ -1295,7 +1296,7 @@ async fn notify_auth_changed_switches_only_current_session_model() {
         Some(ServerEvent::Done { id: 47 })
     ));
 
-    let expected = "llama-3.1-8b-instant";
+    let expected = "gemini-2.5-flash";
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
         let current = current_state.selected_model.read().unwrap().clone();
@@ -1319,14 +1320,14 @@ async fn notify_auth_changed_switches_only_current_session_model() {
             assert_eq!(provider_model.as_deref(), Some("gpt-5.5"));
             assert!(available_model_routes.iter().any(|route| {
                 route.model == "gpt-5.5"
-                    && route.provider == "Groq"
-                    && route.api_method == "openai-compatible:groq"
+                    && route.provider == "gemini-api"
+                    && route.api_method == "openai-compatible:gemini-api"
             }));
             assert!(
                 available_model_routes
                     .iter()
                     .all(|route| route.model != expected),
-                "auth-triggered Groq model leaked into peer session routes: {:?}",
+                "auth-triggered Gemini API model leaked into peer session routes: {:?}",
                 available_model_routes
             );
             return;
