@@ -44,7 +44,7 @@ impl SelfDevBuildTarget {
             "tui" | "jcode" => Ok(Self::Tui),
             "all" | "both" => Ok(Self::All),
             other => anyhow::bail!(
-                "invalid selfdev build target `{}`; expected auto, tui, desktop2, or all",
+                "invalid selfdev build target `{}`; expected auto, tui, or all",
                 other
             ),
         }

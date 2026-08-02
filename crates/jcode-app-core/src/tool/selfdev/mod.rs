@@ -47,7 +47,7 @@ struct SelfDevInput {
     /// Why this build is needed; shown to other queued/blocked agents.
     #[serde(default)]
     reason: Option<String>,
-    /// Build target for selfdev build: auto, tui, desktop2, or all.
+    /// Build target for selfdev build: auto, tui, or all.
     #[serde(default)]
     target: Option<String>,
     /// Shell command for selfdev test/check action.
