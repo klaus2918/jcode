@@ -2717,14 +2717,19 @@ mod tests {
         let mut missing_tool_result = strict_statuses(&[]);
         missing_tool_result.remove(checkpoints::TOOL_RESULT_FOLLOWUP);
         latest.insert(
-            "opencode-zen::model-a::partial".to_string(),
-            coverage_entry("opencode", "OpenCode", Some("model-a"), missing_tool_result),
+            "gemini-api::model-a::partial".to_string(),
+            coverage_entry(
+                "gemini-api",
+                "Gemini API",
+                Some("model-a"),
+                missing_tool_result,
+            ),
         );
         latest.insert(
-            "opencode::model-a::tool-followup".to_string(),
+            "gemini-api::model-a::tool-followup".to_string(),
             coverage_entry(
-                "opencode-zen",
-                "OpenCode Zen",
+                "gemini-api",
+                "Gemini API",
                 Some("model-a"),
                 BTreeMap::from([(
                     checkpoints::TOOL_RESULT_FOLLOWUP.to_string(),
@@ -2733,10 +2738,10 @@ mod tests {
             ),
         );
         latest.insert(
-            "opencode::model-b::failed-stream".to_string(),
+            "gemini-api::model-b::failed-stream".to_string(),
             coverage_entry(
-                "opencode",
-                "OpenCode",
+                "gemini-api",
+                "Gemini API",
                 Some("model-b"),
                 strict_statuses(&[(
                     checkpoints::STREAMING_CHAT_COMPLETION,
@@ -2745,8 +2750,8 @@ mod tests {
             ),
         );
         latest.insert(
-            "opencode::*::catalog".to_string(),
-            coverage_entry("opencode", "OpenCode", None, strict_statuses(&[])),
+            "gemini-api::*::catalog".to_string(),
+            coverage_entry("gemini-api", "Gemini API", None, strict_statuses(&[])),
         );
         let coverage = LiveVerificationCoverage {
             schema_version: SCHEMA_VERSION,
@@ -2760,11 +2765,11 @@ mod tests {
         assert_eq!(summary.total_provider_model_pairs, 2);
         assert_eq!(summary.covered_provider_model_pairs, 1);
         assert_eq!(summary.coverage_percent, 50.0);
-        assert_eq!(summary.covered_pairs[0].provider_id, "opencode");
+        assert_eq!(summary.covered_pairs[0].provider_id, "gemini-api");
         assert_eq!(summary.covered_pairs[0].model, "model-a");
         assert_eq!(
             summary.covered_pairs[0].source_provider_ids,
-            vec!["opencode".to_string(), "opencode-zen".to_string()]
+            vec!["gemini-api".to_string()]
         );
         assert_eq!(summary.uncovered_pairs[0].model, "model-b");
         assert_eq!(
@@ -2773,11 +2778,14 @@ mod tests {
                 .get(checkpoints::STREAMING_CHAT_COMPLETION),
             Some(&LiveVerificationStageStatus::Failed)
         );
-        assert_eq!(summary.provider_only_entries, vec!["opencode::*::catalog"]);
+        assert_eq!(
+            summary.provider_only_entries,
+            vec!["gemini-api::*::catalog"]
+        );
         assert!(
             !summary
                 .known_provider_ids_without_live_model_coverage
-                .contains(&"opencode".to_string()),
+                .contains(&"gemini-api".to_string()),
             "observed providers should not be reported as having no live model evidence"
         );
     }

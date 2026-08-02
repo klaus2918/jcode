@@ -1286,10 +1286,10 @@ mod tests {
             let temp = tempfile::tempdir().expect("tempdir");
             let vars = vec![
                 ("JCODE_HOME", std::env::var_os("JCODE_HOME")),
-                ("OPENCODE_API_KEY", std::env::var_os("OPENCODE_API_KEY")),
+                ("GEMINI_API_KEY", std::env::var_os("GEMINI_API_KEY")),
             ];
             crate::env::set_var("JCODE_HOME", temp.path());
-            crate::env::set_var("OPENCODE_API_KEY", "sk-test-opencode");
+            crate::env::set_var("GEMINI_API_KEY", "sk-test-gemini");
             Self {
                 vars,
                 _temp: temp,
@@ -1297,7 +1297,12 @@ mod tests {
             }
         }
 
-        fn save_opencode_cache(&self, source_api_base: &str, model_ids: &[&str]) {
+        fn save_compatible_cache(
+            &self,
+            namespace: &str,
+            source_api_base: &str,
+            model_ids: &[&str],
+        ) {
             let jcode_home = std::env::var_os("JCODE_HOME").expect("JCODE_HOME set");
             let cache_dir = std::path::PathBuf::from(jcode_home).join("cache");
             std::fs::create_dir_all(&cache_dir).expect("create cache dir");
@@ -1317,7 +1322,7 @@ mod tests {
                     .collect(),
             };
             std::fs::write(
-                cache_dir.join("opencode_models.json"),
+                cache_dir.join(format!("{namespace}_models.json")),
                 serde_json::to_string(&cache).expect("serialize cache"),
             )
             .expect("write cache");
@@ -1388,14 +1393,21 @@ mod tests {
     #[test]
     fn remote_compatible_route_uses_live_cache_and_does_not_mark_fallback() {
         let guard = EnvGuard::new();
-        guard.save_opencode_cache("https://opencode.ai/zen/v1", &["qwen3.6-plus"]);
+        guard.save_compatible_cache(
+            "gemini-api",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            &["gemini-2.5-flash"],
+        );
 
-        let route = remote_openai_compatible_route_for_model("qwen3.6-plus")
-            .expect("live-cache-only OpenCode model should be routed");
+        let route = remote_openai_compatible_route_for_model("gemini-2.5-flash")
+            .expect("live-cache-only Gemini API model should be routed");
 
-        assert_eq!(route.provider, "OpenCode Zen");
-        assert_eq!(route.api_method, "openai-compatible:opencode");
-        assert_eq!(route.detail, "https://opencode.ai/zen/v1");
+        assert_eq!(route.provider, "Gemini API");
+        assert_eq!(route.api_method, "openai-compatible:gemini-api");
+        assert_eq!(
+            route.detail,
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
         assert!(!route.detail.contains("fallback"));
     }
 
@@ -1403,10 +1415,10 @@ mod tests {
     fn remote_compatible_route_marks_static_model_list_fallback() {
         let _guard = EnvGuard::new();
 
-        let route = remote_openai_compatible_route_for_model("glm-4.7")
-            .expect("static OpenCode fallback model should be routed");
+        let route = remote_openai_compatible_route_for_model("gemini-2.5-flash")
+            .expect("static Gemini API fallback model should be routed");
 
-        assert_eq!(route.provider, "OpenCode Zen");
+        assert_eq!(route.provider, "Gemini API");
         assert!(
             route
                 .detail
@@ -1417,9 +1429,13 @@ mod tests {
     #[test]
     fn remote_compatible_route_ignores_live_cache_from_wrong_api_base() {
         let guard = EnvGuard::new();
-        guard.save_opencode_cache("https://wrong.example.test/v1", &["qwen3.6-plus"]);
+        guard.save_compatible_cache(
+            "gemini-api",
+            "https://wrong.example.test/v1",
+            &["gemini-live-only-model"],
+        );
 
-        assert!(remote_openai_compatible_route_for_model("qwen3.6-plus").is_none());
+        assert!(remote_openai_compatible_route_for_model("gemini-live-only-model").is_none());
     }
 
     fn save_openrouter_catalog_cache(model_ids: &[&str]) {

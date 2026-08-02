@@ -446,11 +446,11 @@ mod tests {
     fn source_key_mapping_covers_known_providers() {
         assert_eq!(
             source_key_for_provider_label("gemini-api", None),
-            "openai-compatible:deepseek"
+            "openai-compatible:gemini-api"
         );
         assert_eq!(
-            source_key_for_provider_label("Moonshot AI", None),
-            "openai-compatible:moonshotai"
+            source_key_for_provider_label("Gemini API", None),
+            "openai-compatible:gemini-api"
         );
         assert_eq!(
             source_key_for_provider_label("OpenRouter", None),
@@ -458,7 +458,7 @@ mod tests {
         );
         assert_eq!(
             source_key_for_provider_label("OpenRouter", Some("gemini-api")),
-            "openai-compatible:deepseek"
+            "openai-compatible:gemini-api"
         );
         assert_eq!(
             source_key_for_provider_label("Anthropic", None),

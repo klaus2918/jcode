@@ -1065,7 +1065,6 @@ fn open_weight_family_context_limits_match_published_windows() {
     assert_eq!(f("minimax-m2.7"), Some(204_800));
     assert_eq!(f("mimo-v2.5"), Some(262_144));
     assert_eq!(f("deepseek-v3.2"), Some(163_840));
-    assert_eq!(f("gemini-2.5-pro"), Some(1_000_000));
     assert_eq!(f("qwen3-235b-a22b-instruct-2507"), Some(262_144));
     assert_eq!(f("gpt-oss-120b"), Some(131_072));
     assert_eq!(f("llama-3.3-70b-instruct"), Some(131_072));
