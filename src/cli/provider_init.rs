@@ -1298,7 +1298,14 @@ pub async fn login_and_bootstrap_provider(
             disable_subscription_runtime_mode();
             clear_initial_model_provider();
             crate::env::set_var("JCODE_ACTIVE_PROVIDER", "cursor");
-            Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
+            #[cfg(feature = "extra-providers")]
+            {
+                Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
+            }
+            #[cfg(not(feature = "extra-providers"))]
+            {
+                anyhow::bail!("cursor runtime is not built; enable the `extra-providers` feature")
+            }
         }
         LoginProviderTarget::Copilot => {
             disable_subscription_runtime_mode();
@@ -1314,7 +1321,14 @@ pub async fn login_and_bootstrap_provider(
             disable_subscription_runtime_mode();
             clear_initial_model_provider();
             crate::env::set_var("JCODE_ACTIVE_PROVIDER", "antigravity");
-            Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new())
+            #[cfg(feature = "extra-providers")]
+            {
+                Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new())
+            }
+            #[cfg(not(feature = "extra-providers"))]
+            {
+                anyhow::bail!("antigravity runtime is not built; enable the `extra-providers` feature")
+            }
         }
         LoginProviderTarget::Google => {
             anyhow::bail!("Google login cannot be used as a model provider bootstrap");
@@ -1452,7 +1466,14 @@ async fn init_provider_with_options(
             init_notice("Using Cursor native HTTPS provider (experimental)");
             clear_initial_model_provider();
             crate::env::set_var("JCODE_ACTIVE_PROVIDER", "cursor");
-            Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
+            #[cfg(feature = "extra-providers")]
+            {
+                Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
+            }
+            #[cfg(not(feature = "extra-providers"))]
+            {
+                anyhow::bail!("cursor runtime is not built; enable the `extra-providers` feature")
+            }
         }
         ProviderChoice::Copilot => {
             disable_subscription_runtime_mode();
@@ -1617,7 +1638,14 @@ async fn init_provider_with_options(
             init_notice("Using Antigravity provider (experimental)");
             clear_initial_model_provider();
             crate::env::set_var("JCODE_ACTIVE_PROVIDER", "antigravity");
-            Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new())
+            #[cfg(feature = "extra-providers")]
+            {
+                Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new())
+            }
+            #[cfg(not(feature = "extra-providers"))]
+            {
+                anyhow::bail!("antigravity runtime is not built; enable the `extra-providers` feature")
+            }
         }
         ProviderChoice::Google => {
             disable_subscription_runtime_mode();

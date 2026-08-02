@@ -16,6 +16,7 @@ use jcode_base::message::{ContentBlock, Message, Role, StreamEvent, ToolDefiniti
 use jcode_base::provider::Provider;
 use jcode_base::provider_catalog::{OpenAiCompatibleProfile, ResolvedOpenAiCompatibleProfile};
 use jcode_provider_anthropic_runtime::AnthropicProvider;
+#[cfg(feature = "extra-providers")]
 use jcode_provider_antigravity_runtime::AntigravityProvider;
 
 /// Resolve the per-request timeout for an OpenAI-compatible smoke probe.
@@ -1169,6 +1170,7 @@ pub async fn run_live_claude_native_reasoning_smoke(
 // `provider-doctor antigravity` exercises the exact path a real session uses.
 
 /// Build a fresh native Antigravity provider pinned to `model`.
+#[cfg(feature = "extra-providers")]
 fn build_native_antigravity_provider(model: &str) -> anyhow::Result<AntigravityProvider> {
     let provider = AntigravityProvider::new();
     provider
@@ -1178,6 +1180,7 @@ fn build_native_antigravity_provider(model: &str) -> anyhow::Result<AntigravityP
 }
 
 /// Stage: non-streaming chat completion (a single coherent final answer).
+#[cfg(feature = "extra-providers")]
 pub async fn run_live_antigravity_native_smoke(
     model: &str,
 ) -> anyhow::Result<jcode_base::live_tests::LiveVerificationStage> {
@@ -1235,6 +1238,7 @@ pub async fn run_live_antigravity_native_smoke(
 /// The Antigravity runtime delivers `generateContent` as a single response that
 /// jcode re-emits as text deltas, so we assert the runtime produced streamed
 /// text and reached a clean end-of-message rather than requiring many deltas.
+#[cfg(feature = "extra-providers")]
 pub async fn run_live_antigravity_native_stream_smoke(
     model: &str,
 ) -> anyhow::Result<jcode_base::live_tests::LiveVerificationStage> {
@@ -1332,6 +1336,7 @@ pub async fn run_live_antigravity_native_stream_smoke(
 /// position N"` field failure (a single round-trip cannot). Evidence for the
 /// `tool_call_parse`, `tool_execution_loop`, `tool_result_followup`, and
 /// `real_jcode_tool_smoke` checkpoints.
+#[cfg(feature = "extra-providers")]
 pub async fn run_live_antigravity_native_tool_smoke(
     model: &str,
 ) -> anyhow::Result<jcode_base::live_tests::LiveVerificationStage> {
@@ -1344,6 +1349,7 @@ pub async fn run_live_antigravity_native_tool_smoke(
 /// Delegates to the shared [`run_live_native_provider_reasoning_smoke`] so
 /// Antigravity records whether the resolved model streams reasoning text or
 /// hides it behind an opaque signal (Gemini-3 thought signatures are opaque).
+#[cfg(feature = "extra-providers")]
 pub async fn run_live_antigravity_native_reasoning_smoke(
     model: &str,
 ) -> anyhow::Result<jcode_base::live_tests::LiveVerificationStage> {

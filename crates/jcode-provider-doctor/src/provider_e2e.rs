@@ -19,14 +19,17 @@
 //! over-credited in the ledger.
 
 use crate::live_provider_probes::{
-    fetch_live_openai_compatible_models, run_live_antigravity_native_reasoning_smoke,
-    run_live_antigravity_native_smoke, run_live_antigravity_native_stream_smoke,
-    run_live_antigravity_native_tool_smoke, run_live_claude_native_reasoning_smoke,
+    fetch_live_openai_compatible_models, run_live_claude_native_reasoning_smoke,
     run_live_claude_native_smoke, run_live_claude_native_stream_smoke,
     run_live_claude_native_tool_smoke, run_live_native_provider_reasoning_smoke,
     run_live_native_provider_smoke, run_live_native_provider_stream_smoke,
     run_live_native_provider_tool_smoke, run_live_openai_compatible_smoke,
     run_live_openai_compatible_stream_smoke, run_live_openai_compatible_tool_smoke,
+};
+#[cfg(feature = "extra-providers")]
+use crate::live_provider_probes::{
+    run_live_antigravity_native_reasoning_smoke, run_live_antigravity_native_smoke,
+    run_live_antigravity_native_stream_smoke, run_live_antigravity_native_tool_smoke,
 };
 use jcode_base::auth::lifecycle::{
     AuthActivationRequest, activate_auth_change, validate_catalog_invariants,
@@ -940,6 +943,7 @@ async fn run_native_claude_api_checks(
 /// `antigravity:` model-switch prefix; its live-catalog routes carry the
 /// `https` api_method (parsed as [`ModelRouteApiMethod::AntigravityHttps`]) and
 /// the `Antigravity` provider label.
+#[cfg(feature = "extra-providers")]
 fn native_antigravity_wiring_contract() -> WiringContract {
     WiringContract {
         api_method: "https".to_string(),
@@ -954,6 +958,7 @@ fn native_antigravity_wiring_contract() -> WiringContract {
 /// Google OAuth tokens minted by `jcode login --provider antigravity`; the
 /// tokens rotate and are never persisted here, so we record only the source
 /// (and the resolved Google account email when available) without a secret.
+#[cfg(feature = "extra-providers")]
 fn native_antigravity_auth(account: &str) -> LiveVerificationAuth {
     let source = if account.trim().is_empty() {
         "Antigravity Google OAuth via auth.json".to_string()
@@ -969,6 +974,7 @@ fn native_antigravity_auth(account: &str) -> LiveVerificationAuth {
 /// accepts every schema construct jcode emits), then any Gemini model, then any
 /// available catalog model. Returns `None` when the catalog is empty, letting
 /// the caller fall back to the runtime default.
+#[cfg(feature = "extra-providers")]
 fn cheapest_antigravity_model(catalog_models: &[String]) -> Option<String> {
     let is_alias = |m: &&String| m.trim().is_empty() || m.trim() == "default";
     if let Some(flash) = catalog_models.iter().filter(|m| !is_alias(m)).find(|m| {
@@ -996,6 +1002,7 @@ fn cheapest_antigravity_model(catalog_models: &[String]) -> Option<String> {
 /// load/refresh, project resolution, the live `fetchAvailableModels` catalog,
 /// request shaping, the per-model schema normalization, the Gemini->StreamEvent
 /// translation, and Gemini-3 thought-signature tool round-trips). It records the
+#[cfg(feature = "extra-providers")]
 /// same strict checkpoints so the coverage ledger can promote `antigravity` to
 /// READY exactly like a doctor-drivable provider.
 pub async fn run_antigravity_native_e2e(
@@ -1194,6 +1201,7 @@ pub async fn run_antigravity_native_e2e(
     ))
 }
 
+#[cfg(feature = "extra-providers")]
 /// Drive the three live native-Antigravity probes and fold their results into
 /// the six API-dependent checkpoints, mirroring [`run_native_claude_api_checks`].
 async fn run_native_antigravity_api_checks(
@@ -1455,27 +1463,39 @@ impl NativeProviderKind {
                 std::sync::Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
             }
             Self::Cursor => {
-                std::sync::Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
+                #[cfg(feature = "extra-providers")]
+                {
+                    return Ok(std::sync::Arc::new(
+                        jcode_provider_cursor_runtime::CursorCliProvider::new(),
+                    ));
+                }
+                #[cfg(not(feature = "extra-providers"))]
+                anyhow::bail!("cursor runtime is not built; enable the `extra-providers` feature");
             }
             Self::Copilot => {
-                // `new()` requires a loadable GitHub token; fall back to an empty
-                // token so the offline tier can still construct the runtime for
-                // its static catalog. Live tiers resolve the real credential
-                // separately and fail with a clear message if it is missing.
-                //
-                // Disable the startup prefetch grace window: the runtime's
-                // `complete` blocks on `wait_for_init`, which is only released by
-                // `detect_tier_and_set_default` (run from `prefetch_models`). With
-                // the default grace window the doctor's immediate prefetch returns
-                // early without marking init done, so the live probes would hang.
-                jcode_base::env::set_var("JCODE_COPILOT_PREFETCH_STARTUP_GRACE_MS", "0");
-                let runtime = match jcode_provider_copilot_runtime::CopilotApiProvider::new() {
-                    Ok(runtime) => runtime,
-                    Err(_) => jcode_provider_copilot_runtime::CopilotApiProvider::new_with_token(
-                        String::new(),
-                    ),
-                };
-                std::sync::Arc::new(runtime)
+                #[cfg(feature = "extra-providers")]
+                {
+                    // `new()` requires a loadable GitHub token; fall back to an empty
+                    // token so the offline tier can still construct the runtime for
+                    // its static catalog. Live tiers resolve the real credential
+                    // separately and fail with a clear message if it is missing.
+                    //
+                    // Disable the startup prefetch grace window: the runtime's
+                    // `complete` blocks on `wait_for_init`, which is only released by
+                    // `detect_tier_and_set_default` (run from `prefetch_models`). With
+                    // the default grace window the doctor's immediate prefetch returns
+                    // early without marking init done, so the live probes would hang.
+                    jcode_base::env::set_var("JCODE_COPILOT_PREFETCH_STARTUP_GRACE_MS", "0");
+                    let runtime = match jcode_provider_copilot_runtime::CopilotApiProvider::new() {
+                        Ok(runtime) => runtime,
+                        Err(_) => jcode_provider_copilot_runtime::CopilotApiProvider::new_with_token(
+                            String::new(),
+                        ),
+                    };
+                    return Ok(std::sync::Arc::new(runtime));
+                }
+                #[cfg(not(feature = "extra-providers"))]
+                anyhow::bail!("copilot runtime is not built; enable the `extra-providers` feature");
             }
             Self::Bedrock => {
                 std::sync::Arc::new(jcode_base::provider::bedrock::BedrockProvider::new())
@@ -2574,6 +2594,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "extra-providers")]
     #[test]
     fn native_antigravity_contract_routes_via_https_prefix() {
         let contract = native_antigravity_wiring_contract();
@@ -2600,6 +2621,7 @@ mod tests {
         assert!(contract.switch_prefix.is_empty());
     }
 
+    #[cfg(feature = "extra-providers")]
     #[test]
     fn cheapest_antigravity_model_prefers_gemini_flash() {
         let catalog = vec![
@@ -2614,6 +2636,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "extra-providers")]
     #[test]
     fn cheapest_antigravity_model_falls_back_to_any_gemini_then_any_model() {
         // No flash tier: any Gemini wins.
@@ -2636,6 +2659,7 @@ mod tests {
         assert!(cheapest_antigravity_model(&alias_only).is_none());
     }
 
+    #[cfg(feature = "extra-providers")]
     #[test]
     fn native_antigravity_auth_is_secret_free() {
         let with_account = native_antigravity_auth("user@example.com");
