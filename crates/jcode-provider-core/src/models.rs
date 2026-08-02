@@ -104,6 +104,14 @@ pub fn provider_key_from_hint(provider_hint: Option<&str>) -> Option<&'static st
         "antigravity" => Some("antigravity"),
         "gemini" | "google gemini" => Some("gemini"),
         "cursor" => Some("cursor"),
+        // Direct OpenAI-compatible profile families the embedded registry can
+        // scope entries to. Keeping them here lets modelcap.json/registry
+        // provider hints like "deepseek"/"zai"/"kimi" resolve to a canonical
+        // key instead of silently falling back to the no-hint path.
+        "deepseek" => Some("deepseek"),
+        "zai" | "zhipu" | "glm" => Some("zai"),
+        "minimax" => Some("minimax"),
+        "kimi" | "moonshot" | "moonshotai" => Some("kimi"),
         _ => None,
     }
 }
@@ -156,20 +164,25 @@ pub fn provider_for_model_with_hint(
         return Some(provider);
     }
 
-    let model = model.trim();
-    if model.contains('@') {
+    // Normalize before classifying so mixed-case ids, `[1m]` long-context
+    // suffixes, and provider-qualified ids classify identically to the
+    // jcode-base wrapper (which is a superset that adds bedrock/antigravity/
+    // cursor). Without this, "CLAUDE-OPUS-4-8" or "claude-opus-4-8[1m]"
+    // classified differently across the two call sites.
+    let canonical = crate::model_id::canonical(model);
+    if canonical.contains('@') {
         Some("openrouter")
-    } else if ALL_CLAUDE_MODELS.contains(&model) {
+    } else if crate::model_id::matches_known_model(&canonical, ALL_CLAUDE_MODELS) {
         Some("claude")
-    } else if ALL_OPENAI_MODELS.contains(&model) {
+    } else if crate::model_id::matches_known_model(&canonical, ALL_OPENAI_MODELS) {
         Some("openai")
-    } else if model.contains('/') {
+    } else if canonical.contains('/') {
         Some("openrouter")
-    } else if model.starts_with("claude-") {
+    } else if canonical.starts_with("claude-") {
         Some("claude")
-    } else if model.starts_with("gpt-") {
+    } else if canonical.starts_with("gpt-") {
         Some("openai")
-    } else if model.starts_with("gemini-") {
+    } else if canonical.starts_with("gemini-") {
         Some("gemini")
     } else {
         None

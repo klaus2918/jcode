@@ -1172,22 +1172,47 @@ pub fn resolve_model_capability_with_config(
     )
 }
 
+/// Capability projection for a model route, for the route catalogs the picker
+/// and `model list` consume. Resolves through the unified pipeline and returns
+/// `None` when the result is exactly the conservative default (so serialized
+/// routes keep their historical wire bytes for unknown models).
+pub fn route_capability_projection(
+    model: &str,
+    provider_hint: Option<&str>,
+) -> Option<jcode_provider_core::RouteCapabilityView> {
+    resolve_model_capability_with_config(model, provider_hint, None).route_view()
+}
+
 /// Whether the current model on a provider should receive tool definitions.
 ///
 /// Conservative by design: only an explicit `tools = false` in the named
 /// provider config or a registry declaration that disables tools turns this
 /// off. Unknown models keep tools enabled, preserving existing behavior.
-pub fn model_supports_tools(provider_name: &str, model: &str) -> bool {
-    let config = crate::config::config()
-        .providers
-        .get(provider_name)
-        .and_then(|profile| {
-            profile
-                .models
-                .iter()
-                .find(|candidate| candidate.id.trim().eq_ignore_ascii_case(model))
-        });
-    resolve_model_capability_with_config(model, Some(provider_name), config)
+///
+/// `provider_config_key` is the `[providers.<key>]` entry whose explicit model
+/// settings apply (`None` when the provider has no named-profile config, e.g.
+/// built-in providers). `provider_hint` is the provider label passed to the
+/// capability resolver. Callers should pass the *actual* profile id from
+/// [`Provider::tool_config_provider_key`] so `tools = false` on a named
+/// OpenAI-compatible profile gates the request instead of being skipped when
+/// the transport class name (`"OpenRouter"`) has no config entry.
+pub fn model_supports_tools(
+    provider_config_key: Option<&str>,
+    provider_hint: &str,
+    model: &str,
+) -> bool {
+    let config = provider_config_key.and_then(|key| {
+        crate::config::config()
+            .providers
+            .get(key)
+            .and_then(|profile| {
+                profile
+                    .models
+                    .iter()
+                    .find(|candidate| candidate.id.trim().eq_ignore_ascii_case(model))
+            })
+    });
+    resolve_model_capability_with_config(model, Some(provider_hint), config)
         .capability
         .supports_tools()
 }
@@ -1262,6 +1287,7 @@ mod capability_gate_tests {
     #[test]
     fn unknown_models_keep_tools_enabled() {
         assert!(model_supports_tools(
+            Some("openai-compatible:custom"),
             "openai-compatible:custom",
             "some-no-tools-model"
         ));
@@ -1269,8 +1295,12 @@ mod capability_gate_tests {
 
     #[test]
     fn registry_models_keep_tools_enabled() {
-        assert!(model_supports_tools("openai-compatible:kimi", "kimi-k3"));
-        assert!(model_supports_tools("claude", "claude-opus-4-8"));
+        assert!(model_supports_tools(
+            Some("openai-compatible:kimi"),
+            "openrouter",
+            "kimi-k3"
+        ));
+        assert!(model_supports_tools(None, "Claude", "claude-opus-4-8"));
     }
 
     #[test]

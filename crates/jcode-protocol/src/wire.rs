@@ -1210,6 +1210,14 @@ pub enum ServerEvent {
         provider_name: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// Whether the effective provider/model/provider-key actually changed.
+        /// `false` means the request was a no-op (same route), so the warm
+        /// provider session was kept and the client should show "Already using
+        /// model" instead of "✓ Switched". Defaults to `true` so clients
+        /// talking to older servers that predate this field keep the historical
+        /// "switched" behavior.
+        #[serde(default = "default_true")]
+        switched: bool,
     },
 
     /// Reasoning effort changed (response to set_reasoning_effort)

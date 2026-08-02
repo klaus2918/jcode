@@ -2223,6 +2223,7 @@ pub(in crate::tui::app) fn handle_server_event(
             model,
             provider_name,
             error,
+            switched,
             ..
         } => {
             app.remote_model_switch_in_flight = false;
@@ -2244,6 +2245,10 @@ pub(in crate::tui::app) fn handle_server_event(
                     crate::tui::app::model_context::model_switch_failure_message(&err, true),
                 ));
                 app.set_status_notice("Model switch failed");
+                // The switch never happened; undo the target route_api_method we
+                // staged client-side so post-error fallback picks are not
+                // steered by a credential path that is not actually active.
+                app.session.route_api_method = None;
             } else {
                 app.update_context_limit_for_model(&model);
                 app.remote_provider_model = Some(model.clone());
@@ -2251,14 +2256,54 @@ pub(in crate::tui::app) fn handle_server_event(
                 if let Some(ref pname) = provider_name {
                     app.remote_provider_name = Some(pname.clone());
                 }
+                // Keep the client-side session mirror in sync with the server
+                // so crash/reconnect recovery shows the model that actually
+                // serves this session (not the pre-switch stale model).
+                let before_key = app.session.provider_key.clone();
+                let after_provider = provider_name
+                    .clone()
+                    .unwrap_or_else(|| app.provider.name().to_string());
+                app.session.provider_key =
+                    crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                        &model,
+                        &after_provider,
+                        before_key.as_deref(),
+                    );
+                app.session.model = Some(model.clone());
+                let _ = app.session.save();
                 app.invalidate_model_picker_cache();
-                if !app.auth_catalog_refresh_pending {
-                    app.push_display_message(DisplayMessage::system(format!(
-                        "✓ Switched to model: {}",
-                        model
-                    )));
+                if switched {
+                    // Mirror local `/model <name>`: a real switch becomes the
+                    // default for future sessions. Best-effort; a failed write
+                    // must not block the in-memory switch.
+                    if let Err(error) = crate::config::Config::set_default_model(
+                        Some(&model),
+                        app.session.provider_key.as_deref(),
+                    ) {
+                        crate::logging::warn(&format!(
+                            "Failed to save default model after remote switch: {}",
+                            error
+                        ));
+                    }
                 }
-                app.set_status_notice(format!("Model → {}", model));
+                if !app.auth_catalog_refresh_pending {
+                    if switched {
+                        app.push_display_message(DisplayMessage::system(format!(
+                            "✓ Switched to model: {}",
+                            model
+                        )));
+                    } else {
+                        app.push_display_message(DisplayMessage::system(format!(
+                            "Already using model: {}",
+                            model
+                        )));
+                    }
+                }
+                app.set_status_notice(if switched {
+                    format!("Model → {}", model)
+                } else {
+                    format!("Already using model: {}", model)
+                });
             }
             false
         }

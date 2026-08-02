@@ -1029,15 +1029,11 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if trimmed == "/model" || trimmed == "/models" {
-                    if let Some(reason) = app_mod::model_context::runtime_switch_busy_reason(app) {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Cannot switch models while {}. Wait for the session to become idle, then try /model again.",
-                            reason
-                        )));
-                        app.set_status_notice("Model switch busy");
-                        return Ok(());
-                    }
+                if trimmed.eq_ignore_ascii_case("/model") || trimmed.eq_ignore_ascii_case("/models")
+                {
+                    // Browsing the picker is read-only; the busy gate applies
+                    // to the parameterized switch path below and to the picker
+                    // confirm path before it mutates the shared provider.
                     let _ = remote.refresh_models().await;
                     // `refresh_models` re-queries providers and pushes the
                     // result over the bus, where oversized frames get
@@ -1135,20 +1131,28 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if let Some(model_name) = trimmed.strip_prefix("/model ") {
+                if let Some(model_name) =
+                    app_mod::model_context::slash_command_arg(trimmed, "/model")
+                        .or_else(|| app_mod::model_context::slash_command_arg(trimmed, "/models"))
+                {
                     let model_name = model_name.trim();
                     if model_name.is_empty() {
                         app.push_display_message(DisplayMessage::error("Usage: /model <name>"));
                         return Ok(());
                     }
                     if let Some(reason) = app_mod::model_context::runtime_switch_busy_reason(app) {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Cannot switch models while {}. Wait for the session to become idle, then try /model again.",
-                            reason
-                        )));
+                        app.push_display_message(DisplayMessage::error(
+                            app_mod::model_context::model_switch_busy_message(reason),
+                        ));
                         app.set_status_notice("Model switch busy");
                         return Ok(());
                     }
+                    // OpenRouter `model@provider` pin spellings change the
+                    // upstream route even when the model name is unchanged;
+                    // never short-circuit those as no-ops client-side.
+                    let pin_spec = model_name
+                        .rsplit_once('@')
+                        .is_some_and(|(_, pin)| !pin.trim().is_empty());
                     // Same-model switches are no-ops: do not round-trip to the
                     // server (which would still work, but would also reset the
                     // provider session for nothing).
@@ -1156,16 +1160,34 @@ async fn handle_remote_key_internal(
                         .remote_provider_model
                         .clone()
                         .unwrap_or_else(|| app.provider.model());
-                    let same_route = model_name == current_model
-                        || app
-                            .session
-                            .provider_key
-                            .as_deref()
-                            .is_some_and(|provider_key| {
-                                model_name.rsplit_once(':').is_some_and(|(prefix, model)| {
-                                    prefix == provider_key && model == current_model
+                    let same_route =
+                        !pin_spec
+                            && (model_name == current_model
+                                || app.session.provider_key.as_deref().is_some_and(
+                                    |provider_key| {
+                                        model_name.rsplit_once(':').is_some_and(|(prefix, model)| {
+                                    if model != current_model {
+                                        return false;
+                                    }
+                                    // Fold dual-auth credential spellings
+                                    // (`claude-api:`/`openai-oauth:`/...) onto
+                                    // their canonical session key so a
+                                    // prefixed same-route request is detected
+                                    // instead of producing a fake "✓ Switched"
+                                    // after the server no-ops.
+                                    let fold = |value: &str| {
+                                        jcode_provider_core::auth_mode::AuthRoute::parse(value)
+                                            .map(|route| route.session_provider_key().to_string())
+                                            .unwrap_or_else(|| value.to_string())
+                                    };
+                                    let provider_base = provider_key
+                                        .split_once(':')
+                                        .map(|(base, _)| base)
+                                        .unwrap_or(provider_key);
+                                    fold(prefix) == fold(provider_base)
                                 })
-                            });
+                                    },
+                                ));
                     if same_route {
                         app.push_display_message(DisplayMessage::system(format!(
                             "Already using model: {}",

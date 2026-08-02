@@ -126,6 +126,20 @@ pub trait Provider: Send + Sync {
         self.name().to_string()
     }
 
+    /// The `[providers.<key>]` config entry whose explicit model settings
+    /// apply to this provider instance, when one exists.
+    ///
+    /// Defaults to `None`: the generic capability pipeline still applies the
+    /// embedded registry and heuristics, but no named-profile config. Provider
+    /// orchestrators that multiplex several backends behind one `name()`
+    /// (notably the OpenRouter slot, which also serves direct
+    /// OpenAI-compatible profiles) override this to return the *actual*
+    /// profile id, so explicit settings like `tools = false` apply to the
+    /// profile the user selected instead of the transport class name.
+    fn tool_config_provider_key(&self) -> Option<String> {
+        None
+    }
+
     /// Get the model identifier being used.
     fn model(&self) -> String {
         "unknown".to_string()

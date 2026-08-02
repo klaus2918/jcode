@@ -1362,7 +1362,6 @@ impl App {
             &current_model,
             allowlist.is_some(),
         );
-
         if routes.is_empty() {
             self.inline_interactive_state = None;
             self.push_display_message(DisplayMessage::system(
@@ -3290,6 +3289,22 @@ impl App {
                         }
                     }
                     PickerAction::Model => {
+                        // The `/model` command entry point gates switches while
+                        // busy, but the picker confirm path is reachable from
+                        // the inline preview activation (`/model <name>` +
+                        // Enter) and from a picker left open while a
+                        // rate-limit timer starts a turn. Gate here too so the
+                        // shared provider is never mutated mid-turn.
+                        if let Some(reason) =
+                            crate::tui::app::model_context::runtime_switch_busy_reason(self)
+                        {
+                            self.inline_interactive_state = None;
+                            self.push_display_message(DisplayMessage::error(
+                                crate::tui::app::model_context::model_switch_busy_message(reason),
+                            ));
+                            self.set_status_notice("Model switch busy");
+                            return Ok(());
+                        }
                         if !route.available {
                             self.push_display_message(DisplayMessage::error(
                                 crate::tui::app::model_context::unavailable_model_route_message(
@@ -3385,25 +3400,41 @@ impl App {
                             // "gpt-5.5 (high)" at low effort (issue #427).
                             self.pending_reasoning_effort = effort.clone();
                         } else {
+                            let before_model = self.provider.model();
+                            let before_provider = self.provider.name();
+                            let before_key = self.session.provider_key.clone();
                             match self.provider.set_route_selection(&route_selection) {
                                 Ok(()) => {
-                                    self.inline_interactive_state = None;
-                                    self.provider_session_id = None;
-                                    self.session.provider_session_id = None;
-                                    self.upstream_provider = None;
-                                    self.status_detail = None;
-                                    self.invalidate_model_picker_cache();
                                     let active_model = self.provider.model();
-                                    self.update_context_limit_for_model(&active_model);
-                                    self.session.provider_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                                    let after_provider = self.provider.name();
+                                    let after_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
                                         &spec,
-                                        self.provider.name(),
-                                        self.session.provider_key.as_deref(),
+                                        after_provider,
+                                        before_key.as_deref(),
                                     );
-                                    self.session.model = Some(active_model.clone());
+                                    // Selecting the already-active route is a
+                                    // no-op: keep the warm provider session
+                                    // instead of resetting it (the same-model
+                                    // contract /model enforces).
+                                    if before_model == active_model
+                                        && before_provider == after_provider
+                                        && before_key == after_key
+                                    {
+                                        self.inline_interactive_state = None;
+                                        self.push_display_message(DisplayMessage::system(format!(
+                                            "Already using model: {}",
+                                            active_model
+                                        )));
+                                        self.set_status_notice(format!(
+                                            "Already using model: {}",
+                                            active_model
+                                        ));
+                                        return Ok(());
+                                    }
+                                    self.inline_interactive_state = None;
+                                    let active_model = self.finalize_model_switch(&spec);
                                     self.session.route_api_method =
                                         Some(route_selection.api_method.clone());
-                                    let _ = self.session.save();
                                     crate::logging::event_info(
                                         "model_picker_select_applied",
                                         vec![
