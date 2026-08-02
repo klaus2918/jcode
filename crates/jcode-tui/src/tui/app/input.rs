@@ -1547,13 +1547,11 @@ impl App {
                 self.todo_completion_gate_attempts =
                     self.todo_completion_gate_attempts.saturating_add(1);
                 let notice = if confidence_summary.completion_confidence_needs_validation {
-                    crate::telemetry::record_todo_gate(crate::telemetry::TodoGateKind::Completion);
+
                     "🛑 The agent marked its work done without strong enough validation. We asked it to double-check."
                 } else {
                     self.todo_confidence_spike_challenged = true;
-                    crate::telemetry::record_todo_gate(
-                        crate::telemetry::TodoGateKind::ConfidenceSpike,
-                    );
+
                     "🛑 The agent's confidence jumped suddenly. We asked it to verify that independently."
                 };
                 self.push_display_message(DisplayMessage::system(notice));
@@ -3475,7 +3473,7 @@ impl App {
         let handled = super::commands_dispatch::dispatch_local_command(self, trimmed);
         if handled {
             if trimmed.starts_with('/') {
-                crate::telemetry::record_command_family(trimmed);
+
             }
             return;
         }
@@ -3658,7 +3656,7 @@ impl App {
             });
             self.session.add_message(Role::User, blocks);
         }
-        crate::telemetry::record_turn();
+
         self.session_save_pending = true;
 
         // A fresh user turn supersedes any post-error fallback offer from the

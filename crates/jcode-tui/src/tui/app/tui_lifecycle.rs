@@ -319,9 +319,9 @@ impl App {
 
         // Surface the streak as an explicit auth_failed telemetry event to
         // distinguish "breaker tripped on a dead credential" from blips.
-        let reason = crate::auth::login_diagnostics::classify_auth_failure_message(message);
+        let _reason = crate::auth::login_diagnostics::classify_auth_failure_message(message);
         let provider = self.provider_name().to_string();
-        crate::telemetry::record_auth_failed_reason(&provider, "session", reason.label());
+
 
         self.push_display_message(DisplayMessage::error(format!(
             "🛑 Stopped automatic retries: {failures} consecutive credential/auth failures. \
@@ -383,12 +383,7 @@ impl App {
         });
 
         crate::logging::info("App::new_minimal_with_session: skipping skill/prompt bootstrap");
-        crate::telemetry::begin_session_with_parent(
-            provider.name(),
-            &provider.model(),
-            session.parent_id.clone(),
-            false,
-        );
+
 
         let mut app = Self {
             provider,
@@ -495,7 +490,6 @@ impl App {
             onboarding_startup_checked: false,
             onboarding_import_in_progress: None,
             onboarding_import_error: None,
-            onboarding_telemetry_choice_made: false,
             onboarding_import_failed_provider: None,
             onboarding_pending_model_validation: None,
             onboarding_recent_project_prefetch: None,
@@ -821,12 +815,7 @@ impl App {
             t_prompt.as_secs_f64() * 1000.0,
         ));
 
-        crate::telemetry::begin_session_with_parent(
-            provider.name(),
-            &provider.model(),
-            session.parent_id.clone(),
-            false,
-        );
+
 
         let mut app = Self {
             provider,
@@ -933,7 +922,6 @@ impl App {
             onboarding_startup_checked: false,
             onboarding_import_in_progress: None,
             onboarding_import_error: None,
-            onboarding_telemetry_choice_made: false,
             onboarding_import_failed_provider: None,
             onboarding_pending_model_validation: None,
             onboarding_recent_project_prefetch: None,

@@ -3,7 +3,7 @@ use clap::Parser;
 use std::process::Command as ProcessCommand;
 
 use crate::{
-    build, logging, perf, server, setup_hints, startup_profile, storage, telemetry, update,
+    build, logging, perf, server, setup_hints, startup_profile, storage, update,
 };
 
 use super::{
@@ -113,9 +113,6 @@ pub async fn run() -> Result<()> {
     perf::init_background();
     startup_profile::mark("perf_init");
 
-    telemetry::record_install_if_first_run();
-    telemetry::record_upgrade_if_needed();
-    startup_profile::mark("telemetry_check");
 
     let args = parse_and_prepare_args()?;
     spawn_background_update_check(&args);

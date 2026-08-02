@@ -612,7 +612,6 @@ impl Tool for TodoTool {
                 let goals = merge_goals(&stored_goals, params.goals);
                 let plan = merge_plan(&stored_plan, params.plan);
                 if !newly_completed_groups_have_sufficient_ownership(&previous, &todos, &goals) {
-                    crate::telemetry::record_todo_gate(crate::telemetry::TodoGateKind::Ownership);
                     return build_todo_output(
                         previous,
                         stored_plan,
@@ -624,17 +623,6 @@ impl Tool for TodoTool {
                 }
                 let (observations, nudges) =
                     record_reframe_observations(&plan, &goals, &todos, &previous);
-                for observation in &observations {
-                    let kind = match observation.kind {
-                        GateObservationKind::IntentUnderstanding => {
-                            crate::telemetry::TodoGateKind::IntentUnderstanding
-                        }
-                        GateObservationKind::ClosedFeedbackLoop => {
-                            crate::telemetry::TodoGateKind::ClosedFeedbackLoop
-                        }
-                    };
-                    crate::telemetry::record_todo_gate(kind);
-                }
                 // Best-effort: a failure to persist the observation log must not
                 // fail the todo write itself. The cost is a missing reminder.
                 if let Err(err) = append_gate_observations(&ctx.session_id, &observations) {

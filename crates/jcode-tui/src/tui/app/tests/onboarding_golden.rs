@@ -359,7 +359,6 @@ fn onboarding_golden_telemetry_settings_page() {
         "Codex auth.json",
     )])
     .unwrap();
-    review.open_telemetry();
     let app = app_in_phase(OnboardingPhase::Login {
         import: Some(review),
     });
