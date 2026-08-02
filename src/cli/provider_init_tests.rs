@@ -67,6 +67,9 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
     ];
     let saved: Vec<(&str, Option<String>)> = keys
         .iter()
@@ -79,6 +82,9 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
     ] {
         crate::env::remove_var(key);
     }
@@ -260,13 +266,24 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
     // (e.g. a pinned anthropic api-key route) re-pins JCODE_RUNTIME_PROVIDER
     // during MultiProvider construction and breaks the assertions below.
     let dir = TempDir::new().expect("temp dir");
-    let saved_home = std::env::var("JCODE_HOME").ok();
+    let saved_env: Vec<(&str, Option<String>)> = [
+        "JCODE_HOME",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+    ]
+    .iter()
+    .map(|key| (*key, std::env::var(key).ok()))
+    .collect();
     crate::env::set_var("JCODE_HOME", dir.path());
     crate::subscription_catalog::clear_runtime_env();
     crate::env::remove_var("JCODE_OPENROUTER_MODEL");
     crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
     crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
     crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
 
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let provider = runtime
@@ -299,9 +316,12 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
     crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
     crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
     crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
-    match saved_home {
-        Some(home) => crate::env::set_var("JCODE_HOME", home),
-        None => crate::env::remove_var("JCODE_HOME"),
+    for (key, value) in saved_env {
+        if let Some(value) = value {
+            crate::env::set_var(key, value);
+        } else {
+            crate::env::remove_var(key);
+        }
     }
 }
 
@@ -689,12 +709,18 @@ async fn init_provider_for_ollama_reapplies_local_compat_runtime_env_after_disab
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
         "JCODE_ACTIVE_PROVIDER",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
     ]
     .iter()
     .map(|k| (k.to_string(), std::env::var(k).ok()))
     .collect();
 
     crate::env::set_var("JCODE_HOME", dir.path());
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
     crate::subscription_catalog::apply_runtime_env();
 
     let provider = init_provider_for_validation("ollama", Some("llama3.2"))
@@ -777,6 +803,9 @@ async fn auto_provider_uses_config_default_named_no_auth_provider() {
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
     ]
     .iter()
     .map(|k| (k.to_string(), std::env::var(k).ok()))
@@ -868,6 +897,9 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
     ]
     .iter()
     .map(|k| (k.to_string(), std::env::var(k).ok()))
@@ -885,6 +917,9 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "CURSOR_API_KEY",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_NAMED_PROVIDER_PROFILE",
     ] {
         crate::env::remove_var(key);
     }
