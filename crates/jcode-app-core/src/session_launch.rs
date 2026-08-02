@@ -14,11 +14,12 @@ use crate::{id, server};
 
 /// Map a persisted session/runtime provider key (e.g. `anthropic-api-key`,
 /// `claude-oauth`) to the value the resumed process accepts for `--provider`
-/// (the CLI `ProviderChoice` vocabulary, e.g. `anthropic-api`, `claude`).
+/// (the CLI `--provider` vocabulary, e.g. `anthropic-api`, `claude`).
 ///
 /// The two vocabularies are not identical, so passing the raw runtime key
-/// straight through makes clap reject it (`invalid value 'anthropic-api-key'`)
-/// and the freshly spawned window exits immediately before the TUI starts.
+/// straight through makes the runtime `resolve_provider_input` reject it
+/// (`Unknown provider 'anthropic-api-key'`) and the freshly spawned window
+/// exits immediately before the TUI starts.
 /// Returns `None` when the key has no clean standalone CLI provider value; the
 /// flag is then omitted and the persisted session reconstructs the route on
 /// resume.

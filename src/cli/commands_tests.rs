@@ -540,6 +540,23 @@ fn cli_provider_choice_filter_uses_typed_api_methods() {
             .iter()
             .all(|route| route.api_method_kind().is_anthropic_credential_route())
     );
+
+    // anthropic-api 收窄到 anthropic 凭证路由（api-key 选择不应显示 OpenAI 路由）。
+    let anthropic_api = filter_cli_model_routes_for_choice("anthropic-api", &routes);
+    assert_eq!(anthropic_api.len(), 2);
+    assert!(
+        anthropic_api
+            .iter()
+            .all(|route| route.api_method_kind().is_anthropic_credential_route())
+    );
+    // alias（anthropic）与大小写变体（ANTHROPIC）归一化后同样命中 anthropic 分支。
+    let anthropic_alias = filter_cli_model_routes_for_choice("anthropic", &routes);
+    assert_eq!(anthropic_alias.len(), 2);
+    let anthropic_upper = filter_cli_model_routes_for_choice("ANTHROPIC", &routes);
+    assert_eq!(anthropic_upper.len(), 2);
+    // claude-subprocess 特判也归一化到 anthropic 分支。
+    let subprocess = filter_cli_model_routes_for_choice("claude-subprocess", &routes);
+    assert_eq!(subprocess.len(), 2);
 }
 
 #[test]
