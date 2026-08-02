@@ -1103,7 +1103,14 @@ pub async fn login_and_bootstrap_provider(
             disable_subscription_runtime_mode();
             clear_initial_model_provider();
             crate::env::set_var("JCODE_ACTIVE_PROVIDER", "gemini");
-            Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
+            #[cfg(feature = "extra-providers")]
+            {
+                Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
+            }
+            #[cfg(not(feature = "extra-providers"))]
+            {
+                anyhow::bail!("gemini runtime is not built; enable the `extra-providers` feature")
+            }
         }
         LoginProviderTarget::Antigravity => {
             disable_subscription_runtime_mode();
@@ -1273,18 +1280,24 @@ async fn init_provider_with_options(
             Arc::new(provider::MultiProvider::new_fast())
         }
         ProviderChoice::Gemini => {
-            disable_subscription_runtime_mode();
-            ensure_gemini_auth_allowed_for_explicit_choice()?;
-            if auth::gemini::has_api_key() {
-                init_notice(
-                    "Using Gemini provider (official Gemini Developer API key, generativelanguage.googleapis.com)",
-                );
-            } else {
-                init_notice("Using Gemini provider (native Google Code Assist OAuth)");
+            #[cfg(feature = "extra-providers")]
+            {
+                disable_subscription_runtime_mode();
+                ensure_gemini_auth_allowed_for_explicit_choice()?;
+                if auth::gemini::has_api_key() {
+                    init_notice(
+                        "Using Gemini provider (official Gemini Developer API key, generativelanguage.googleapis.com)",
+                    );
+                } else {
+                    init_notice("Using Gemini provider (native Google Code Assist OAuth)");
+                }
+                clear_initial_model_provider();
+                Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
             }
-            clear_initial_model_provider();
-            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "gemini");
-            Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
+            #[cfg(not(feature = "extra-providers"))]
+            {
+                anyhow::bail!("gemini runtime is not built; enable the `extra-providers` feature")
+            }
         }
         ProviderChoice::Openrouter => {
             disable_subscription_runtime_mode();

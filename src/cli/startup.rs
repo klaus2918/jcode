@@ -127,6 +127,7 @@ pub async fn run() -> Result<()> {
 /// registration in this one function so the composition-root wiring stays
 /// discoverable as more providers move out of the base crate.
 pub fn register_external_provider_runtimes() {
+    #[cfg(feature = "extra-providers")]
     crate::provider::external::register_external_provider(
         crate::provider::external::GEMINI_RUNTIME,
         || std::sync::Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new()),
@@ -468,6 +469,7 @@ mod tests {
     fn external_provider_runtimes_register_and_instantiate() {
         register_external_provider_runtimes();
         for (key, expected_name) in [
+            #[cfg(feature = "extra-providers")]
             (crate::provider::external::GEMINI_RUNTIME, "gemini"),
             (crate::provider::external::CURSOR_RUNTIME, "cursor"),
             (
