@@ -21,179 +21,54 @@ use crate::external_auth::{
     can_prompt_for_external_auth, external_auth_blocked_message, prompt_to_trust_external_auth,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum ProviderChoice {
-    Jcode,
-    Claude,
-    #[value(alias = "claude-api", alias = "anthropic-key", alias = "claude-key")]
-    AnthropicApi,
-    #[deprecated(
-        note = "Claude Code CLI subprocess transport is deprecated; use ProviderChoice::Claude for native Anthropic OAuth/API transport"
-    )]
-    #[value(alias = "claude-subprocess", hide = true)]
-    ClaudeSubprocess,
-    Openai,
-    #[value(
-        alias = "openai-key",
-        alias = "openai-apikey",
-        alias = "openai-platform"
-    )]
-    OpenaiApi,
-    Openrouter,
-    #[value(alias = "aws-bedrock", alias = "aws_bedrock")]
-    Bedrock,
-    #[value(alias = "azure-openai", alias = "aoai")]
-    Azure,
-    #[value(alias = "lm-studio")]
-    Lmstudio,
-    Ollama,
-    #[value(alias = "compat", alias = "custom")]
-    OpenaiCompatible,
-    Cursor,
-    Copilot,
-    Gemini,
-    #[value(
-        alias = "gemini-key",
-        alias = "gemini-apikey",
-        alias = "google-ai-studio",
-        alias = "ai-studio"
-    )]
-    GeminiApi,
-    Antigravity,
-    Google,
+/// 运行时解析的 provider 选择（resonix 思路：二进制不硬编码厂商名，
+/// `--provider` 接受任意字符串，按注册表 + 用户配置解析）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedProviderInput {
+    /// 自动探测已配置 provider（`auto` 或空）。
     Auto,
+    /// 登录 provider 注册表命中的条目（id/alias/display_name 解析）。
+    Login(LoginProviderDescriptor),
+    /// 用户配置 `[providers.<name>]` 命中的命名 profile。
+    NamedProfile(String),
+    /// 已废弃的 Claude Code CLI 子进程传输（兼容入口）。
+    ClaudeSubprocess,
 }
 
-impl ProviderChoice {
-    #[allow(deprecated)]
-    pub fn as_arg_value(&self) -> &'static str {
-        match self {
-            Self::Jcode => "jcode",
-            Self::Claude => "claude",
-            Self::AnthropicApi => "anthropic-api",
-            Self::ClaudeSubprocess => "claude-subprocess",
-            Self::Openai => "openai",
-            Self::OpenaiApi => "openai-api",
-            Self::Openrouter => "openrouter",
-            Self::Bedrock => "bedrock",
-            Self::Azure => "azure",
-            Self::Lmstudio => "lmstudio",
-            Self::Ollama => "ollama",
-            Self::OpenaiCompatible => "openai-compatible",
-            Self::Cursor => "cursor",
-            Self::Copilot => "copilot",
-            Self::Gemini => "gemini",
-            Self::GeminiApi => "gemini-api",
-            Self::Antigravity => "antigravity",
-            Self::Google => "google",
-            Self::Auto => "auto",
-        }
+/// 按字符串解析 `--provider` 输入。
+///
+/// 解析链（与 resonix 一致：核心只认识注册表与配置，不认识厂商名）：
+/// 1. `auto`/空 → 自动探测
+/// 2. `claude-subprocess` → 废弃兼容入口
+/// 3. 登录 provider 注册表（`LOGIN_PROVIDERS`，按 id/alias）→ 原生登录 provider
+/// 4. 用户配置 `[providers.<name>]` → 命名配置 profile
+/// 5. 未命中 → 报错并提示 `jcode provider add`
+pub fn resolve_provider_input(input: &str) -> Result<ResolvedProviderInput> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return Ok(ResolvedProviderInput::Auto);
     }
-}
-
-#[allow(deprecated)]
-const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescriptor)] = &[
-    (
-        ProviderChoice::Jcode,
-        crate::provider_catalog::JCODE_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Claude,
-        crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::AnthropicApi,
-        crate::provider_catalog::ANTHROPIC_API_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::ClaudeSubprocess,
-        crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Openai,
-        crate::provider_catalog::OPENAI_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::OpenaiApi,
-        crate::provider_catalog::OPENAI_API_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Openrouter,
-        crate::provider_catalog::OPENROUTER_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Bedrock,
-        crate::provider_catalog::BEDROCK_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Azure,
-        crate::provider_catalog::AZURE_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Lmstudio,
-        crate::provider_catalog::LMSTUDIO_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Ollama,
-        crate::provider_catalog::OLLAMA_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::OpenaiCompatible,
-        crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Cursor,
-        crate::provider_catalog::CURSOR_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Copilot,
-        crate::provider_catalog::COPILOT_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Gemini,
-        crate::provider_catalog::GEMINI_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::GeminiApi,
-        crate::provider_catalog::GEMINI_API_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Antigravity,
-        crate::provider_catalog::ANTIGRAVITY_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Google,
-        crate::provider_catalog::GOOGLE_LOGIN_PROVIDER,
-    ),
-];
-
-pub fn login_provider_choice_mappings() -> &'static [(ProviderChoice, LoginProviderDescriptor)] {
-    PROVIDER_CHOICE_LOGIN_PROVIDERS
-}
-
-pub fn profile_for_choice(choice: &ProviderChoice) -> Option<OpenAiCompatibleProfile> {
-    match login_provider_for_choice(choice)?.target {
-        LoginProviderTarget::OpenAiCompatible(profile) => Some(profile),
-        _ => None,
+    if trimmed.eq_ignore_ascii_case("claude-subprocess") {
+        return Ok(ResolvedProviderInput::ClaudeSubprocess);
     }
+    if let Some(provider) = crate::provider_catalog::resolve_login_provider(trimmed) {
+        return Ok(ResolvedProviderInput::Login(provider));
+    }
+    if crate::config::config().providers.contains_key(trimmed) {
+        return Ok(ResolvedProviderInput::NamedProfile(trimmed.to_string()));
+    }
+    anyhow::bail!(
+        "Unknown provider '{}'. Use a registered provider id (claude, openai, openrouter, ...), a [providers.{}] config profile, or `jcode provider add {} --base-url ...` to define one.",
+        trimmed,
+        trimmed,
+        trimmed
+    )
 }
 
-#[allow(deprecated)]
-pub fn login_provider_for_choice(choice: &ProviderChoice) -> Option<LoginProviderDescriptor> {
-    PROVIDER_CHOICE_LOGIN_PROVIDERS
-        .iter()
-        .find(|(candidate, _)| candidate == choice)
-        .map(|(_, provider)| *provider)
-}
-
-#[allow(deprecated)]
-pub fn choice_for_login_provider(provider: LoginProviderDescriptor) -> Option<ProviderChoice> {
-    PROVIDER_CHOICE_LOGIN_PROVIDERS
-        .iter()
-        .find(|(choice, candidate)| {
-            candidate.id == provider.id && !matches!(choice, ProviderChoice::ClaudeSubprocess)
-        })
-        .map(|(choice, _)| *choice)
+/// 判断字符串是否是 `auto`（未显式指定 provider）。
+pub fn is_auto_provider_input(input: &str) -> bool {
+    let trimmed = input.trim();
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto")
 }
 
 pub fn prompt_login_provider_selection(
@@ -976,11 +851,14 @@ pub fn clear_initial_model_provider() {
 /// Pin it through the provider's credential-mode API
 /// so `--provider anthropic-api` cannot remain in Auto mode and prefer a stored
 /// Claude OAuth credential over `ANTHROPIC_API_KEY` (and likewise for OpenAI).
-fn explicit_credential_mode(choice: &ProviderChoice) -> Option<provider::CredentialMode> {
-    match choice {
-        ProviderChoice::AnthropicApi | ProviderChoice::OpenaiApi => {
-            Some(provider::CredentialMode::ApiKey)
-        }
+fn explicit_credential_mode(resolved: &ResolvedProviderInput) -> Option<provider::CredentialMode> {
+    match resolved {
+        ResolvedProviderInput::Login(desc) => match desc.target {
+            LoginProviderTarget::ClaudeApiKey | LoginProviderTarget::OpenAiApiKey => {
+                Some(provider::CredentialMode::ApiKey)
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1153,29 +1031,28 @@ pub fn save_named_api_key(env_file: &str, key_name: &str, key: &str) -> Result<(
 }
 
 pub async fn init_provider(
-    choice: &ProviderChoice,
+    choice: &str,
     model: Option<&str>,
 ) -> Result<Arc<dyn provider::Provider>> {
     init_provider_with_options(choice, model, true, true).await
 }
 
 pub async fn init_provider_quiet(
-    choice: &ProviderChoice,
+    choice: &str,
     model: Option<&str>,
 ) -> Result<Arc<dyn provider::Provider>> {
     init_provider_with_options(choice, model, false, true).await
 }
 
 pub async fn init_provider_for_validation(
-    choice: &ProviderChoice,
+    choice: &str,
     model: Option<&str>,
 ) -> Result<Arc<dyn provider::Provider>> {
     init_provider_with_options(choice, model, false, false).await
 }
 
-#[allow(deprecated)]
 async fn init_provider_with_options(
-    choice: &ProviderChoice,
+    choice: &str,
     model: Option<&str>,
     show_init_messages: bool,
     allow_login_bootstrap: bool,
@@ -1196,10 +1073,12 @@ async fn init_provider_with_options(
         crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
     }
 
+    let resolved = resolve_provider_input(choice)?;
+
     if std::env::var_os("JCODE_PROVIDER_PROFILE_ACTIVE").is_none()
         && std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE").is_none()
     {
-        if let Some(profile) = profile_for_choice(choice) {
+        if let Some(profile) = compatible_profile_for_input(&resolved) {
             apply_openai_compatible_profile_env(Some(profile));
         } else {
             apply_openai_compatible_profile_env(None);
@@ -1212,26 +1091,152 @@ async fn init_provider_with_options(
         }
     };
 
-    let provider: Arc<dyn provider::Provider> = match choice {
-        ProviderChoice::Jcode => {
-            init_notice("Using Jcode subscription provider");
-            Arc::new(provider::jcode::JcodeProvider::new())
-        }
-        ProviderChoice::Claude => {
-            disable_subscription_runtime_mode();
-            ensure_claude_auth_allowed_for_explicit_choice()?;
-            init_notice("Using Claude as the initial provider (use /model to switch)");
-            select_initial_model_provider("claude");
-            Arc::new(provider::MultiProvider::with_preference_fast(false))
-        }
-        ProviderChoice::AnthropicApi => {
-            disable_subscription_runtime_mode();
-            ensure_external_api_key_auth_allowed_for_explicit_choice("ANTHROPIC_API_KEY")?;
-            init_notice("Using Anthropic API key as the initial provider (use /model to switch)");
-            select_initial_model_provider("claude");
-            Arc::new(provider::MultiProvider::with_preference_fast(false))
-        }
-        ProviderChoice::ClaudeSubprocess => {
+    let provider: Arc<dyn provider::Provider> = match &resolved {
+        ResolvedProviderInput::Login(desc) => match desc.target {
+            LoginProviderTarget::Jcode => {
+                init_notice("Using Jcode subscription provider");
+                Arc::new(provider::jcode::JcodeProvider::new())
+            }
+            LoginProviderTarget::Claude => {
+                disable_subscription_runtime_mode();
+                ensure_claude_auth_allowed_for_explicit_choice()?;
+                init_notice("Using Claude as the initial provider (use /model to switch)");
+                select_initial_model_provider("claude");
+                Arc::new(provider::MultiProvider::with_preference_fast(false))
+            }
+            LoginProviderTarget::ClaudeApiKey => {
+                disable_subscription_runtime_mode();
+                ensure_external_api_key_auth_allowed_for_explicit_choice("ANTHROPIC_API_KEY")?;
+                init_notice(
+                    "Using Anthropic API key as the initial provider (use /model to switch)",
+                );
+                select_initial_model_provider("claude");
+                Arc::new(provider::MultiProvider::with_preference_fast(false))
+            }
+            LoginProviderTarget::OpenAi => {
+                disable_subscription_runtime_mode();
+                ensure_openai_auth_allowed_for_explicit_choice()?;
+                init_notice("Using OpenAI as the initial provider (use /model to switch)");
+                select_initial_model_provider("openai");
+                Arc::new(provider::MultiProvider::with_preference_fast(true))
+            }
+            LoginProviderTarget::OpenAiApiKey => {
+                disable_subscription_runtime_mode();
+                ensure_external_api_key_auth_allowed_for_explicit_choice("OPENAI_API_KEY")?;
+                init_notice("Using OpenAI API key as the initial provider (use /model to switch)");
+                select_initial_model_provider("openai");
+                Arc::new(provider::MultiProvider::with_preference_fast(true))
+            }
+            LoginProviderTarget::OpenRouter => {
+                disable_subscription_runtime_mode();
+                ensure_external_api_key_auth_allowed_for_explicit_choice("OPENROUTER_API_KEY")?;
+                init_notice("Using OpenRouter as the initial provider (use /model to switch)");
+                select_initial_model_provider("openrouter");
+                Arc::new(provider::MultiProvider::new_fast())
+            }
+            LoginProviderTarget::Bedrock => {
+                disable_subscription_runtime_mode();
+                init_notice("Using AWS Bedrock as the initial provider (use /model to switch)");
+                select_initial_model_provider("bedrock");
+                Arc::new(provider::MultiProvider::new_fast())
+            }
+            LoginProviderTarget::Azure => {
+                disable_subscription_runtime_mode();
+                let model = crate::provider::activation::apply_azure_openai_runtime()?;
+                init_notice("Using Azure OpenAI as the initial provider (use /model to switch)");
+                let multi = provider::MultiProvider::new_fast();
+                if let Some(model) = model {
+                    let _ = multi.set_model(&model);
+                }
+                Arc::new(multi)
+            }
+            LoginProviderTarget::Cursor => {
+                disable_subscription_runtime_mode();
+                ensure_cursor_auth_allowed_for_explicit_choice()?;
+                init_notice("Using Cursor native HTTPS provider (experimental)");
+                clear_initial_model_provider();
+                crate::env::set_var("JCODE_ACTIVE_PROVIDER", "cursor");
+                #[cfg(feature = "extra-providers")]
+                {
+                    Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
+                }
+                #[cfg(not(feature = "extra-providers"))]
+                {
+                    anyhow::bail!(
+                        "cursor runtime is not built; enable the `extra-providers` feature"
+                    )
+                }
+            }
+            LoginProviderTarget::Copilot => {
+                disable_subscription_runtime_mode();
+                ensure_copilot_auth_allowed_for_explicit_choice()?;
+                init_notice(
+                    "Using GitHub Copilot API as the initial provider (use /model to switch)",
+                );
+                select_initial_model_provider("copilot");
+                Arc::new(provider::MultiProvider::new_fast())
+            }
+            LoginProviderTarget::Gemini => {
+                #[cfg(feature = "extra-providers")]
+                {
+                    disable_subscription_runtime_mode();
+                    ensure_gemini_auth_allowed_for_explicit_choice()?;
+                    if auth::gemini::has_api_key() {
+                        init_notice(
+                            "Using Gemini provider (official Gemini Developer API key, generativelanguage.googleapis.com)",
+                        );
+                    } else {
+                        init_notice("Using Gemini provider (native Google Code Assist OAuth)");
+                    }
+                    clear_initial_model_provider();
+                    crate::env::set_var("JCODE_ACTIVE_PROVIDER", "gemini");
+                    Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
+                }
+                #[cfg(not(feature = "extra-providers"))]
+                {
+                    anyhow::bail!(
+                        "gemini runtime is not built; enable the `extra-providers` feature"
+                    )
+                }
+            }
+            LoginProviderTarget::Antigravity => {
+                disable_subscription_runtime_mode();
+                ensure_antigravity_auth_allowed_for_explicit_choice()?;
+                init_notice("Using Antigravity provider (experimental)");
+                clear_initial_model_provider();
+                crate::env::set_var("JCODE_ACTIVE_PROVIDER", "antigravity");
+                #[cfg(feature = "extra-providers")]
+                {
+                    Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new())
+                }
+                #[cfg(not(feature = "extra-providers"))]
+                {
+                    anyhow::bail!(
+                        "antigravity runtime is not built; enable the `extra-providers` feature"
+                    )
+                }
+            }
+            LoginProviderTarget::Google => {
+                disable_subscription_runtime_mode();
+                init_notice(
+                    "Note: Google/Gmail is not a model provider. Using auto-detect for model provider.",
+                );
+                init_notice(
+                    "Gmail credentials can be configured with `jcode login google`; the gmail tool is enabled by default in the full tool profile.",
+                );
+                clear_initial_model_provider();
+                Arc::new(provider::MultiProvider::new_fast())
+            }
+            LoginProviderTarget::OpenAiCompatible(profile) => {
+                init_openai_compatible_runtime(Some(profile), None, &init_notice)?
+            }
+            LoginProviderTarget::AutoImport => {
+                anyhow::bail!(
+                    "auto-import is a login-menu action, not a model provider; use `jcode login` instead"
+                )
+            }
+        },
+        ResolvedProviderInput::ClaudeSubprocess => {
             disable_subscription_runtime_mode();
             ensure_claude_auth_allowed_for_explicit_choice()?;
             crate::logging::warn(
@@ -1244,198 +1249,16 @@ async fn init_provider_with_options(
             select_initial_model_provider("claude");
             Arc::new(provider::MultiProvider::with_preference_fast(false))
         }
-        ProviderChoice::Openai => {
-            disable_subscription_runtime_mode();
-            ensure_openai_auth_allowed_for_explicit_choice()?;
-            init_notice("Using OpenAI as the initial provider (use /model to switch)");
-            select_initial_model_provider("openai");
-            Arc::new(provider::MultiProvider::with_preference_fast(true))
+        ResolvedProviderInput::NamedProfile(name) => {
+            crate::provider_catalog::apply_named_provider_profile_env_from_config(
+                name,
+                crate::config::config(),
+            )?;
+            crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
+            crate::env::set_var("JCODE_PROVIDER_PROFILE_NAME", name);
+            init_openai_compatible_runtime(None, Some(name), &init_notice)?
         }
-        ProviderChoice::OpenaiApi => {
-            disable_subscription_runtime_mode();
-            ensure_external_api_key_auth_allowed_for_explicit_choice("OPENAI_API_KEY")?;
-            init_notice("Using OpenAI API key as the initial provider (use /model to switch)");
-            select_initial_model_provider("openai");
-            Arc::new(provider::MultiProvider::with_preference_fast(true))
-        }
-        ProviderChoice::Cursor => {
-            disable_subscription_runtime_mode();
-            ensure_cursor_auth_allowed_for_explicit_choice()?;
-            init_notice("Using Cursor native HTTPS provider (experimental)");
-            clear_initial_model_provider();
-            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "cursor");
-            #[cfg(feature = "extra-providers")]
-            {
-                Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
-            }
-            #[cfg(not(feature = "extra-providers"))]
-            {
-                anyhow::bail!("cursor runtime is not built; enable the `extra-providers` feature")
-            }
-        }
-        ProviderChoice::Copilot => {
-            disable_subscription_runtime_mode();
-            ensure_copilot_auth_allowed_for_explicit_choice()?;
-            init_notice("Using GitHub Copilot API as the initial provider (use /model to switch)");
-            select_initial_model_provider("copilot");
-            Arc::new(provider::MultiProvider::new_fast())
-        }
-        ProviderChoice::Gemini => {
-            #[cfg(feature = "extra-providers")]
-            {
-                disable_subscription_runtime_mode();
-                ensure_gemini_auth_allowed_for_explicit_choice()?;
-                if auth::gemini::has_api_key() {
-                    init_notice(
-                        "Using Gemini provider (official Gemini Developer API key, generativelanguage.googleapis.com)",
-                    );
-                } else {
-                    init_notice("Using Gemini provider (native Google Code Assist OAuth)");
-                }
-                clear_initial_model_provider();
-                crate::env::set_var("JCODE_ACTIVE_PROVIDER", "gemini");
-                Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
-            }
-            #[cfg(not(feature = "extra-providers"))]
-            {
-                anyhow::bail!("gemini runtime is not built; enable the `extra-providers` feature")
-            }
-        }
-        ProviderChoice::Openrouter => {
-            disable_subscription_runtime_mode();
-            ensure_external_api_key_auth_allowed_for_explicit_choice("OPENROUTER_API_KEY")?;
-            init_notice("Using OpenRouter as the initial provider (use /model to switch)");
-            select_initial_model_provider("openrouter");
-            Arc::new(provider::MultiProvider::new_fast())
-        }
-        ProviderChoice::Bedrock => {
-            disable_subscription_runtime_mode();
-            init_notice("Using AWS Bedrock as the initial provider (use /model to switch)");
-            select_initial_model_provider("bedrock");
-            Arc::new(provider::MultiProvider::new_fast())
-        }
-        ProviderChoice::Azure => {
-            disable_subscription_runtime_mode();
-            let model = crate::provider::activation::apply_azure_openai_runtime()?;
-            init_notice("Using Azure OpenAI as the initial provider (use /model to switch)");
-            let multi = provider::MultiProvider::new_fast();
-            if let Some(model) = model {
-                let _ = multi.set_model(&model);
-            }
-            Arc::new(multi)
-        }
-        ProviderChoice::Lmstudio
-        | ProviderChoice::Ollama
-        | ProviderChoice::GeminiApi
-        | ProviderChoice::OpenaiCompatible => {
-            disable_subscription_runtime_mode();
-            let profile = profile_for_choice(choice)
-                .ok_or_else(|| anyhow::anyhow!("missing provider profile for choice"))?;
-            if std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE").is_none() {
-                // An explicit `--provider <compatible>` selection should win over
-                // any stale active-profile marker inherited from a previous
-                // bootstrap/login flow. Named provider profiles still take
-                // precedence when explicitly configured.
-                force_apply_openai_compatible_profile_env(Some(profile));
-            }
-            let mut runtime_model_hint = None;
-            let display_name = if let Ok(named) = std::env::var("JCODE_NAMED_PROVIDER_PROFILE") {
-                if let Some(profile) = crate::config::config().providers.get(&named) {
-                    runtime_model_hint = profile.default_model.clone();
-                }
-                named
-            } else {
-                let resolved = resolve_openai_compatible_profile(profile);
-                if resolved.requires_api_key {
-                    ensure_external_api_key_auth_allowed_for_explicit_choice(
-                        &resolved.api_key_env,
-                    )?;
-                }
-                runtime_model_hint = resolved.default_model.clone();
-                resolved.display_name
-            };
-            // A named profile with `api = "anthropic"` speaks the Anthropic
-            // Messages wire format against its own endpoint (Anthropic-
-            // compatible gateways/routers). Everything else keeps the OpenAI
-            // chat-completions transport, mirroring the composition-root
-            // factory in `startup::register_external_provider_runtimes`.
-            let anthropic_format = std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE").is_some()
-                && crate::config::config()
-                    .providers
-                    .get(
-                        std::env::var("JCODE_NAMED_PROVIDER_PROFILE")
-                            .as_deref()
-                            .unwrap_or(""),
-                    )
-                    .is_some_and(|profile| {
-                        profile.api_format == Some(crate::config::ProviderApiFormat::Anthropic)
-                    });
-            if anthropic_format {
-                init_notice(&format!(
-                    "Using {} via Anthropic-compatible API as the initial provider",
-                    display_name
-                ));
-            } else {
-                init_notice(&format!(
-                    "Using {} via OpenAI-compatible API as the initial provider",
-                    display_name
-                ));
-                crate::provider::activation::apply_openai_compatible_runtime(runtime_model_hint)?;
-            }
-            if std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE").is_some() {
-                let profile_name = std::env::var("JCODE_NAMED_PROVIDER_PROFILE")?;
-                let cfg = crate::config::config();
-                let profile = cfg.providers.get(&profile_name).ok_or_else(|| {
-                    anyhow::anyhow!("Unknown provider profile '{}'", profile_name)
-                })?;
-                if profile.api_format == Some(crate::config::ProviderApiFormat::Anthropic) {
-                    Arc::new(
-                        jcode_provider_anthropic_runtime::named::NamedAnthropicProvider::new_named(
-                            &profile_name,
-                            profile,
-                        )?,
-                    )
-                } else {
-                    Arc::new(
-                        jcode_provider_openrouter_runtime::OpenRouterProvider::new_named_openai_compatible(
-                            &profile_name,
-                            profile,
-                        )?,
-                    )
-                }
-            } else {
-                Arc::new(jcode_provider_openrouter_runtime::OpenRouterProvider::new()?)
-            }
-        }
-        ProviderChoice::Antigravity => {
-            disable_subscription_runtime_mode();
-            ensure_antigravity_auth_allowed_for_explicit_choice()?;
-            init_notice("Using Antigravity provider (experimental)");
-            clear_initial_model_provider();
-            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "antigravity");
-            #[cfg(feature = "extra-providers")]
-            {
-                Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new())
-            }
-            #[cfg(not(feature = "extra-providers"))]
-            {
-                anyhow::bail!(
-                    "antigravity runtime is not built; enable the `extra-providers` feature"
-                )
-            }
-        }
-        ProviderChoice::Google => {
-            disable_subscription_runtime_mode();
-            init_notice(
-                "Note: Google/Gmail is not a model provider. Using auto-detect for model provider.",
-            );
-            init_notice(
-                "Gmail credentials can be configured with `jcode login google`; the gmail tool is enabled by default in the full tool profile.",
-            );
-            clear_initial_model_provider();
-            Arc::new(provider::MultiProvider::new_fast())
-        }
-        ProviderChoice::Auto => {
+        ResolvedProviderInput::Auto => {
             disable_subscription_runtime_mode_preserving_active_provider_profile();
             clear_initial_model_provider();
             let auto_detect_start = std::time::Instant::now();
@@ -1608,11 +1431,11 @@ async fn init_provider_with_options(
         }
     };
 
-    if let Some(mode) = explicit_credential_mode(choice) {
+    if let Some(mode) = explicit_credential_mode(&resolved) {
         provider.set_credential_mode(mode).map_err(|err| {
             anyhow::anyhow!(
                 "Failed to select the credential route for --provider {}: {err}",
-                choice.as_arg_value()
+                choice
             )
         })?;
     }
@@ -1620,7 +1443,7 @@ async fn init_provider_with_options(
     if std::env::var_os("JCODE_PROVIDER_PROFILE_ACTIVE").is_none()
         && std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE").is_none()
         && model.is_none()
-        && let Some(profile) = profile_for_choice(choice)
+        && let Some(profile) = compatible_profile_for_input(&resolved)
         && let Some(default_model) = resolved_profile_default_model(profile)
         && provider.set_model(&default_model).is_ok()
     {
@@ -1646,7 +1469,7 @@ async fn init_provider_with_options(
 }
 
 pub async fn init_provider_and_registry(
-    choice: &ProviderChoice,
+    choice: &str,
     model: Option<&str>,
 ) -> Result<(Arc<dyn provider::Provider>, tool::Registry)> {
     let provider = init_provider(choice, model).await?;
@@ -1655,12 +1478,121 @@ pub async fn init_provider_and_registry(
 }
 
 pub async fn init_provider_and_registry_for_validation(
-    choice: &ProviderChoice,
+    choice: &str,
     model: Option<&str>,
 ) -> Result<(Arc<dyn provider::Provider>, tool::Registry)> {
     let provider = init_provider_for_validation(choice, model).await?;
     let registry = tool::Registry::new(provider.clone()).await;
     Ok((provider, registry))
+}
+
+/// 解析输入中命中的内置 openai-compatible profile（若有）。
+fn compatible_profile_for_input(
+    resolved: &ResolvedProviderInput,
+) -> Option<OpenAiCompatibleProfile> {
+    match resolved {
+        ResolvedProviderInput::Login(desc) => match desc.target {
+            LoginProviderTarget::OpenAiCompatible(profile) => Some(profile),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 统一初始化 openai-compatible（含命名配置 profile）运行时。
+///
+/// `profile` 为内置 profile（`--provider ollama` 等注册表条目命中），`named`
+/// 为显式 `[providers.<name>]` 配置名（`--provider <name>` 命中）。二者互斥：
+/// `named` 优先，`--provider-profile` 路径通过 `JCODE_NAMED_PROVIDER_PROFILE`
+/// env 进入本函数（此时 `named` 为 None，内部从 env 读取）。
+fn init_openai_compatible_runtime(
+    profile: Option<OpenAiCompatibleProfile>,
+    named: Option<&str>,
+    init_notice: &dyn Fn(&str),
+) -> Result<Arc<dyn provider::Provider>> {
+    disable_subscription_runtime_mode();
+    let named = named
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            std::env::var("JCODE_NAMED_PROVIDER_PROFILE")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        });
+    if named.is_none()
+        && let Some(profile) = profile
+    {
+        // An explicit `--provider <compatible>` selection should win over
+        // any stale active-profile marker inherited from a previous
+        // bootstrap/login flow. Named provider profiles still take
+        // precedence when explicitly configured.
+        force_apply_openai_compatible_profile_env(Some(profile));
+    }
+    let mut runtime_model_hint = None;
+    let display_name = if let Some(named) = &named {
+        if let Some(profile) = crate::config::config().providers.get(named) {
+            runtime_model_hint = profile.default_model.clone();
+        }
+        named.clone()
+    } else {
+        let profile =
+            profile.ok_or_else(|| anyhow::anyhow!("missing provider profile for choice"))?;
+        let resolved = resolve_openai_compatible_profile(profile);
+        if resolved.requires_api_key {
+            ensure_external_api_key_auth_allowed_for_explicit_choice(&resolved.api_key_env)?;
+        }
+        runtime_model_hint = resolved.default_model.clone();
+        resolved.display_name
+    };
+    // A named profile with `api = "anthropic"` speaks the Anthropic
+    // Messages wire format against its own endpoint (Anthropic-
+    // compatible gateways/routers). Everything else keeps the OpenAI
+    // chat-completions transport, mirroring the composition-root
+    // factory in `startup::register_external_provider_runtimes`.
+    let anthropic_format = named
+        .as_deref()
+        .and_then(|name| crate::config::config().providers.get(name))
+        .is_some_and(|profile| {
+            profile.api_format == Some(crate::config::ProviderApiFormat::Anthropic)
+        });
+    if anthropic_format {
+        init_notice(&format!(
+            "Using {} via Anthropic-compatible API as the initial provider",
+            display_name
+        ));
+    } else {
+        init_notice(&format!(
+            "Using {} via OpenAI-compatible API as the initial provider",
+            display_name
+        ));
+        crate::provider::activation::apply_openai_compatible_runtime(runtime_model_hint)?;
+    }
+    if let Some(named) = named {
+        let cfg = crate::config::config();
+        let profile = cfg
+            .providers
+            .get(&named)
+            .ok_or_else(|| anyhow::anyhow!("Unknown provider profile '{}'", named))?;
+        if profile.api_format == Some(crate::config::ProviderApiFormat::Anthropic) {
+            Ok(Arc::new(
+                jcode_provider_anthropic_runtime::named::NamedAnthropicProvider::new_named(
+                    &named, profile,
+                )?,
+            ))
+        } else {
+            Ok(Arc::new(
+                jcode_provider_openrouter_runtime::OpenRouterProvider::new_named_openai_compatible(
+                    &named, profile,
+                )?,
+            ))
+        }
+    } else {
+        Ok(Arc::new(
+            jcode_provider_openrouter_runtime::OpenRouterProvider::new()?,
+        ))
+    }
 }
 
 #[cfg(test)]

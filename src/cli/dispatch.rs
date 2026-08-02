@@ -17,7 +17,6 @@ use super::{
     account, acp, commands, debug, hot_exec, login, output, provider_init, selfdev, terminal,
     tui_launch,
 };
-use provider_init::ProviderChoice;
 
 #[cfg(any(target_os = "linux", test))]
 fn is_file_controlled_debug_client() -> bool {
@@ -91,7 +90,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         provider_catalog::apply_named_provider_profile_env(profile_name)?;
         crate::env::set_var("JCODE_PROVIDER_PROFILE_NAME", profile_name);
         crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
-        args.provider = ProviderChoice::OpenaiCompatible;
+        args.provider = Some("openai-compatible".to_string());
     }
 
     if let Some(tool_profile) = args.tool_profile.as_deref() {
@@ -127,8 +126,11 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 server::configure_temporary_server(owner_pid, temp_idle_timeout_secs);
             }
             let provider_start = Instant::now();
-            let provider =
-                provider_init::init_provider(&args.provider, args.model.as_deref()).await?;
+            let provider = provider_init::init_provider(
+                args.provider.as_deref().unwrap_or("auto"),
+                args.model.as_deref(),
+            )
+            .await?;
             let provider_ms = provider_start.elapsed().as_millis();
             let server_new_start = Instant::now();
             let server = server::Server::new_with_name(provider, server_name);
@@ -143,7 +145,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         }
         Some(Command::Acp) => {
             acp::run_acp_command(
-                args.provider,
+                args.provider.unwrap_or_else(|| "auto".to_string()),
                 args.model.clone(),
                 args.provider_profile.clone(),
                 args.tool_profile.is_some(),
@@ -156,7 +158,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Server { action }) => match action {
             ServerCommand::Start { json } => {
                 spawn_server(
-                    &args.provider,
+                    args.provider.as_deref().unwrap_or("auto"),
                     args.model.as_deref(),
                     args.provider_profile.as_deref(),
                 )
@@ -174,7 +176,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             }
             ServerCommand::Keepalive => {
                 run_server_keepalive(
-                    &args.provider,
+                    args.provider.as_deref().unwrap_or("auto"),
                     args.model.as_deref(),
                     args.provider_profile.as_deref(),
                 )
@@ -193,7 +195,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             ndjson,
         }) => {
             commands::run_single_message_command(
-                &args.provider,
+                args.provider.as_deref().unwrap_or("auto"),
                 args.model.as_deref(),
                 args.resume.as_deref(),
                 &message,
@@ -218,7 +220,9 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             api_key_env,
         }) => {
             login::run_login(
-                &login_provider.unwrap_or(args.provider),
+                login_provider
+                    .as_deref()
+                    .unwrap_or(args.provider.as_deref().unwrap_or("auto")),
                 account.as_deref(),
                 login::LoginOptions {
                     no_browser,
@@ -253,9 +257,11 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             super::args::AccountCommand::Logout => account::run_logout().await?,
         },
         Some(Command::Repl) => {
-            let (provider, registry) =
-                provider_init::init_provider_and_registry(&args.provider, args.model.as_deref())
-                    .await?;
+            let (provider, registry) = provider_init::init_provider_and_registry(
+                args.provider.as_deref().unwrap_or("auto"),
+                args.model.as_deref(),
+            )
+            .await?;
             let mut agent = agent::Agent::new(provider, registry);
             agent.repl().await?;
         }
@@ -287,7 +293,10 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 validate,
                 json,
             } => {
-                let provider_arg = auth_doctor_provider_arg(provider.as_deref(), &args.provider);
+                let provider_arg = auth_doctor_provider_arg(
+                    provider.as_deref(),
+                    args.provider.as_deref().unwrap_or("auto"),
+                );
                 commands::run_auth_doctor_command(provider_arg, validate, json).await?
             }
         },
@@ -296,8 +305,12 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 commands::run_provider_list_command(json)?;
             }
             ProviderCommand::Current { json } => {
-                commands::run_provider_current_command(&args.provider, args.model.as_deref(), json)
-                    .await?;
+                commands::run_provider_current_command(
+                    args.provider.as_deref().unwrap_or("auto"),
+                    args.model.as_deref(),
+                    json,
+                )
+                .await?;
             }
             ProviderCommand::Add {
                 name,
@@ -394,8 +407,13 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         }
         Some(Command::Model(subcmd)) => match subcmd {
             ModelCommand::List { json, verbose } => {
-                commands::run_model_command(&args.provider, args.model.as_deref(), json, verbose)
-                    .await?;
+                commands::run_model_command(
+                    args.provider.as_deref().unwrap_or("auto"),
+                    args.model.as_deref(),
+                    json,
+                    verbose,
+                )
+                .await?;
             }
         },
         Some(Command::ProviderTestCoverage {
@@ -466,7 +484,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 )?;
             } else if context_audit {
                 commands::run_auth_test_context_audit_command(
-                    &args.provider,
+                    args.provider.as_deref().unwrap_or("auto"),
                     all_configured,
                     json,
                     output.as_deref(),
@@ -474,7 +492,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 .await?;
             } else {
                 commands::run_auth_test_command(
-                    &args.provider,
+                    args.provider.as_deref().unwrap_or("auto"),
                     args.model.as_deref(),
                     login,
                     all_configured,
@@ -503,13 +521,13 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
 
 fn auth_doctor_provider_arg<'a>(
     positional_provider: Option<&'a str>,
-    global_provider: &'a ProviderChoice,
+    global_provider: &'a str,
 ) -> Option<&'a str> {
     positional_provider.or_else(|| {
-        if *global_provider == ProviderChoice::Auto {
+        if provider_init::is_auto_provider_input(global_provider) {
             None
         } else {
-            Some(global_provider.as_arg_value())
+            Some(global_provider)
         }
     })
 }
@@ -631,7 +649,10 @@ fn map_ambient_subcommand(subcmd: AmbientCommand) -> commands::AmbientSubcommand
 async fn run_default_command(args: Args) -> Result<()> {
     startup_profile::mark("run_main_none_branch");
 
-    let explicit_provider_or_model = args.provider != ProviderChoice::Auto
+    let explicit_provider_or_model = args
+        .provider
+        .as_deref()
+        .is_some_and(|provider| !provider_init::is_auto_provider_input(provider))
         || args.model.is_some()
         || args.provider_profile.is_some();
     let explicit_tool_options = args.tool_profile.is_some()
@@ -700,7 +721,7 @@ async fn run_default_command(args: Args) -> Result<()> {
         );
         output::stderr_info(format!(
             "Current server settings control `/model`. Restart server to apply: --provider {}{}",
-            args.provider.as_arg_value(),
+            args.provider.as_deref().unwrap_or("auto"),
             args.model
                 .as_ref()
                 .map(|m| format!(" --model {}", m))
@@ -725,9 +746,9 @@ async fn run_default_command(args: Args) -> Result<()> {
             output::stderr_info("Removed a stale jcode socket from a previous server.");
         }
 
-        maybe_prompt_server_bootstrap_login(&args.provider).await?;
+        maybe_prompt_server_bootstrap_login(args.provider.as_deref().unwrap_or("auto")).await?;
         spawn_server(
-            &args.provider,
+            args.provider.as_deref().unwrap_or("auto"),
             args.model.as_deref(),
             args.provider_profile.as_deref(),
         )
@@ -924,9 +945,7 @@ async fn acquire_spawn_lock_or_wait(
     }
 }
 
-pub(crate) async fn maybe_prompt_server_bootstrap_login(
-    provider_choice: &ProviderChoice,
-) -> Result<()> {
+pub(crate) async fn maybe_prompt_server_bootstrap_login(provider_choice: &str) -> Result<()> {
     startup_profile::mark("cred_check_start");
 
     // Normal interactive launches perform onboarding inside the TUI, and an
@@ -978,10 +997,10 @@ pub(crate) async fn maybe_prompt_server_bootstrap_login(
 }
 
 fn should_detect_cli_bootstrap_credentials(
-    provider_choice: &ProviderChoice,
+    provider_choice: &str,
     cli_bootstrap_requested: bool,
 ) -> bool {
-    cli_bootstrap_requested && *provider_choice == ProviderChoice::Auto
+    cli_bootstrap_requested && provider_init::is_auto_provider_input(provider_choice)
 }
 
 struct BootstrapCredentialState {
@@ -1005,7 +1024,7 @@ async fn detect_bootstrap_credentials() -> BootstrapCredentialState {
 }
 
 pub(crate) async fn spawn_server(
-    provider_choice: &ProviderChoice,
+    provider_choice: &str,
     model: Option<&str>,
     provider_profile: Option<&str>,
 ) -> Result<()> {
@@ -1045,7 +1064,7 @@ pub(crate) async fn spawn_server(
     if client_requested_selfdev {
         cmd.env("JCODE_DEBUG_CONTROL", "1");
     }
-    cmd.arg("--provider").arg(provider_choice.as_arg_value());
+    cmd.arg("--provider").arg(provider_choice);
     // The interactive TUI owns first-run onboarding/login. Let the spawned
     // server boot with a deferred (credential-less) provider when nothing is
     // configured yet, instead of bailing; the TUI activates a provider via the
@@ -1116,7 +1135,7 @@ pub(crate) async fn spawn_server(
 }
 
 async fn run_server_keepalive(
-    provider_choice: &ProviderChoice,
+    provider_choice: &str,
     model: Option<&str>,
     provider_profile: Option<&str>,
 ) -> Result<()> {

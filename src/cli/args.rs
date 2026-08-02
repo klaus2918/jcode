@@ -1,7 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
-use super::provider_init::ProviderChoice;
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum GoogleAccessTierArg {
     Full,
@@ -41,9 +39,11 @@ pub(crate) enum ProviderApiFormatArg {
 #[command(version = jcode_build_meta::version())]
 #[command(about = "J-Code: A coding agent using Claude Max or ChatGPT Pro subscriptions")]
 pub(crate) struct Args {
-    /// Initial provider to use (jcode, claude, openai, openai-api, openrouter, azure, opencode, opencode-go, zai, 302ai, baseten, cortecs, comtegra, deepseek, fpt, firmware, huggingface, moonshotai, nebius, scaleway, stackit, groq, mistral, perplexity, togetherai, deepinfra, xai, nvidia-nim, lmstudio, ollama, chutes, cerebras, alibaba-coding-plan, openai-compatible, cursor, copilot, gemini, antigravity, google, or auto-detect). Interactive sessions can switch providers with /model.
-    #[arg(short, long, default_value = "auto", global = true)]
-    pub(crate) provider: ProviderChoice,
+    /// Initial provider to use. Any registered provider id (claude, openai,
+    /// openrouter, ollama, gemini-api, ...), a [providers.<name>] config profile,
+    /// or `auto` for auto-detect. Interactive sessions can switch providers with /model.
+    #[arg(short, long, global = true)]
+    pub(crate) provider: Option<String>,
 
     /// Working directory for the local client process
     #[arg(short = 'C', long, global = true)]
@@ -181,8 +181,8 @@ pub(crate) enum Command {
         // sharing the id makes clap drop the flag inside `login` (so
         // `jcode login --provider x` errors) and propagate the global default
         // into this positional.
-        #[arg(value_enum, id = "login_provider", value_name = "PROVIDER")]
-        provider: Option<ProviderChoice>,
+        #[arg(id = "login_provider", value_name = "PROVIDER")]
+        provider: Option<String>,
 
         /// Account label for multi-account support (stored labels are auto-numbered)
         #[arg(long, short = 'a')]
