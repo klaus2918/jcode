@@ -181,7 +181,7 @@ mod tests {
         let sandbox = AuthTestSandbox::new().expect("sandbox");
         sandbox
             .write_openai_compatible_api_key(
-                crate::provider_catalog::CEREBRAS_PROFILE,
+                crate::provider_catalog::OLLAMA_PROFILE,
                 "test-cerebras-key",
             )
             .expect("write key");

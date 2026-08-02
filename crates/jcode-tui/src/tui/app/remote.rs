@@ -52,10 +52,9 @@ use workspace::{handle_workspace_command, handle_workspace_navigation_key};
 // through the `remote` facade instead of private submodule paths.
 #[allow(unused_imports)]
 pub(super) use input_dispatch::{
-    begin_remote_send,
-    begin_remote_split_launch, finish_remote_split_launch, history_matches_pending_startup_prompt,
-    route_prepared_input_to_new_remote_session, stage_turn_for_remote_tick_loop,
-    submit_prepared_remote_input, submit_remote_slash_input,
+    begin_remote_send, begin_remote_split_launch, finish_remote_split_launch,
+    history_matches_pending_startup_prompt, route_prepared_input_to_new_remote_session,
+    stage_turn_for_remote_tick_loop, submit_prepared_remote_input, submit_remote_slash_input,
 };
 pub(super) use key_handling::{
     handle_remote_char_input, handle_remote_key, handle_remote_key_event, send_interleave_now,

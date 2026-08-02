@@ -565,19 +565,6 @@ pub(super) fn list_cli_providers() -> Vec<ProviderListEntry> {
         ProviderChoice::Openai,
         ProviderChoice::Openrouter,
         ProviderChoice::Azure,
-        ProviderChoice::Opencode,
-        ProviderChoice::OpencodeGo,
-        ProviderChoice::Zai,
-        ProviderChoice::Kimi,
-        ProviderChoice::Groq,
-        ProviderChoice::Mistral,
-        ProviderChoice::Perplexity,
-        ProviderChoice::TogetherAi,
-        ProviderChoice::Deepinfra,
-        ProviderChoice::Xai,
-        ProviderChoice::Chutes,
-        ProviderChoice::Cerebras,
-        ProviderChoice::AlibabaCodingPlan,
         ProviderChoice::OpenaiCompatible,
         ProviderChoice::Cursor,
         ProviderChoice::Copilot,
@@ -654,8 +641,8 @@ mod tests {
     #[tokio::test]
     async fn cli_auth_status_doctor_and_login_lifecycle_uses_fresh_sandbox() {
         let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
-        let provider = crate::provider_catalog::CEREBRAS_LOGIN_PROVIDER;
-        let profile = crate::provider_catalog::CEREBRAS_PROFILE;
+        let provider = crate::provider_catalog::GEMINI_API_LOGIN_PROVIDER;
+        let profile = crate::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE;
         let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
         let env_file = sandbox.env_file_path(&resolved.env_file);
 
@@ -694,7 +681,7 @@ mod tests {
         );
 
         crate::cli::login::run_login(
-            &crate::cli::provider_init::ProviderChoice::Cerebras,
+            &crate::cli::provider_init::ProviderChoice::GeminiApi,
             None,
             crate::cli::login::LoginOptions {
                 no_validate: true,

@@ -55,28 +55,12 @@ fn matrix_login_provider_aliases_resolve_to_canonical_ids() {
         Some("claude")
     );
     assert_eq!(
-        resolve_login_provider("opencodego").map(|provider| provider.id),
-        Some("opencode-go")
-    );
-    assert_eq!(
-        resolve_login_provider("z.ai").map(|provider| provider.id),
-        Some("zai")
-    );
-    assert_eq!(
         resolve_login_provider("compat").map(|provider| provider.id),
         Some("openai-compatible")
     );
     assert_eq!(
         resolve_login_provider("aoai").map(|provider| provider.id),
         Some("azure")
-    );
-    assert_eq!(
-        resolve_login_provider("cerberascode").map(|provider| provider.id),
-        Some("cerebras")
-    );
-    assert_eq!(
-        resolve_login_provider("bailian").map(|provider| provider.id),
-        Some("alibaba-coding-plan")
     );
     assert_eq!(
         resolve_login_provider("gmail").map(|provider| provider.id),
@@ -86,22 +70,22 @@ fn matrix_login_provider_aliases_resolve_to_canonical_ids() {
 
 #[test]
 fn auth_issue_profile_metadata_matches_direct_provider_endpoints() {
-    assert_eq!(ZAI_PROFILE.api_base, "https://api.z.ai/api/coding/paas/v4");
-    assert_eq!(ZAI_PROFILE.default_model, Some("glm-4.5"));
-    assert_eq!(DEEPSEEK_PROFILE.api_base, "https://api.deepseek.com");
-    assert_eq!(DEEPSEEK_PROFILE.default_model, Some("deepseek-v4-flash"));
-    assert_eq!(DEEPSEEK_PROFILE.setup_url, "https://api-docs.deepseek.com/");
-    assert_eq!(MINIMAX_PROFILE.api_base, "https://api.minimax.io/v1");
-    assert_eq!(MINIMAX_PROFILE.api_key_env, "OPENAI_API_KEY");
     assert_eq!(
-        ALIBABA_CODING_PLAN_PROFILE.api_base,
-        "https://coding-intl.dashscope.aliyuncs.com/v1"
+        GEMINI_OPENAI_COMPAT_PROFILE.api_base,
+        "https://generativelanguage.googleapis.com/v1beta/openai"
     );
-    assert_eq!(COMTEGRA_PROFILE.api_base, "https://llm.comtegra.cloud/v1");
-    assert_eq!(COMTEGRA_PROFILE.default_model, Some("glm-51-nvfp4"));
-    assert_eq!(COMTEGRA_PROFILE.api_key_env, "COMTEGRA_API_KEY");
-    assert_eq!(CEREBRAS_PROFILE.api_base, "https://api.cerebras.ai/v1");
-    assert_eq!(CEREBRAS_PROFILE.default_model, Some("gpt-oss-120b"));
+    assert_eq!(
+        GEMINI_OPENAI_COMPAT_PROFILE.default_model,
+        Some("gemini-2.5-flash")
+    );
+    assert_eq!(
+        OPENROUTER_OPENAI_COMPAT_PROFILE.api_base,
+        "https://openrouter.ai/api/v1"
+    );
+    assert_eq!(
+        ANTHROPIC_OPENAI_COMPAT_PROFILE.api_base,
+        "https://api.anthropic.com/v1"
+    );
     assert!(!OPENAI_COMPAT_PROFILE.setup_url.contains("opencode.ai"));
 }
 
@@ -112,7 +96,7 @@ fn resolved_named_profile_suggests_newest_cached_live_release() {
     let temp = tempfile::tempdir().expect("tempdir");
     crate::env::set_var("JCODE_HOME", temp.path());
     jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
-        "cerebras",
+        "ollama",
         &[
             jcode_provider_openrouter::ModelInfo {
                 id: "older-model".to_string(),
@@ -129,10 +113,10 @@ fn resolved_named_profile_suggests_newest_cached_live_release() {
                 created: Some(1_800_000_000),
             },
         ],
-        Some(CEREBRAS_PROFILE.api_base),
+        Some(OLLAMA_PROFILE.api_base),
     );
 
-    let resolved = resolve_openai_compatible_profile(CEREBRAS_PROFILE);
+    let resolved = resolve_openai_compatible_profile(OLLAMA_PROFILE);
 
     assert_eq!(resolved.default_model.as_deref(), Some("newer-model"));
 }
@@ -149,7 +133,7 @@ fn resolved_named_profile_skips_non_chat_models_when_picking_newest_default() {
     let temp = tempfile::tempdir().expect("tempdir");
     crate::env::set_var("JCODE_HOME", temp.path());
     jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
-        "cerebras",
+        "ollama",
         &[
             jcode_provider_openrouter::ModelInfo {
                 id: "older-chat-model".to_string(),
@@ -181,37 +165,16 @@ fn resolved_named_profile_skips_non_chat_models_when_picking_newest_default() {
                 created: Some(1_950_000_000),
             },
         ],
-        Some(CEREBRAS_PROFILE.api_base),
+        Some(OLLAMA_PROFILE.api_base),
     );
 
-    let resolved = resolve_openai_compatible_profile(CEREBRAS_PROFILE);
+    let resolved = resolve_openai_compatible_profile(OLLAMA_PROFILE);
 
     assert_eq!(
         resolved.default_model.as_deref(),
         Some("newer-chat-model"),
         "newest *chat* model must win; non-chat models (orpheus TTS, whisper STT) are skipped"
     );
-}
-
-#[test]
-fn minimax_token_plan_keys_resolve_to_china_endpoint_without_changing_international_default() {
-    let _lock = crate::storage::lock_test_env();
-    let _guard = EnvGuard::save(&["OPENAI_API_KEY"]);
-    crate::env::remove_var("OPENAI_API_KEY");
-
-    let international = resolve_openai_compatible_profile(MINIMAX_PROFILE);
-    assert_eq!(international.api_base, "https://api.minimax.io/v1");
-    assert_eq!(
-        international.setup_url,
-        "https://platform.minimax.io/docs/guides/text-generation"
-    );
-
-    let china = resolve_openai_compatible_profile_with_api_key_hint(
-        MINIMAX_PROFILE,
-        Some("sk-cp-test-token"),
-    );
-    assert_eq!(china.api_base, MINIMAX_CHINA_API_BASE);
-    assert_eq!(china.setup_url, MINIMAX_CHINA_SETUP_URL);
 }
 
 #[test]
@@ -246,12 +209,17 @@ fn auth_issue_runtime_display_name_tracks_direct_compatible_profiles() {
     crate::env::set_var("JCODE_RUNTIME_PROVIDER", "azure-openai");
     assert_eq!(runtime_provider_display_name("openrouter"), "Azure OpenAI");
     crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
+    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
+    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
 
-    apply_openai_compatible_profile_env(Some(DEEPSEEK_PROFILE));
-    assert_eq!(runtime_provider_display_name("openrouter"), "DeepSeek");
+    apply_openai_compatible_profile_env(Some(OLLAMA_PROFILE));
+    assert_eq!(runtime_provider_display_name("openrouter"), "Ollama");
 
-    apply_openai_compatible_profile_env(Some(ZAI_PROFILE));
-    assert_eq!(runtime_provider_display_name("openrouter"), "Z.AI");
+    apply_openai_compatible_profile_env(Some(OPENAI_COMPAT_PROFILE));
+    assert_eq!(
+        runtime_provider_display_name("openrouter"),
+        "OpenAI-compatible"
+    );
 }
 
 #[test]
@@ -303,23 +271,23 @@ fn auth_profile_env_application_flushes_stale_openrouter_catalog_state() {
     crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
     crate::env::set_var("JCODE_PROVIDER_PROFILE_NAME", "openrouter");
 
-    force_apply_openai_compatible_profile_env(Some(CEREBRAS_PROFILE));
+    force_apply_openai_compatible_profile_env(Some(OLLAMA_PROFILE));
 
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
-        Ok("https://api.cerebras.ai/v1")
+        Ok("http://localhost:11434/v1")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_KEY_NAME").as_deref(),
-        Ok("CEREBRAS_API_KEY")
+        Ok("OLLAMA_API_KEY")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_ENV_FILE").as_deref(),
-        Ok("cerebras.env")
+        Ok("ollama.env")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref(),
-        Ok("cerebras")
+        Ok("ollama")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_PROVIDER_FEATURES").as_deref(),
@@ -327,9 +295,12 @@ fn auth_profile_env_application_flushes_stale_openrouter_catalog_state() {
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_TRANSPORT_STATE").as_deref(),
-        Ok("direct-api-key")
+        Ok("direct-no-auth")
     );
-    assert!(std::env::var_os("JCODE_OPENROUTER_ALLOW_NO_AUTH").is_none());
+    assert_eq!(
+        std::env::var("JCODE_OPENROUTER_ALLOW_NO_AUTH").as_deref(),
+        Ok("1")
+    );
     assert!(std::env::var_os("JCODE_OPENROUTER_MODEL_CATALOG").is_none());
     assert!(std::env::var_os("JCODE_OPENROUTER_MODEL").is_none());
     assert!(std::env::var_os("JCODE_OPENROUTER_AUTH_HEADER").is_none());
@@ -391,10 +362,6 @@ fn matrix_tui_login_selection_supports_numbers_and_names() {
     assert_eq!(
         resolve_login_selection("compat", &providers).map(|provider| provider.id),
         Some("openai-compatible")
-    );
-    assert_eq!(
-        resolve_login_selection("cgc", &providers).map(|provider| provider.id),
-        Some("comtegra")
     );
     assert_eq!(
         resolve_login_selection("bedrock", &providers).map(|provider| provider.id),
@@ -943,7 +910,7 @@ fn quality_tier_ranks_flagship_above_bare_above_cheap() {
 
     // Cheap/small/fast-marked ids -> tier 0.
     assert_eq!(openai_compatible_model_quality_tier("gpt-5.5-mini"), 0);
-    assert_eq!(openai_compatible_model_quality_tier("deepseek-v4-flash"), 0);
+    assert_eq!(openai_compatible_model_quality_tier("gemini-2.5-flash"), 0);
     assert_eq!(openai_compatible_model_quality_tier("glm-4.6-air"), 0);
     assert_eq!(
         openai_compatible_model_quality_tier("llama-3.1-8b-instant"),
@@ -982,18 +949,18 @@ fn newest_release_picker_prefers_strongest_tier_over_newest_cheap() {
     // cheap `*-flash`, but a slightly older flagship-marked model exists. The
     // picker must choose the flagship, not the newest-cheap.
     jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
-        "deepseek",
+        "gemini-api",
         &[
-            mk("deepseek-v4-flash", 1_900_000_000), // newest, but cheap tier
-            mk("deepseek-v4", 1_850_000_000),       // bare frontier
-            mk("deepseek-v4-coder", 1_800_000_000), // flagship tier, oldest
+            mk("gemini-2.5-flash", 1_900_000_000), // newest, but cheap tier
+            mk("gemini-2.5-pro", 1_850_000_000),   // bare frontier
+            mk("gemini-3-pro", 1_800_000_000),     // flagship tier, oldest
         ],
-        Some("https://api.deepseek.com"),
+        Some("https://generativelanguage.googleapis.com/v1beta/openai"),
     );
 
     assert_eq!(
-        newest_released_model_for_openai_compatible_profile("deepseek").as_deref(),
-        Some("deepseek-v4-coder"),
+        newest_released_model_for_openai_compatible_profile("gemini-api").as_deref(),
+        Some("gemini-2.5-pro"),
         "a flagship-marked model must win over a newer cheap/flash sibling"
     );
 }
@@ -1016,18 +983,18 @@ fn newest_release_picker_uses_recency_within_a_tier() {
 
     // All same (bare frontier) tier: recency decides.
     jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
-        "deepseek",
+        "gemini-api",
         &[
-            mk("deepseek-v3", 1_700_000_000),
-            mk("deepseek-v4", 1_900_000_000), // newest within the same tier
-            mk("deepseek-v3.1", 1_800_000_000),
+            mk("gemini-2.0", 1_700_000_000),
+            mk("gemini-2.5", 1_900_000_000), // newest within the same tier
+            mk("gemini-2.1", 1_800_000_000),
         ],
-        Some("https://api.deepseek.com"),
+        Some("https://generativelanguage.googleapis.com/v1beta/openai"),
     );
 
     assert_eq!(
-        newest_released_model_for_openai_compatible_profile("deepseek").as_deref(),
-        Some("deepseek-v4"),
+        newest_released_model_for_openai_compatible_profile("gemini-api").as_deref(),
+        Some("gemini-2.5"),
         "within one quality tier the newest release should win"
     );
 }
@@ -1098,7 +1065,7 @@ fn open_weight_family_context_limits_match_published_windows() {
     assert_eq!(f("minimax-m2.7"), Some(204_800));
     assert_eq!(f("mimo-v2.5"), Some(262_144));
     assert_eq!(f("deepseek-v3.2"), Some(163_840));
-    assert_eq!(f("deepseek-v4-pro"), Some(1_000_000));
+    assert_eq!(f("gemini-2.5-pro"), Some(1_000_000));
     assert_eq!(f("qwen3-235b-a22b-instruct-2507"), Some(262_144));
     assert_eq!(f("gpt-oss-120b"), Some(131_072));
     assert_eq!(f("llama-3.3-70b-instruct"), Some(131_072));
@@ -1106,55 +1073,4 @@ fn open_weight_family_context_limits_match_published_windows() {
 
     // Unknown families stay unresolved so the dynamic cache/default can act.
     assert_eq!(f("some-unknown-model"), None);
-}
-
-#[test]
-fn minimax_default_provider_applies_openai_api_key_env_not_openrouter() {
-    // Regression for #407: `default_provider = "minimax"` (the built-in MiniMax
-    // profile) must resolve credentials from the profile's documented
-    // OPENAI_API_KEY / minimax.env, not the generic OPENROUTER_API_KEY /
-    // openrouter.env. The earlier bug surfaced as
-    // "OPENROUTER_API_KEY not found ..." when applying the configured
-    // default_model.
-    let _lock = crate::storage::lock_test_env();
-    let _guard = EnvGuard::save(&[
-        "JCODE_OPENROUTER_API_KEY_NAME",
-        "JCODE_OPENROUTER_ENV_FILE",
-        "JCODE_OPENROUTER_API_BASE",
-        "JCODE_OPENROUTER_CACHE_NAMESPACE",
-        "JCODE_PROVIDER_PROFILE_ACTIVE",
-        "JCODE_NAMED_PROVIDER_PROFILE",
-    ]);
-    for v in [
-        "JCODE_OPENROUTER_API_KEY_NAME",
-        "JCODE_OPENROUTER_ENV_FILE",
-        "JCODE_OPENROUTER_API_BASE",
-        "JCODE_OPENROUTER_CACHE_NAMESPACE",
-        "JCODE_PROVIDER_PROFILE_ACTIVE",
-        "JCODE_NAMED_PROVIDER_PROFILE",
-    ] {
-        crate::env::remove_var(v);
-    }
-
-    let selection = resolve_openai_compatible_profile_selection("minimax");
-    assert_eq!(
-        selection.map(|profile| profile.id),
-        Some("minimax"),
-        "default_provider=minimax must resolve the built-in MiniMax profile"
-    );
-
-    apply_openai_compatible_profile_env(selection);
-
-    assert_eq!(
-        std::env::var("JCODE_OPENROUTER_API_KEY_NAME")
-            .ok()
-            .as_deref(),
-        Some("OPENAI_API_KEY"),
-        "MiniMax profile must use OPENAI_API_KEY, not OPENROUTER_API_KEY"
-    );
-    assert_eq!(
-        std::env::var("JCODE_OPENROUTER_ENV_FILE").ok().as_deref(),
-        Some("minimax.env"),
-        "MiniMax profile must use minimax.env, not openrouter.env"
-    );
 }

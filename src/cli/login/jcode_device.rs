@@ -219,7 +219,6 @@ pub(super) async fn login_jcode_device_flow(no_browser: bool) -> Result<LoginCom
         }
     };
 
-
     Ok(completion)
 }
 

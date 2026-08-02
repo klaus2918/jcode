@@ -793,7 +793,7 @@ fn standard_openrouter_catalog_refresh_fires_when_named_profile_owns_slot() {
                 Some("sk-test-openrouter"),
             )
             .expect("save openrouter key");
-            // Simulate an active named profile (e.g. NVIDIA NIM) occupying the
+            // Simulate an active named profile (e.g. Gemini API) occupying the
             // shared OpenRouter/OpenAI-compatible slot: it sets the runtime env
             // vars to point at a non-openrouter.ai endpoint. The standard
             // OpenRouter catalog refresh must STILL fire so `/model` can list

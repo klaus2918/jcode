@@ -30,8 +30,8 @@ fn init_and_systemd_are_recognized_as_orphan_adopters() {
 #[test]
 fn auth_doctor_provider_focus_uses_global_provider_when_positional_is_absent() {
     assert_eq!(
-        auth_doctor_provider_arg(None, &ProviderChoice::Cerebras),
-        Some("cerebras")
+        auth_doctor_provider_arg(None, &ProviderChoice::GeminiApi),
+        Some("gemini-api")
     );
     assert_eq!(
         auth_doctor_provider_arg(None, &ProviderChoice::Auto),
@@ -43,7 +43,7 @@ fn auth_doctor_provider_focus_uses_global_provider_when_positional_is_absent() {
 #[test]
 fn auth_doctor_positional_provider_wins_over_global_provider() {
     assert_eq!(
-        auth_doctor_provider_arg(Some("openai"), &ProviderChoice::Cerebras),
+        auth_doctor_provider_arg(Some("openai"), &ProviderChoice::GeminiApi),
         Some("openai"),
         "`jcode --provider cerebras auth doctor openai` should diagnose the explicit positional provider"
     );

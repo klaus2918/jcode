@@ -189,8 +189,7 @@ pub fn install_panic_hook() {
 
         if let Some(session_id) = get_current_session() {
             print_session_resume_hint(&session_id);
-
-       }
+        }
     }));
 }
 

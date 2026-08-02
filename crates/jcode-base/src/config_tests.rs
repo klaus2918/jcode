@@ -211,8 +211,6 @@ fn spawn_hook_defaults_to_none_and_parses_from_toml() {
     assert_eq!(cfg.terminal.spawn_hook.as_deref(), Some("tmux new-window"));
 }
 
-
-
 #[test]
 fn hooks_config_defaults_and_parses_from_toml() {
     let defaults = Config::default().hooks;

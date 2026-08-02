@@ -253,10 +253,10 @@ const ISSUE_DRIVEN_LIVE_PROVIDER_TARGETS: &[IssueDrivenLiveProviderTarget] = &[
         issue_refs: &["#234"],
     },
     IssueDrivenLiveProviderTarget {
-        provider_id: "nvidia-nim",
-        provider_label: "NVIDIA NIM",
+        provider_id: "gemini-api",
+        provider_label: "Gemini API",
         model: Some("nvidia/llama-3.1-nemotron-ultra-253b-v1"),
-        reason: "NVIDIA NIM provider auth and tool-smoke readiness",
+        reason: "Gemini API provider auth and tool-smoke readiness",
         issue_refs: &["#164", "#197"],
     },
     IssueDrivenLiveProviderTarget {
@@ -2963,7 +2963,7 @@ mod tests {
         let nvidia = summary
             .issue_driven_targets
             .iter()
-            .find(|target| target.provider_id == "nvidia-nim")
+            .find(|target| target.provider_id == "gemini-api")
             .expect("nvidia target should be tracked");
         assert_eq!(nvidia.status, "no_model_specific_live_evidence");
 
@@ -2985,8 +2985,8 @@ mod tests {
             LiveVerificationStageStatus::Failed,
         );
         latest.insert(
-            "nvidia-nim::gemma::partial".to_string(),
-            coverage_entry("nvidia-nim", "NVIDIA NIM", Some("gemma-4-31b"), stuck),
+            "gemini-api::gemma::partial".to_string(),
+            coverage_entry("gemini-api", "Gemini API", Some("gemma-4-31b"), stuck),
         );
         let coverage = LiveVerificationCoverage {
             schema_version: SCHEMA_VERSION,
@@ -3015,7 +3015,7 @@ mod tests {
         assert!(ready_line.trim_start().starts_with("READY"), "{ready_line}");
         let stuck_line = report
             .lines()
-            .find(|l| l.contains("nvidia-nim / gemma-4-31b"))
+            .find(|l| l.contains("gemini-api / gemma-4-31b"))
             .expect("missing stuck pair line");
         assert!(stuck_line.contains("/11"), "{stuck_line}");
         assert!(stuck_line.contains("failed at"), "{stuck_line}");

@@ -6,12 +6,11 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Instant;
 
 use super::args::{
-    AmbientCommand, Args, AuthCommand, Command, MemoryCommand,
-    ModelCommand, ProviderCommand, RestartCommand, ServerCommand, SessionCommand,
+    AmbientCommand, Args, AuthCommand, Command, MemoryCommand, ModelCommand, ProviderCommand,
+    RestartCommand, ServerCommand, SessionCommand,
 };
 use crate::{
-    agent, auth, build, provider, provider_catalog, server, session, startup_profile,
-    tui,
+    agent, auth, build, provider, provider_catalog, server, session, startup_profile, tui,
 };
 
 use super::{
@@ -646,7 +645,6 @@ async fn run_default_command(args: Args) -> Result<()> {
     {
         return Ok(());
     }
-
 
     if args.resume.is_none() {
         terminal::show_crash_resume_hint();

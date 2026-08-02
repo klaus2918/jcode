@@ -24,31 +24,10 @@ fn server_start_and_internal_keepalive_parse() {
 
 #[test]
 fn test_provider_choice_aliases_parse() {
-    let args = Args::try_parse_from(["jcode", "--provider", "z.ai", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::Zai);
-
-    let args =
-        Args::try_parse_from(["jcode", "--provider", "kimi-for-coding", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::Kimi);
-
-    let args =
-        Args::try_parse_from(["jcode", "--provider", "cerebrascode", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::Cerebras);
-
     let args = Args::try_parse_from(["jcode", "--provider", "compat", "run", "smoke"]).unwrap();
     assert_eq!(args.provider, ProviderChoice::OpenaiCompatible);
-
-    let args = Args::try_parse_from(["jcode", "--provider", "bailian", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::AlibabaCodingPlan);
-
-    let args = Args::try_parse_from(["jcode", "--provider", "together", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::TogetherAi);
-
-    let args = Args::try_parse_from(["jcode", "--provider", "grok", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::Xai);
-
-    let args = Args::try_parse_from(["jcode", "--provider", "cgc", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::Comtegra);
+    let args = Args::try_parse_from(["jcode", "--provider", "auto", "run", "smoke"]).unwrap();
+    assert_eq!(args.provider, ProviderChoice::Auto);
 }
 
 #[test]
@@ -134,8 +113,6 @@ fn session_rename_subcommand_parses() {
         other => panic!("unexpected command: {:?}", other),
     }
 }
-
-
 
 #[test]
 fn login_no_browser_flag_parses() {

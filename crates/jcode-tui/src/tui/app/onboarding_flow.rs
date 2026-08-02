@@ -49,7 +49,6 @@ impl ExternalCli {
     }
 }
 
-
 /// Single-screen review for importing detected external logins.
 ///
 /// On a fresh install we may detect logins left behind by other tools (Codex,
@@ -95,10 +94,7 @@ pub(crate) enum SummaryPill {
 }
 
 impl SummaryPill {
-    const ORDER: [SummaryPill; 2] = [
-        SummaryPill::Continue,
-        SummaryPill::ImportLess,
-    ];
+    const ORDER: [SummaryPill; 2] = [SummaryPill::Continue, SummaryPill::ImportLess];
 
     fn index(self) -> usize {
         Self::ORDER.iter().position(|&p| p == self).unwrap_or(0)

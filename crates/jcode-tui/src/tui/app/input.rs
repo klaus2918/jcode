@@ -1547,7 +1547,6 @@ impl App {
                 self.todo_completion_gate_attempts =
                     self.todo_completion_gate_attempts.saturating_add(1);
                 let notice = if confidence_summary.completion_confidence_needs_validation {
-
                     "🛑 The agent marked its work done without strong enough validation. We asked it to double-check."
                 } else {
                     self.todo_confidence_spike_challenged = true;

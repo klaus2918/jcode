@@ -401,14 +401,6 @@ mod tests {
     }
 
     #[test]
-    fn alibaba_coding_plan_uses_current_international_endpoint() {
-        assert_eq!(
-            ALIBABA_CODING_PLAN_PROFILE.api_base,
-            "https://coding-intl.dashscope.aliyuncs.com/v1"
-        );
-    }
-
-    #[test]
     fn resolve_login_provider_loose_matches_id_alias_and_display_name() {
         // id
         assert_eq!(
@@ -440,7 +432,7 @@ mod tests {
         // descriptor id (OAuth logins) or a display label (API-key paste logins),
         // and both must resolve so the post-login auth-change refresh is
         // attributed to the right provider instead of falling back to the
-        // session's active provider.
+        // session active provider.
         for descriptor in login_providers() {
             assert_eq!(
                 resolve_login_provider_loose(descriptor.id).map(|d| d.id),
@@ -459,57 +451,6 @@ mod tests {
     }
 
     #[test]
-    fn minimax_profile_uses_official_openai_compatible_configuration() {
-        assert_eq!(MINIMAX_PROFILE.api_base, "https://api.minimax.io/v1");
-        assert_eq!(MINIMAX_PROFILE.api_key_env, "OPENAI_API_KEY");
-    }
-
-    #[test]
-    fn nvidia_nim_profile_uses_hosted_openai_compatible_configuration() {
-        assert_eq!(
-            NVIDIA_NIM_PROFILE.api_base,
-            "https://integrate.api.nvidia.com/v1"
-        );
-        assert_eq!(NVIDIA_NIM_PROFILE.api_key_env, "NVIDIA_API_KEY");
-        assert_eq!(NVIDIA_NIM_PROFILE.env_file, "nvidia-nim.env");
-        assert_eq!(
-            NVIDIA_NIM_PROFILE.default_model,
-            Some("nvidia/llama-3.1-nemotron-ultra-253b-v1")
-        );
-        assert!(matches!(
-            NVIDIA_NIM_LOGIN_PROVIDER.target,
-            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "nvidia-nim"
-        ));
-    }
-
-    #[test]
-    fn cerebras_profile_uses_official_openai_compatible_configuration() {
-        assert_eq!(CEREBRAS_PROFILE.id, "cerebras");
-        assert_eq!(CEREBRAS_PROFILE.display_name, "Cerebras");
-        assert_eq!(CEREBRAS_PROFILE.api_base, "https://api.cerebras.ai/v1");
-        assert_eq!(CEREBRAS_PROFILE.api_key_env, "CEREBRAS_API_KEY");
-        assert_eq!(CEREBRAS_PROFILE.env_file, "cerebras.env");
-        assert_eq!(
-            CEREBRAS_PROFILE.setup_url,
-            "https://inference-docs.cerebras.ai/introduction"
-        );
-        assert_eq!(CEREBRAS_PROFILE.default_model, Some("gpt-oss-120b"));
-        const { assert!(CEREBRAS_PROFILE.requires_api_key) };
-        assert_eq!(
-            CEREBRAS_LOGIN_PROVIDER.auth_kind,
-            LoginProviderAuthKind::ApiKey
-        );
-        assert_eq!(
-            CEREBRAS_LOGIN_PROVIDER.auth_state_key,
-            LoginProviderAuthStateKey::OpenRouterLike
-        );
-        assert!(matches!(
-            CEREBRAS_LOGIN_PROVIDER.target,
-            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "cerebras"
-        ));
-    }
-
-    #[test]
     fn ollama_profile_is_local_openai_compatible_without_required_api_key() {
         assert_eq!(OLLAMA_PROFILE.id, "ollama");
         assert_eq!(OLLAMA_PROFILE.api_base, "http://localhost:11434/v1");
@@ -523,7 +464,6 @@ mod tests {
         const {
             assert!(!OLLAMA_PROFILE.requires_api_key);
         }
-
         assert_eq!(
             OLLAMA_LOGIN_PROVIDER.auth_kind,
             LoginProviderAuthKind::Local
@@ -532,6 +472,25 @@ mod tests {
         assert!(matches!(
             OLLAMA_LOGIN_PROVIDER.target,
             LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "ollama"
+        ));
+    }
+
+    #[test]
+    fn lmstudio_profile_is_local_openai_compatible_without_required_api_key() {
+        assert_eq!(LMSTUDIO_PROFILE.id, "lmstudio");
+        assert_eq!(LMSTUDIO_PROFILE.api_base, "http://localhost:1234/v1");
+        assert_eq!(LMSTUDIO_PROFILE.default_model, None);
+        const {
+            assert!(!LMSTUDIO_PROFILE.requires_api_key);
+        }
+        assert_eq!(
+            LMSTUDIO_LOGIN_PROVIDER.auth_kind,
+            LoginProviderAuthKind::Local
+        );
+        assert_eq!(LMSTUDIO_LOGIN_PROVIDER.auth_status_method, "local endpoint");
+        assert!(matches!(
+            LMSTUDIO_LOGIN_PROVIDER.target,
+            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "lmstudio"
         ));
     }
 
@@ -546,24 +505,12 @@ mod tests {
             Some("claude")
         );
         assert_eq!(
-            resolve_login_provider("opencodego").map(|provider| provider.id),
-            Some("opencode-go")
+            resolve_login_provider("claude-api").map(|provider| provider.id),
+            Some("anthropic-api")
         );
         assert_eq!(
-            resolve_login_provider("z.ai").map(|provider| provider.id),
-            Some("zai")
-        );
-        assert_eq!(
-            resolve_login_provider("zhipu").map(|provider| provider.id),
-            Some("zai")
-        );
-        assert_eq!(
-            resolve_login_provider("kimi").map(|provider| provider.id),
-            Some("kimi")
-        );
-        assert_eq!(
-            resolve_login_provider("kimi-for-coding").map(|provider| provider.id),
-            Some("kimi")
+            resolve_login_provider("openai-key").map(|provider| provider.id),
+            Some("openai-api")
         );
         assert_eq!(
             resolve_login_provider("compat").map(|provider| provider.id),
@@ -574,60 +521,16 @@ mod tests {
             Some("azure")
         );
         assert_eq!(
-            resolve_login_provider("cerberascode").map(|provider| provider.id),
-            Some("cerebras")
-        );
-        assert_eq!(
-            resolve_login_provider("bailian").map(|provider| provider.id),
-            Some("alibaba-coding-plan")
-        );
-        assert_eq!(
-            resolve_login_provider("302.ai").map(|provider| provider.id),
-            Some("302ai")
-        );
-        assert_eq!(
-            resolve_login_provider("hf").map(|provider| provider.id),
-            Some("huggingface")
-        );
-        assert_eq!(
-            resolve_login_provider("moonshot").map(|provider| provider.id),
-            Some("moonshotai")
-        );
-        assert_eq!(
-            resolve_login_provider("mistralai").map(|provider| provider.id),
-            Some("mistral")
-        );
-        assert_eq!(
-            resolve_login_provider("pplx").map(|provider| provider.id),
-            Some("perplexity")
-        );
-        assert_eq!(
-            resolve_login_provider("together").map(|provider| provider.id),
-            Some("togetherai")
-        );
-        assert_eq!(
-            resolve_login_provider("deep-infra").map(|provider| provider.id),
-            Some("deepinfra")
-        );
-        assert_eq!(
-            resolve_login_provider("fireworks.ai").map(|provider| provider.id),
-            Some("fireworks")
-        );
-        assert_eq!(
-            resolve_login_provider("minimax-ai").map(|provider| provider.id),
-            Some("minimax")
-        );
-        assert_eq!(
-            resolve_login_provider("grok").map(|provider| provider.id),
-            Some("xai")
-        );
-        assert_eq!(
             resolve_login_provider("lm-studio").map(|provider| provider.id),
             Some("lmstudio")
         );
         assert_eq!(
             resolve_login_provider("gmail").map(|provider| provider.id),
             Some("google")
+        );
+        assert_eq!(
+            resolve_login_provider("aws-bedrock").map(|provider| provider.id),
+            Some("bedrock")
         );
     }
 
@@ -661,15 +564,34 @@ mod tests {
             resolve_login_selection("2", &providers).map(|provider| provider.id),
             Some("claude")
         );
-        // `anthropic-api` sits at 3 (between claude and openai), shifting the
-        // rest of the list down one slot relative to the pre-May-2026 order.
+        // `anthropic-api` sits at 3 (between claude and openai).
         assert_eq!(
             resolve_login_selection("3", &providers).map(|provider| provider.id),
             Some("anthropic-api")
         );
         assert_eq!(
+            resolve_login_selection("4", &providers).map(|provider| provider.id),
+            Some("openai")
+        );
+        assert_eq!(
+            resolve_login_selection("5", &providers).map(|provider| provider.id),
+            Some("jcode")
+        );
+        assert_eq!(
+            resolve_login_selection("6", &providers).map(|provider| provider.id),
+            Some("openrouter")
+        );
+        assert_eq!(
             resolve_login_selection("7", &providers).map(|provider| provider.id),
             Some("bedrock")
+        );
+        assert_eq!(
+            resolve_login_selection("8", &providers).map(|provider| provider.id),
+            Some("azure")
+        );
+        assert_eq!(
+            resolve_login_selection("9", &providers).map(|provider| provider.id),
+            Some("openai-compatible")
         );
         assert_eq!(
             resolve_login_selection("compat", &providers).map(|provider| provider.id),

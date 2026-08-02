@@ -1256,13 +1256,11 @@ fn build_run_todo_validation_message(
     }
 
     if completion_confidence_needs_validation {
-
         Some((
             crate::todo::TODO_COMPLETION_CONTINUATION_MESSAGE.to_string(),
             false,
         ))
     } else {
-
         Some((
             crate::todo::TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE.to_string(),
             true,

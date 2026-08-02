@@ -1488,9 +1488,11 @@ impl NativeProviderKind {
                     jcode_base::env::set_var("JCODE_COPILOT_PREFETCH_STARTUP_GRACE_MS", "0");
                     let runtime = match jcode_provider_copilot_runtime::CopilotApiProvider::new() {
                         Ok(runtime) => runtime,
-                        Err(_) => jcode_provider_copilot_runtime::CopilotApiProvider::new_with_token(
-                            String::new(),
-                        ),
+                        Err(_) => {
+                            jcode_provider_copilot_runtime::CopilotApiProvider::new_with_token(
+                                String::new(),
+                            )
+                        }
                     };
                     return Ok(std::sync::Arc::new(runtime));
                 }

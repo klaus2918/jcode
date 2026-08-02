@@ -1086,7 +1086,6 @@ impl App {
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
-
                 let content_clone = content_blocks.clone();
                 self.add_provider_message(Message {
                     role: Role::Assistant,

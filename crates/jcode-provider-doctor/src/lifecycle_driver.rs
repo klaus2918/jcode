@@ -61,7 +61,7 @@ pub(crate) struct AuthLifecycleSpec {
 impl AuthLifecycleSpec {
     pub(crate) fn cerebras_fixture(auth_path: AuthLifecycleAuthPath) -> Self {
         let mut spec = Self::openai_compatible_fixture(
-            jcode_base::provider_catalog::CEREBRAS_PROFILE,
+            jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
             auth_path,
         );
         spec.catalog_models_after_auth = vec![
@@ -604,7 +604,7 @@ mod tests {
         }
 
         let resolved = jcode_base::provider_catalog::resolve_openai_compatible_profile(
-            jcode_base::provider_catalog::OPENCODE_PROFILE,
+            jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
         );
         jcode_base::provider_catalog::load_api_key_from_env_or_config(
             &resolved.api_key_env,
@@ -1277,7 +1277,7 @@ mod tests {
             cost_quota_safety_stage(spend_smoke || stream_smoke),
         ];
         let models_result = fetch_live_openai_compatible_models(
-            jcode_base::provider_catalog::CEREBRAS_PROFILE,
+            jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
             &api_key.secret,
         )
         .await;
@@ -1291,7 +1291,7 @@ mod tests {
                 let capabilities = covered_stage_names(&stages);
                 let event = live_event(
                     "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
-                    jcode_base::provider_catalog::CEREBRAS_PROFILE,
+                    jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
                     api_key.auth.clone(),
                     None,
                     capabilities,
@@ -1311,7 +1311,8 @@ mod tests {
                 jcode_base::live_tests::concise_model_sample(&models, 12),
             ),
         );
-        let default_model = jcode_base::provider_catalog::CEREBRAS_PROFILE.default_model;
+        let default_model =
+            jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE.default_model;
         let selected = default_model
             .filter(|default| models.iter().any(|model| model == default))
             .map(ToString::to_string)
@@ -1402,7 +1403,7 @@ mod tests {
 
         if spend_smoke {
             match run_live_openai_compatible_smoke(
-                jcode_base::provider_catalog::CEREBRAS_PROFILE,
+                jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
                 &api_key.secret,
                 &selected,
             )
@@ -1417,7 +1418,7 @@ mod tests {
                     let capabilities = covered_stage_names(&stages);
                     let event = live_event(
                         "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
-                        jcode_base::provider_catalog::CEREBRAS_PROFILE,
+                        jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
                         api_key.auth.clone(),
                         Some(&selected),
                         capabilities,
@@ -1432,7 +1433,7 @@ mod tests {
 
         if stream_smoke {
             match run_live_openai_compatible_stream_smoke(
-                jcode_base::provider_catalog::CEREBRAS_PROFILE,
+                jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
                 &api_key.secret,
                 &selected,
             )
@@ -1447,7 +1448,7 @@ mod tests {
                     let capabilities = covered_stage_names(&stages);
                     let event = live_event(
                         "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
-                        jcode_base::provider_catalog::CEREBRAS_PROFILE,
+                        jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
                         api_key.auth.clone(),
                         Some(&selected),
                         capabilities,
@@ -1463,7 +1464,7 @@ mod tests {
         let capabilities = covered_stage_names(&stages);
         let event = live_event(
             "cerebras_live_opt_in_catalog_lifecycle_uses_isolated_sandbox",
-            jcode_base::provider_catalog::CEREBRAS_PROFILE,
+            jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
             api_key.auth.clone(),
             Some(&selected),
             capabilities,
@@ -1504,7 +1505,7 @@ mod tests {
             cost_quota_safety_stage(true),
         ];
         let models_result = fetch_live_openai_compatible_models(
-            jcode_base::provider_catalog::OPENCODE_PROFILE,
+            jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
             &api_key.secret,
         )
         .await;
@@ -1518,7 +1519,7 @@ mod tests {
                 let capabilities = covered_stage_names(&stages);
                 let event = live_event(
                     "opencode_zen_live_opt_in_tool_call_smoke",
-                    jcode_base::provider_catalog::OPENCODE_PROFILE,
+                    jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
                     api_key.auth.clone(),
                     Some(&model),
                     capabilities,
@@ -1549,7 +1550,7 @@ mod tests {
 
         let driver = AuthLifecycleDriver::new().expect("driver");
         let mut spec = AuthLifecycleSpec::openai_compatible_fixture(
-            jcode_base::provider_catalog::OPENCODE_PROFILE,
+            jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
             AuthLifecycleAuthPath::RemoteTuiPasteApiKey,
         );
         spec.api_key = api_key.secret.clone();
@@ -1623,7 +1624,7 @@ mod tests {
 
         if stream_smoke {
             match run_live_openai_compatible_stream_smoke(
-                jcode_base::provider_catalog::OPENCODE_PROFILE,
+                jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
                 &api_key.secret,
                 &model,
             )
@@ -1638,7 +1639,7 @@ mod tests {
                     let capabilities = covered_stage_names(&stages);
                     let event = live_event(
                         "opencode_zen_live_opt_in_tool_call_smoke",
-                        jcode_base::provider_catalog::OPENCODE_PROFILE,
+                        jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
                         api_key.auth.clone(),
                         Some(&model),
                         capabilities,
@@ -1652,7 +1653,7 @@ mod tests {
         }
 
         match run_live_openai_compatible_tool_smoke(
-            jcode_base::provider_catalog::OPENCODE_PROFILE,
+            jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
             &api_key.secret,
             &model,
         )
@@ -1667,7 +1668,7 @@ mod tests {
                 let capabilities = covered_stage_names(&stages);
                 let event = live_event(
                     "opencode_zen_live_opt_in_tool_call_smoke",
-                    jcode_base::provider_catalog::OPENCODE_PROFILE,
+                    jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
                     api_key.auth.clone(),
                     Some(&model),
                     capabilities,
@@ -1682,7 +1683,7 @@ mod tests {
         let capabilities = covered_stage_names(&stages);
         let event = live_event(
             "opencode_zen_live_opt_in_tool_call_smoke",
-            jcode_base::provider_catalog::OPENCODE_PROFILE,
+            jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
             api_key.auth.clone(),
             Some(&model),
             capabilities,

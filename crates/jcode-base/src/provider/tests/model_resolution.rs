@@ -159,28 +159,28 @@ fn test_cerebras_model_routes_are_profile_scoped_and_unique() {
             // `qwen-3-235b-a22b-instruct-2507`, which rotted when the static
             // coverage was refreshed).
             let static_models = crate::provider_catalog::openai_compatible_profile_static_models(
-                crate::provider_catalog::CEREBRAS_PROFILE,
+                crate::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
             );
             let probe_model = static_models
                 .first()
-                .expect("Cerebras profile should have static models")
+                .expect("Gemini API profile should have static models")
                 .clone();
             let probe_routes = routes
                 .iter()
-                .filter(|route| route.provider == "Cerebras" && route.model == probe_model)
+                .filter(|route| route.provider == "Gemini API" && route.model == probe_model)
                 .collect::<Vec<_>>();
             assert_eq!(
                 probe_routes.len(),
                 1,
-                "Cerebras direct route should not appear twice in provider routes: {routes:?}"
+                "Gemini API direct route should not appear twice in provider routes: {routes:?}"
             );
-            assert_eq!(probe_routes[0].api_method, "openai-compatible:cerebras");
+            assert_eq!(probe_routes[0].api_method, "openai-compatible:gemini-api");
             assert!(probe_routes[0].available);
             assert!(
                 !routes.iter().any(|route| {
-                    route.provider == "Cerebras" && route.api_method == "openai-compatible"
+                    route.provider == "Gemini API" && route.api_method == "openai-compatible"
                 }),
-                "generic Cerebras OpenAI-compatible route should be collapsed into the profile-scoped route: {routes:?}"
+                "generic Gemini API OpenAI-compatible route should be collapsed into the profile-scoped route: {routes:?}"
             );
         })
     });
@@ -318,14 +318,14 @@ fn test_auth_changed_preserves_existing_direct_profile_session() {
             .expect("existing direct provider remains installed")
             .direct_openai_compatible_route_parts()
             .expect("existing direct provider remains direct");
-        assert_eq!(active_direct_route.0, "Cerebras");
-        assert_eq!(active_direct_route.1, "openai-compatible:cerebras");
+        assert_eq!(active_direct_route.0, "Gemini API");
+        assert_eq!(active_direct_route.1, "openai-compatible:gemini-api");
 
         let routes = provider.model_routes();
         assert!(routes.iter().any(|route| {
             route.model == "qwen-3-235b-a22b-instruct-2507"
-                && route.provider == "Cerebras"
-                && route.api_method == "openai-compatible:cerebras"
+                && route.provider == "Gemini API"
+                && route.api_method == "openai-compatible:gemini-api"
                 && route.available
         }));
         assert!(

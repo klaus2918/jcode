@@ -708,12 +708,8 @@ fn launch_manual_subagent(app: &mut App, spec: ManualSubagentSpec) {
         let duration_ms = start.elapsed().as_millis() as u64;
 
         let (output, is_error, title, status) = match result {
-            Ok(output) => {
-                (output.output, false, output.title, ToolStatus::Completed)
-            }
-            Err(error) => {
-                (format!("Error: {}", error), true, None, ToolStatus::Error)
-            }
+            Ok(output) => (output.output, false, output.title, ToolStatus::Completed),
+            Err(error) => (format!("Error: {}", error), true, None, ToolStatus::Error),
         };
 
         Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
@@ -2662,8 +2658,6 @@ pub(super) fn active_working_dir(app: &App) -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-
-
 fn alignment_label(centered: bool) -> &'static str {
     if centered { "centered" } else { "left-aligned" }
 }
@@ -3385,7 +3379,6 @@ pub(super) fn handle_feedback_command(app: &mut App, trimmed: &str) -> bool {
     app.set_status_notice("Feedback recorded");
     true
 }
-
 
 #[cfg(test)]
 #[path = "commands_tests.rs"]

@@ -6,9 +6,7 @@ const MAX_INTERACTIVE_SWARM_REPLAY_PANES: usize = 16;
 use std::io::{self, Write};
 use std::process::Command as ProcessCommand;
 
-use crate::{
-    id, logging, replay, server, session, startup_profile, tui,
-};
+use crate::{id, logging, replay, server, session, startup_profile, tui};
 
 use super::hot_exec::{execute_requested_action, has_requested_action};
 

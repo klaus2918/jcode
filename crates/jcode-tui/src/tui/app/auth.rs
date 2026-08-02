@@ -32,11 +32,9 @@ impl App {
     ) -> String {
         let mut notices = Vec::new();
         if !browser_opened {
-
             notices.push("This machine could not open a browser automatically.".to_string());
         }
         if matches!(callback_available, Some(false)) {
-
             if let Some(target) = callback_target {
                 notices.push(format!(
                     "Local callback target {} is unavailable, so jcode is using manual-safe paste completion instead.",
@@ -255,7 +253,6 @@ impl App {
     }
 
     pub(super) fn show_interactive_login(&mut self) {
-
         self.open_login_picker_inline();
         self.set_status_notice("Login: choose a provider");
     }
@@ -511,7 +508,6 @@ impl App {
         &mut self,
         provider: crate::provider_catalog::LoginProviderDescriptor,
     ) {
-
         crate::logging::event_info(
             "login_started",
             vec![
@@ -570,7 +566,6 @@ impl App {
                 self.start_antigravity_login()
             }
             crate::provider_catalog::LoginProviderTarget::Google => {
-
                 self.push_display_message(DisplayMessage::error(
                     "Google/Gmail login is only available from the CLI right now. Run jcode login --provider google."
                         .to_string(),
@@ -1636,8 +1631,6 @@ impl App {
     }
 
     fn start_cursor_login(&mut self) {
-
-
         self.push_display_message(DisplayMessage::system(
             "Cursor API Key\n\n\
              Get your API key from: https://cursor.com/settings\n\

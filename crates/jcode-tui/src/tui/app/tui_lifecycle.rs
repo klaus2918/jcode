@@ -321,7 +321,6 @@ impl App {
         let _reason = crate::auth::login_diagnostics::classify_auth_failure_message(message);
         let provider = self.provider_name().to_string();
 
-
         self.push_display_message(DisplayMessage::error(format!(
             "🛑 Stopped automatic retries: {failures} consecutive credential/auth failures. \
              The current login or API key for {provider} is not working, so resending the same \
@@ -382,7 +381,6 @@ impl App {
         });
 
         crate::logging::info("App::new_minimal_with_session: skipping skill/prompt bootstrap");
-
 
         let mut app = Self {
             provider,
@@ -806,8 +804,6 @@ impl App {
             (t_prompt - t_session).as_secs_f64() * 1000.0,
             t_prompt.as_secs_f64() * 1000.0,
         ));
-
-
 
         let mut app = Self {
             provider,

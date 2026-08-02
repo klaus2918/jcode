@@ -460,7 +460,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: RestartCommand,
     },
-
 }
 
 #[derive(Subcommand, Debug)]

@@ -524,9 +524,9 @@ mod tests {
         );
         assert_eq!(
             MultiProvider::config_default_provider_for_login_provider(
-                crate::provider_catalog::OPENCODE_LOGIN_PROVIDER,
+                crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
             ),
-            Some("opencode")
+            Some("openai-compatible")
         );
         assert_eq!(
             MultiProvider::config_default_provider_for_login_provider(
@@ -611,10 +611,10 @@ mod tests {
                 Some("claude-oauth"),
             ),
             (
-                "cerebras:qwen-3-235b-a22b-instruct-2507",
+                "cerebras:gemini-2.5-pro",
                 "OpenRouter",
                 None,
-                Some("cerebras"),
+                Some("gemini-api"),
             ),
             ("gpt-5.5", "OpenAI", Some("openai-api"), Some("openai-api")),
             (
@@ -624,10 +624,10 @@ mod tests {
                 Some("claude-api"),
             ),
             (
-                "qwen-3-235b-a22b-instruct-2507",
+                "gemini-2.5-pro",
                 "OpenRouter",
-                Some("cerebras"),
-                Some("cerebras"),
+                Some("gemini-api"),
+                Some("gemini-api"),
             ),
         ] {
             assert_eq!(
@@ -655,9 +655,9 @@ mod tests {
             ),
             ("claude-opus-4-6", Some("claude"), "claude:claude-opus-4-6"),
             (
-                "qwen-3-235b-a22b-instruct-2507",
-                Some("cerebras"),
-                "cerebras:qwen-3-235b-a22b-instruct-2507",
+                "gemini-2.5-pro",
+                Some("gemini-api"),
+                "cerebras:gemini-2.5-pro",
             ),
             ("openai-api:gpt-5.5", Some("openai"), "openai-api:gpt-5.5"),
         ] {
@@ -868,7 +868,7 @@ mod tests {
             Some(ActiveProvider::Claude)
         );
         assert_eq!(
-            MultiProvider::resolve_config_provider_selection("kimi", &cfg)
+            MultiProvider::resolve_config_provider_selection("ollama", &cfg)
                 .map(|selection| selection.active_provider()),
             Some(ActiveProvider::OpenRouter)
         );
