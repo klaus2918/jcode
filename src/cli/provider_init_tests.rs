@@ -6,7 +6,6 @@ use crate::external_auth::{
     parse_external_auth_review_selection, pending_external_auth_review_candidates,
 };
 use crate::provider_catalog::{self, resolve_login_selection, resolve_openai_compatible_profile};
-use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
 
@@ -21,32 +20,36 @@ fn lock_env() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[test]
-#[allow(deprecated)]
-fn test_provider_choice_arg_values() {
-    assert_eq!(ProviderChoice::Jcode.as_arg_value(), "jcode");
-    assert_eq!(ProviderChoice::Claude.as_arg_value(), "claude");
-    assert_eq!(ProviderChoice::AnthropicApi.as_arg_value(), "anthropic-api");
-    assert_eq!(
-        ProviderChoice::ClaudeSubprocess.as_arg_value(),
-        "claude-subprocess"
-    );
-    assert_eq!(ProviderChoice::Openai.as_arg_value(), "openai");
-    assert_eq!(ProviderChoice::OpenaiApi.as_arg_value(), "openai-api");
-    assert_eq!(ProviderChoice::Openrouter.as_arg_value(), "openrouter");
-    assert_eq!(ProviderChoice::Bedrock.as_arg_value(), "bedrock");
-    assert_eq!(ProviderChoice::Azure.as_arg_value(), "azure");
-    assert_eq!(ProviderChoice::Lmstudio.as_arg_value(), "lmstudio");
-    assert_eq!(ProviderChoice::Ollama.as_arg_value(), "ollama");
-    assert_eq!(
-        ProviderChoice::OpenaiCompatible.as_arg_value(),
-        "openai-compatible"
-    );
-    assert_eq!(ProviderChoice::Cursor.as_arg_value(), "cursor");
-    assert_eq!(ProviderChoice::Copilot.as_arg_value(), "copilot");
-    assert_eq!(ProviderChoice::Gemini.as_arg_value(), "gemini");
-    assert_eq!(ProviderChoice::Antigravity.as_arg_value(), "antigravity");
-    assert_eq!(ProviderChoice::Google.as_arg_value(), "google");
-    assert_eq!(ProviderChoice::Auto.as_arg_value(), "auto");
+fn test_provider_input_resolution() {
+    assert!(matches!(
+        resolve_provider_input("auto").unwrap(),
+        ResolvedProviderInput::Auto
+    ));
+    assert!(matches!(
+        resolve_provider_input("").unwrap(),
+        ResolvedProviderInput::Auto
+    ));
+    assert!(matches!(
+        resolve_provider_input("claude").unwrap(),
+        ResolvedProviderInput::Login(provider) if provider.id == "claude"
+    ));
+    assert!(matches!(
+        resolve_provider_input("anthropic-api").unwrap(),
+        ResolvedProviderInput::Login(provider) if provider.id == "anthropic-api"
+    ));
+    assert!(matches!(
+        resolve_provider_input("claude-subprocess").unwrap(),
+        ResolvedProviderInput::ClaudeSubprocess
+    ));
+    assert!(matches!(
+        resolve_provider_input("ollama").unwrap(),
+        ResolvedProviderInput::Login(provider) if provider.id == "ollama"
+    ));
+    assert!(matches!(
+        resolve_provider_input("gemini-api").unwrap(),
+        ResolvedProviderInput::Login(provider) if provider.id == "gemini-api"
+    ));
+    assert!(resolve_provider_input("unknown-provider-xyz").is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -97,10 +100,9 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
     crate::config::invalidate_config_cache();
     crate::auth::AuthStatus::invalidate_cache();
 
-    let provider =
-        init_provider_for_validation(&ProviderChoice::AnthropicApi, Some("claude-haiku-4-5"))
-            .await
-            .expect("explicit Anthropic API provider should initialize");
+    let provider = init_provider_for_validation("anthropic-api", Some("claude-haiku-4-5"))
+        .await
+        .expect("explicit Anthropic API provider should initialize");
 
     assert_eq!(provider.active_auth_method_label(), Some("API key"));
     assert_eq!(provider.model(), "claude-haiku-4-5");
@@ -170,7 +172,7 @@ default_model = "claude-sonnet-4-6"
     crate::config::invalidate_config_cache();
     crate::auth::AuthStatus::invalidate_cache();
 
-    let provider = init_provider_for_validation(&ProviderChoice::OpenaiCompatible, None)
+    let provider = init_provider_for_validation("openai-compatible", None)
         .await
         .expect("anthropic-format named profile should initialize");
 
@@ -268,7 +270,7 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
 
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let provider = runtime
-        .block_on(init_provider(&ProviderChoice::Jcode, None))
+        .block_on(init_provider("jcode", None))
         .expect("init jcode provider");
 
     assert_eq!(provider.name(), "Jcode Subscription");
@@ -456,85 +458,67 @@ fn login_provider_menu_shows_autodetected_auth_and_skip() {
 }
 
 #[test]
-fn choice_for_login_provider_round_trips_core_targets() {
+fn resolve_login_provider_round_trips_core_targets() {
     assert_eq!(
-        choice_for_login_provider(provider_catalog::JCODE_LOGIN_PROVIDER),
-        Some(ProviderChoice::Jcode)
+        crate::provider_catalog::resolve_login_provider("jcode"),
+        Some(provider_catalog::JCODE_LOGIN_PROVIDER)
     );
     assert_eq!(
-        choice_for_login_provider(provider_catalog::OPENROUTER_LOGIN_PROVIDER),
-        Some(ProviderChoice::Openrouter)
+        crate::provider_catalog::resolve_login_provider("openrouter"),
+        Some(provider_catalog::OPENROUTER_LOGIN_PROVIDER)
     );
     assert_eq!(
-        choice_for_login_provider(provider_catalog::ANTHROPIC_API_LOGIN_PROVIDER),
-        Some(ProviderChoice::AnthropicApi)
+        crate::provider_catalog::resolve_login_provider("anthropic-api"),
+        Some(provider_catalog::ANTHROPIC_API_LOGIN_PROVIDER)
     );
     assert_eq!(
-        choice_for_login_provider(provider_catalog::AZURE_LOGIN_PROVIDER),
-        Some(ProviderChoice::Azure)
+        crate::provider_catalog::resolve_login_provider("azure"),
+        Some(provider_catalog::AZURE_LOGIN_PROVIDER)
     );
     assert_eq!(
-        choice_for_login_provider(provider_catalog::CURSOR_LOGIN_PROVIDER),
-        Some(ProviderChoice::Cursor)
+        crate::provider_catalog::resolve_login_provider("cursor"),
+        Some(provider_catalog::CURSOR_LOGIN_PROVIDER)
     );
     assert_eq!(
-        choice_for_login_provider(provider_catalog::AUTO_IMPORT_LOGIN_PROVIDER),
-        None
+        crate::provider_catalog::resolve_login_provider("lmstudio"),
+        Some(provider_catalog::LMSTUDIO_LOGIN_PROVIDER)
+    );
+    assert_eq!(
+        crate::provider_catalog::resolve_login_provider("openai-compatible"),
+        Some(provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER)
+    );
+    // 别名解析
+    assert_eq!(
+        crate::provider_catalog::resolve_login_provider("lm-studio"),
+        Some(provider_catalog::LMSTUDIO_LOGIN_PROVIDER)
+    );
+    assert_eq!(
+        crate::provider_catalog::resolve_login_provider("compat"),
+        Some(provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER)
     );
 }
 
 #[test]
-fn choice_for_login_provider_round_trips_openai_compatible_profiles() {
-    assert_eq!(
-        choice_for_login_provider(provider_catalog::LMSTUDIO_LOGIN_PROVIDER),
-        Some(ProviderChoice::Lmstudio)
-    );
-    assert_eq!(
-        choice_for_login_provider(provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER),
-        Some(ProviderChoice::OpenaiCompatible)
-    );
-}
-
-#[test]
-fn login_provider_choice_table_round_trips_catalog_providers() {
-    let mut seen_choices = HashSet::new();
-    let mut reverse_mapped_provider_ids = HashSet::new();
-
-    for (choice, provider) in login_provider_choice_mappings() {
-        assert!(
-            seen_choices.insert(choice.as_arg_value()),
-            "duplicate provider choice mapping for {}",
-            choice.as_arg_value()
-        );
+fn login_provider_catalog_resolves_by_id_from_cli_list() {
+    // 每个 CLI 登录 provider 都能通过自己的 id 从字符串解析（注册表自洽）。
+    for provider in crate::provider_catalog::cli_login_providers() {
         assert_eq!(
-            login_provider_for_choice(choice).map(|candidate| candidate.id),
-            Some(provider.id),
-            "choice {} should resolve to {}",
-            choice.as_arg_value(),
+            crate::provider_catalog::resolve_login_provider(provider.id),
+            Some(provider),
+            "provider {} should resolve by its own id",
             provider.id
         );
-
-        if reverse_mapped_provider_ids.insert(provider.id) {
-            assert_eq!(
-                choice_for_login_provider(*provider),
-                Some(*choice),
-                "provider {} should reverse-map to {}",
-                provider.id,
-                choice.as_arg_value()
-            );
-        }
     }
 
+    // 登录 provider 注册表中的非 auto-import 条目全部可解析。
     for provider in provider_catalog::login_providers() {
-        if matches!(
+        if !matches!(
             provider.target,
             provider_catalog::LoginProviderTarget::AutoImport
         ) {
-            assert_eq!(choice_for_login_provider(*provider), None);
-        } else {
             assert!(
-                reverse_mapped_provider_ids.contains(provider.id),
-                "provider {} is in the catalog but not the CLI choice table",
+                crate::provider_catalog::resolve_login_provider(provider.id).is_some(),
+                "provider {} should be string-resolvable",
                 provider.id
             );
         }
@@ -553,7 +537,7 @@ fn auth_integration_registry_matches_cli_choice_runtime_wiring() {
             provider_catalog::LoginProviderTarget::AutoImport
         ) {
             assert!(
-                choice_for_login_provider(*provider).is_some(),
+                crate::provider_catalog::resolve_login_provider(provider.id).is_some(),
                 "provider {} is missing a CLI choice mapping",
                 provider.id
             );
@@ -713,7 +697,7 @@ async fn init_provider_for_ollama_reapplies_local_compat_runtime_env_after_disab
     crate::env::set_var("JCODE_HOME", dir.path());
     crate::subscription_catalog::apply_runtime_env();
 
-    let provider = init_provider_for_validation(&ProviderChoice::Ollama, Some("llama3.2"))
+    let provider = init_provider_for_validation("ollama", Some("llama3.2"))
         .await
         .expect("init ollama provider");
 
@@ -843,7 +827,7 @@ id = "llama3.1:8b"
     .expect("write config");
     crate::config::invalidate_config_cache();
 
-    let provider = init_provider_for_validation(&ProviderChoice::Auto, None)
+    let provider = init_provider_for_validation("auto", None)
         .await
         .expect("auto provider should honor config default_provider named profile");
 
@@ -923,7 +907,7 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
     )
     .expect("write opencode auth");
 
-    let result = init_provider_for_validation(&ProviderChoice::Auto, None).await;
+    let result = init_provider_for_validation("auto", None).await;
     let err = match result {
         Ok(provider) => panic!(
             "auto init should still fail without trusted/direct credentials, got provider {}",

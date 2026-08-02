@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 use std::time::Duration;
 
-use crate::cli::provider_init::{self, ProviderChoice};
+use crate::cli::provider_init;
 
 const AUTH_DOCTOR_VALIDATION_TIMEOUT_SECS: u64 = 120;
 
@@ -386,13 +386,13 @@ pub(super) fn run_provider_list_command(emit_json: bool) -> Result<()> {
 }
 
 pub(super) async fn run_provider_current_command(
-    choice: &ProviderChoice,
+    choice: &str,
     model: Option<&str>,
     emit_json: bool,
 ) -> Result<()> {
     let provider = provider_init::init_provider_quiet(choice, model).await?;
     let report = ProviderCurrentReport {
-        requested_provider: choice.as_arg_value().to_string(),
+        requested_provider: choice.to_string(),
         requested_model: model.map(str::to_string),
         resolved_provider: crate::provider_catalog::runtime_provider_display_name(provider.name()),
         selected_model: provider.model(),
@@ -559,49 +559,32 @@ fn usage_provider_report(provider: &crate::usage::ProviderUsage) -> UsageProvide
 }
 
 pub(super) fn list_cli_providers() -> Vec<ProviderListEntry> {
-    let choices = [
-        ProviderChoice::Jcode,
-        ProviderChoice::Claude,
-        ProviderChoice::Openai,
-        ProviderChoice::Openrouter,
-        ProviderChoice::Azure,
-        ProviderChoice::OpenaiCompatible,
-        ProviderChoice::Cursor,
-        ProviderChoice::Copilot,
-        ProviderChoice::Gemini,
-        ProviderChoice::Antigravity,
-        ProviderChoice::Google,
-        ProviderChoice::Auto,
-    ];
-
-    choices
+    // 注册表驱动：CLI 登录 provider（含内置 openai-compatible 条目）+
+    // `auto` 自动探测。厂商名只存在于注册表数据，核心不硬编码名单。
+    let mut entries = crate::provider_catalog::cli_login_providers()
         .into_iter()
-        .map(|choice| {
-            if let Some(provider) = provider_init::login_provider_for_choice(&choice) {
-                ProviderListEntry {
-                    id: choice.as_arg_value().to_string(),
-                    display_name: provider.display_name.to_string(),
-                    auth_kind: Some(provider.auth_kind.label().to_string()),
-                    recommended: provider.recommended,
-                    aliases: provider
-                        .aliases
-                        .iter()
-                        .map(|alias| (*alias).to_string())
-                        .collect(),
-                    detail: Some(provider.menu_detail.to_string()),
-                }
-            } else {
-                ProviderListEntry {
-                    id: choice.as_arg_value().to_string(),
-                    display_name: "Auto-detect".to_string(),
-                    auth_kind: None,
-                    recommended: false,
-                    aliases: Vec::new(),
-                    detail: Some("Use the best configured provider automatically".to_string()),
-                }
-            }
+        .map(|provider| ProviderListEntry {
+            id: provider.id.to_string(),
+            display_name: provider.display_name.to_string(),
+            auth_kind: Some(provider.auth_kind.label().to_string()),
+            recommended: provider.recommended,
+            aliases: provider
+                .aliases
+                .iter()
+                .map(|alias| (*alias).to_string())
+                .collect(),
+            detail: Some(provider.menu_detail.to_string()),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    entries.push(ProviderListEntry {
+        id: "auto".to_string(),
+        display_name: "Auto-detect".to_string(),
+        auth_kind: None,
+        recommended: false,
+        aliases: Vec::new(),
+        detail: Some("Use the best configured provider automatically".to_string()),
+    });
+    entries
 }
 
 fn auth_state_label(state: crate::auth::AuthState) -> &'static str {
@@ -681,7 +664,7 @@ mod tests {
         );
 
         crate::cli::login::run_login(
-            &crate::cli::provider_init::ProviderChoice::GeminiApi,
+            "gemini-api",
             None,
             crate::cli::login::LoginOptions {
                 no_validate: true,

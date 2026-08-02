@@ -1,5 +1,4 @@
 use super::*;
-use crate::cli::provider_init::ProviderChoice;
 
 #[test]
 fn server_start_and_internal_keepalive_parse() {
@@ -25,9 +24,9 @@ fn server_start_and_internal_keepalive_parse() {
 #[test]
 fn test_provider_choice_aliases_parse() {
     let args = Args::try_parse_from(["jcode", "--provider", "compat", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::OpenaiCompatible);
+    assert_eq!(args.provider.as_deref(), Some("compat"));
     let args = Args::try_parse_from(["jcode", "--provider", "auto", "run", "smoke"]).unwrap();
-    assert_eq!(args.provider, ProviderChoice::Auto);
+    assert_eq!(args.provider.as_deref(), Some("auto"));
 }
 
 #[test]
@@ -162,7 +161,7 @@ fn login_accepts_provider_positional() {
     let args = Args::try_parse_from(["jcode", "login", "google"]).unwrap();
     match args.command {
         Some(Command::Login { provider, .. }) => {
-            assert_eq!(provider, Some(ProviderChoice::Google));
+            assert_eq!(provider.as_deref(), Some("google"));
         }
         other => panic!("unexpected command: {:?}", other),
     }
@@ -183,7 +182,7 @@ fn login_openai_compatible_scriptable_flags_parse() {
         "DEEPSEEK_API_KEY",
     ])
     .unwrap();
-    assert_eq!(args.provider, ProviderChoice::OpenaiCompatible);
+    assert_eq!(args.provider.as_deref(), Some("openai-compatible"));
     assert_eq!(args.model.as_deref(), Some("deepseek-v4-flash"));
     match args.command {
         Some(Command::Login {
@@ -212,7 +211,7 @@ fn login_openai_compatible_accepts_global_provider_and_model_after_subcommand() 
     ])
     .unwrap();
 
-    assert_eq!(args.provider, ProviderChoice::OpenaiCompatible);
+    assert_eq!(args.provider.as_deref(), Some("openai-compatible"));
     assert_eq!(args.model.as_deref(), Some("deepseek-v4-flash"));
     match args.command {
         Some(Command::Login { api_base, .. }) => {

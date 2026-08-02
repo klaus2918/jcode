@@ -7,7 +7,7 @@ pub(crate) enum ResolvedAuthTestTarget {
     Detailed(AuthTestTarget),
     Generic {
         provider: crate::provider_catalog::LoginProviderDescriptor,
-        choice: super::provider_init::ProviderChoice,
+        choice: String,
     },
 }
 
@@ -23,15 +23,15 @@ pub(crate) enum AuthTestTarget {
 }
 
 impl AuthTestTarget {
-    fn provider_choice(self) -> super::provider_init::ProviderChoice {
+    fn provider_id(self) -> &'static str {
         match self {
-            Self::Claude => super::provider_init::ProviderChoice::Claude,
-            Self::Openai => super::provider_init::ProviderChoice::Openai,
-            Self::Gemini => super::provider_init::ProviderChoice::Gemini,
-            Self::Antigravity => super::provider_init::ProviderChoice::Antigravity,
-            Self::Google => super::provider_init::ProviderChoice::Google,
-            Self::Copilot => super::provider_init::ProviderChoice::Copilot,
-            Self::Cursor => super::provider_init::ProviderChoice::Cursor,
+            Self::Claude => "claude",
+            Self::Openai => "openai",
+            Self::Gemini => "gemini",
+            Self::Antigravity => "antigravity",
+            Self::Google => "google",
+            Self::Copilot => "copilot",
+            Self::Cursor => "cursor",
         }
     }
 
@@ -51,17 +51,15 @@ impl AuthTestTarget {
         !matches!(self, Self::Google)
     }
 
-    #[allow(deprecated)]
-    fn from_provider_choice(choice: &super::provider_init::ProviderChoice) -> Option<Self> {
-        match choice {
-            super::provider_init::ProviderChoice::Claude
-            | super::provider_init::ProviderChoice::ClaudeSubprocess => Some(Self::Claude),
-            super::provider_init::ProviderChoice::Openai => Some(Self::Openai),
-            super::provider_init::ProviderChoice::Gemini => Some(Self::Gemini),
-            super::provider_init::ProviderChoice::Antigravity => Some(Self::Antigravity),
-            super::provider_init::ProviderChoice::Google => Some(Self::Google),
-            super::provider_init::ProviderChoice::Copilot => Some(Self::Copilot),
-            super::provider_init::ProviderChoice::Cursor => Some(Self::Cursor),
+    fn from_provider_id(choice: &str) -> Option<Self> {
+        match choice.trim() {
+            "claude" | "claude-subprocess" => Some(Self::Claude),
+            "openai" => Some(Self::Openai),
+            "gemini" => Some(Self::Gemini),
+            "antigravity" => Some(Self::Antigravity),
+            "google" => Some(Self::Google),
+            "copilot" => Some(Self::Copilot),
+            "cursor" => Some(Self::Cursor),
             _ => None,
         }
     }
@@ -231,22 +229,28 @@ impl AuthTestProviderReport {
 }
 
 impl ResolvedAuthTestTarget {
-    fn from_choice(choice: &super::provider_init::ProviderChoice) -> Option<Self> {
-        let provider = super::provider_init::login_provider_for_choice(choice)?;
-        Some(match AuthTestTarget::from_provider_choice(choice) {
+    fn from_choice(choice: &str) -> Option<Self> {
+        let trimmed = choice.trim();
+        if trimmed.eq_ignore_ascii_case("claude-subprocess") {
+            return Some(Self::Detailed(AuthTestTarget::Claude));
+        }
+        let provider = crate::provider_catalog::resolve_login_provider(trimmed)?;
+        Some(match AuthTestTarget::from_provider_id(provider.id) {
             Some(target) => Self::Detailed(target),
             None => Self::Generic {
                 provider,
-                choice: *choice,
+                choice: trimmed.to_string(),
             },
         })
     }
 
     fn from_provider(provider: crate::provider_catalog::LoginProviderDescriptor) -> Option<Self> {
-        let choice = super::provider_init::choice_for_login_provider(provider)?;
-        Some(match AuthTestTarget::from_provider_choice(&choice) {
+        Some(match AuthTestTarget::from_provider_id(provider.id) {
             Some(target) => Self::Detailed(target),
-            None => Self::Generic { provider, choice },
+            None => Self::Generic {
+                provider,
+                choice: provider.id.to_string(),
+            },
         })
     }
 }
@@ -303,13 +307,13 @@ impl AuthTestSmokeKind {
         model: Option<&str>,
         prompt: &str,
     ) -> Result<String> {
-        self.run_for_choice(&target.provider_choice(), model, prompt)
+        self.run_for_choice(target.provider_id(), model, prompt)
             .await
     }
 
     async fn run_for_choice(
         self,
-        choice: &super::provider_init::ProviderChoice,
+        choice: &str,
         model: Option<&str>,
         prompt: &str,
     ) -> Result<String> {

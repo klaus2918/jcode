@@ -7,7 +7,6 @@ use std::process::Command;
 use crate::{build, logging, session, startup_profile};
 
 use super::output;
-use super::provider_init::ProviderChoice;
 
 pub use jcode_selfdev_types::CLIENT_SELFDEV_ENV;
 pub use jcode_selfdev_types::client_selfdev_requested;
@@ -216,8 +215,8 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
     }
 
     if !server_running {
-        super::dispatch::maybe_prompt_server_bootstrap_login(&ProviderChoice::Auto).await?;
-        super::dispatch::spawn_server(&ProviderChoice::Auto, None, None).await?;
+        super::dispatch::maybe_prompt_server_bootstrap_login("auto").await?;
+        super::dispatch::spawn_server("auto", None, None).await?;
     }
 
     if std::env::var("JCODE_RESUMING").is_err() && server_running {

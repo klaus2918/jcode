@@ -1,5 +1,4 @@
 use super::dispatch;
-use super::provider_init::ProviderChoice;
 use crate::protocol::{Request, ServerEvent};
 use crate::transport::{ReadHalf, WriteHalf};
 use anyhow::{Context, Result};
@@ -135,7 +134,7 @@ struct AcpRuntime {
     stdout: Arc<Mutex<tokio::io::Stdout>>,
     sessions: Arc<Mutex<HashMap<String, Arc<DaemonSession>>>>,
     profile: AcpProfile,
-    provider_choice: ProviderChoice,
+    provider_choice: String,
     model: Option<String>,
     provider_profile: Option<String>,
 }
@@ -143,7 +142,7 @@ struct AcpRuntime {
 impl AcpRuntime {
     fn new(
         profile: AcpProfile,
-        provider_choice: ProviderChoice,
+        provider_choice: String,
         model: Option<String>,
         provider_profile: Option<String>,
     ) -> Self {
@@ -1068,7 +1067,7 @@ pub(crate) fn tool_kind(name: &str) -> &'static str {
 }
 
 pub(crate) async fn run_acp_command(
-    provider_choice: ProviderChoice,
+    provider_choice: String,
     model: Option<String>,
     provider_profile: Option<String>,
     explicit_tool_profile: bool,

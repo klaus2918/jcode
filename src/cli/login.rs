@@ -9,7 +9,7 @@ use crate::provider_catalog::{
     OpenAiCompatibleProfile, resolve_openai_compatible_profile,
 };
 
-use super::provider_init::{ProviderChoice, login_provider_for_choice, save_named_api_key};
+use super::provider_init::save_named_api_key;
 
 mod existing_key_notice;
 mod jcode_device;
@@ -155,52 +155,60 @@ struct ScriptableAuthSuccess {
     email: Option<String>,
 }
 
-#[allow(deprecated)]
 pub async fn run_login(
-    choice: &ProviderChoice,
+    choice: &str,
     account_label: Option<&str>,
     options: LoginOptions,
 ) -> Result<()> {
-    if let Some(provider) = login_provider_for_choice(choice) {
-        if matches!(choice, ProviderChoice::ClaudeSubprocess) {
-            eprintln!(
-                "Warning: Claude subprocess transport is deprecated and will be removed. Direct Anthropic API is already the default for `--provider claude`."
-            );
-        }
+    if choice.trim().eq_ignore_ascii_case("claude-subprocess") {
+        eprintln!(
+            "Warning: Claude subprocess transport is deprecated and will be removed. Direct Anthropic API is already the default for `--provider claude`."
+        );
+        return run_login_provider(
+            crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
+            account_label,
+            options,
+        )
+        .await;
+    }
+    if let Some(provider) = crate::provider_catalog::resolve_login_provider(choice) {
         return run_login_provider(provider, account_label, options).await;
     }
 
-    match choice {
-        ProviderChoice::Auto => {
-            if options.uses_scriptable_flow()? {
-                anyhow::bail!(
-                    "Scriptable login flags require an explicit provider. Use `jcode login --provider <provider> ...`."
-                );
-            }
-
-            let providers = crate::provider_catalog::cli_login_providers();
-            if !io::stdin().is_terminal() {
-                anyhow::bail!(
-                    "`jcode login --provider auto` requires an interactive terminal. Use `jcode login --provider <provider>` in non-interactive mode."
-                );
-            }
-            if let Some(imported) =
-                super::provider_init::maybe_run_external_auth_auto_import_flow().await?
-                && imported > 0
-            {
-                eprintln!("\nImported {} existing auth source(s).", imported);
-                notify_running_server_auth_changed_best_effort(None).await;
-                return Ok(());
-            }
-            match super::provider_init::prompt_login_provider_selection_optional(
-                &providers,
-                "Choose a provider to log in:",
-            )? {
-                Some(provider) => run_login_provider(provider, account_label, options).await?,
-                None => eprintln!("Login skipped."),
-            }
+    if super::provider_init::is_auto_provider_input(choice) {
+        if options.uses_scriptable_flow()? {
+            anyhow::bail!(
+                "Scriptable login flags require an explicit provider. Use `jcode login --provider <provider> ...`."
+            );
         }
-        _ => unreachable!("handled above"),
+
+        let providers = crate::provider_catalog::cli_login_providers();
+        if !io::stdin().is_terminal() {
+            anyhow::bail!(
+                "`jcode login --provider auto` requires an interactive terminal. Use `jcode login --provider <provider>` in non-interactive mode."
+            );
+        }
+        if let Some(imported) =
+            super::provider_init::maybe_run_external_auth_auto_import_flow().await?
+            && imported > 0
+        {
+            eprintln!("\nImported {} existing auth source(s).", imported);
+            notify_running_server_auth_changed_best_effort(None).await;
+            return Ok(());
+        }
+        match super::provider_init::prompt_login_provider_selection_optional(
+            &providers,
+            "Choose a provider to log in:",
+        )? {
+            Some(provider) => run_login_provider(provider, account_label, options).await?,
+            None => eprintln!("Login skipped."),
+        }
+    } else {
+        anyhow::bail!(
+            "Unknown provider '{}'. Use a registered provider id (claude, openai, openrouter, ...), or a [providers.{}] config profile.",
+            choice.trim(),
+            choice.trim()
+        );
     }
     Ok(())
 }

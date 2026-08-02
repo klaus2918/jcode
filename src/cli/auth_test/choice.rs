@@ -16,7 +16,7 @@ struct OpenAiCompatibleModelInfo {
 }
 
 pub(crate) async fn auth_test_choice_plan(
-    choice: &super::provider_init::ProviderChoice,
+    choice: &str,
     model: Option<&str>,
 ) -> Result<AuthTestChoicePlan> {
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
@@ -25,7 +25,7 @@ pub(crate) async fn auth_test_choice_plan(
         });
     }
 
-    let Some(profile) = super::provider_init::profile_for_choice(choice) else {
+    let Some(profile) = crate::provider_catalog::resolve_openai_compatible_profile_selection(choice) else {
         return Ok(AuthTestChoicePlan::Run { model: None });
     };
     let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
@@ -42,15 +42,15 @@ pub(crate) async fn auth_test_choice_plan(
     Ok(AuthTestChoicePlan::Skip(format!(
         "Skipped: {} local endpoint reported no models. Re-run `jcode auth-test --provider {} --model <local-model>` or set a default model first.",
         resolved.display_name,
-        choice.as_arg_value()
+        choice
     )))
 }
 
 pub(crate) fn tool_smoke_skip_detail_for_choice(
-    choice: &super::provider_init::ProviderChoice,
+    choice: &str,
     _model: Option<&str>,
 ) -> Option<String> {
-    if matches!(choice, super::provider_init::ProviderChoice::Cursor) {
+    if choice.trim().eq_ignore_ascii_case("cursor") {
         return Some(
             "Skipped: the Cursor native agent transport is text-only in jcode (it does not expose \
              tool calls over agent.v1.AgentService/Run). Basic provider smoke still validates chat."
@@ -109,25 +109,25 @@ async fn discover_openai_compatible_validation_model(
 }
 
 async fn run_provider_smoke_for_choice(
-    choice: &super::provider_init::ProviderChoice,
+    choice: &str,
     model: Option<&str>,
     prompt: &str,
 ) -> Result<String> {
     run_auth_test_with_retry(async || {
         let provider = super::provider_init::init_provider_for_validation(choice, model)
             .await
-            .with_context(|| format!("Failed to initialize {} provider", choice.as_arg_value()))?;
+            .with_context(|| format!("Failed to initialize {} provider", choice))?;
         let output = provider
             .complete_simple(prompt, "")
             .await
-            .with_context(|| format!("{} provider smoke prompt failed", choice.as_arg_value()))?;
+            .with_context(|| format!("{} provider smoke prompt failed", choice))?;
         Ok(output.trim().to_string())
     })
     .await
 }
 
 async fn run_provider_tool_smoke_for_choice(
-    choice: &super::provider_init::ProviderChoice,
+    choice: &str,
     model: Option<&str>,
     prompt: &str,
 ) -> Result<String> {
@@ -136,7 +136,7 @@ async fn run_provider_tool_smoke_for_choice(
             super::provider_init::init_provider_and_registry_for_validation(choice, model)
                 .await
                 .with_context(|| {
-                    format!("Failed to initialize {} provider", choice.as_arg_value())
+                    format!("Failed to initialize {} provider", choice)
                 })?;
         registry
             .register_mcp_tools(None, None, Some("auth-test".to_string()))
@@ -153,14 +153,14 @@ async fn run_provider_tool_smoke_for_choice(
         let output = agent.run_once_capture(prompt).await.with_context(|| {
             format!(
                 "{} tool-enabled smoke prompt failed during agent turn execution",
-                choice.as_arg_value()
+                choice
             )
         })?;
         validate_auth_test_tool_smoke_transcript(&agent.messages()[transcript_start..], &output)
             .with_context(|| {
                 format!(
                     "{} tool-enabled smoke prompt did not complete a valid real Jcode tool loop",
-                    choice.as_arg_value()
+                    choice
                 )
             })?;
 
