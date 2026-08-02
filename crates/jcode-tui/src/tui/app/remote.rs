@@ -7,7 +7,7 @@ use super::{
 };
 use crate::bus::BusEvent;
 use crate::message::ToolCall;
-use crate::protocol::{ServerEvent, TranscriptMode};
+use crate::protocol::ServerEvent;
 use crate::tui::backend::{RemoteConnection, RemoteDisconnectReason, RemoteEventState, RemoteRead};
 use anyhow::Result;
 use crossterm::event::{
@@ -52,7 +52,7 @@ use workspace::{handle_workspace_command, handle_workspace_navigation_key};
 // through the `remote` facade instead of private submodule paths.
 #[allow(unused_imports)]
 pub(super) use input_dispatch::{
-    apply_remote_transcript_event, apply_transcript_event, begin_remote_send,
+    begin_remote_send,
     begin_remote_split_launch, finish_remote_split_launch, history_matches_pending_startup_prompt,
     route_prepared_input_to_new_remote_session, stage_turn_for_remote_tick_loop,
     submit_prepared_remote_input, submit_remote_slash_input,
@@ -375,7 +375,6 @@ async fn apply_terminal_event(
         Some(Ok(Event::FocusGained)) => {
             input_attribution.event = Some("focus_gained".to_string());
             needs_redraw |= app.set_client_focused(true);
-            app.note_client_focus(true);
         }
         Some(Ok(Event::FocusLost)) => {
             input_attribution.event = Some("focus_lost".to_string());
@@ -614,32 +613,6 @@ pub(super) async fn handle_bus_event(
             app.handle_session_update_status(status);
             true
         }
-        Ok(BusEvent::DictationCompleted {
-            dictation_id,
-            session_id,
-            text,
-            mode,
-        }) => {
-            if !app.owns_dictation_event(&dictation_id, session_id.as_deref()) {
-                return false;
-            }
-            match remote.send_transcript(text, mode).await {
-                Ok(()) => app.mark_dictation_delivered(),
-                Err(error) => app.handle_dictation_failure(error.to_string()),
-            }
-            true
-        }
-        Ok(BusEvent::DictationFailed {
-            dictation_id,
-            session_id,
-            message,
-        }) => {
-            if !app.owns_dictation_event(&dictation_id, session_id.as_deref()) {
-                return false;
-            }
-            app.handle_dictation_failure(message);
-            true
-        }
         _ => false,
     }
 }
@@ -746,7 +719,6 @@ fn handle_terminal_event_while_disconnected(
     match event {
         Some(Ok(Event::FocusGained)) => {
             needs_redraw |= app.set_client_focused(true);
-            app.note_client_focus(true);
         }
         Some(Ok(Event::FocusLost)) => {
             app.set_client_focused(false);
@@ -850,19 +822,6 @@ pub(super) async fn handle_remote_event<B: Backend>(
             let _ = remote.send_client_debug_response(id, output).await;
             process_remote_followups(app, remote).await;
             Ok((RemoteEventOutcome::Continue, false))
-        }
-        RemoteRead::Event(ServerEvent::Transcript { text, mode }) => {
-            let mut needs_redraw = false;
-            if let Err(error) = apply_remote_transcript_event(app, remote, text, mode).await {
-                app.push_display_message(DisplayMessage::error(format!(
-                    "Failed to apply transcript: {}",
-                    error
-                )));
-                app.set_status_notice("Transcript failed");
-                needs_redraw = true;
-            }
-            process_remote_followups(app, remote).await;
-            Ok((RemoteEventOutcome::Continue, needs_redraw))
         }
         RemoteRead::Event(server_event) => {
             let needs_redraw = handle_server_event(app, server_event, remote);

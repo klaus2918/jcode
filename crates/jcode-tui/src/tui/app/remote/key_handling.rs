@@ -352,10 +352,6 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
-    if app.dictation_key_matches(code, modifiers) {
-        app.handle_dictation_trigger();
-        return Ok(());
-    }
 
     if app.new_terminal_key_matches(code, modifiers) {
         app.handle_new_terminal_hotkey();
@@ -903,9 +899,6 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if app_mod::commands::handle_dictation_command(app, trimmed) {
-                    return Ok(());
-                }
 
                 if handle_remote_rewind_command(app, remote, trimmed).await? {
                     return Ok(());
