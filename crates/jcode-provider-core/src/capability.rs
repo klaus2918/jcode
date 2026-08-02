@@ -852,6 +852,20 @@ fn registry_entry_for(model: &str, provider_hint: Option<&str>) -> Option<&'stat
     let provider_key = provider_hint
         .and_then(|hint| crate::models::provider_key_from_hint(Some(hint)))
         .map(|key| key.to_string());
+    // Normalize the same way the context/limit lookup does: strip `[1m]`
+    // long-context suffixes and, for OpenRouter/provider-qualified ids
+    // (`anthropic/claude-opus-4-8`, `openai/gpt-5.5`), take the slash base so
+    // provider-qualified ids hit the same registry entries as their bare names.
+    let (base, _is_1m) = crate::model_id::split_long_context(&normalized);
+    let normalized = if matches!(provider_key.as_deref(), Some("openrouter")) || base.contains('/')
+    {
+        crate::model_id::slash_base(base).to_string()
+    } else {
+        base.to_string()
+    };
+    if normalized.is_empty() {
+        return None;
+    }
     let provider_matches =
         |entry_provider: Option<&str>| match (entry_provider, provider_key.as_deref()) {
             (None, _) => true,

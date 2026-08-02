@@ -51,9 +51,41 @@ impl App {
                 self.provider.name(),
                 self.session.provider_key.as_deref(),
             );
+        // Re-derive the active credential path so post-switch fallback picks
+        // exclude the right auth method. Without this, a switch from
+        // `claude-oauth` to `openai-api` would leave the stale `claude-oauth`
+        // in `session.route_api_method` and steer fallback offers toward the
+        // route that just failed.
+        self.session.route_api_method = Self::derive_route_api_method(
+            self.provider.name(),
+            self.provider.active_resolved_credential().as_ref(),
+        );
         self.session.model = Some(active_model.clone());
-        let _ = self.session.save();
+        if let Err(error) = self.session.save() {
+            crate::logging::warn(&format!(
+                "Session persistence failed after model switch (disk keeps the pre-switch snapshot): {}",
+                error
+            ));
+        }
         active_model
+    }
+
+    /// Derive the `route_api_method` string for a provider from its active
+    /// credential, for the dual-auth (Anthropic/OpenAI) providers. Other
+    /// providers return `None`; callers that know a concrete route api_method
+    /// (picker selections, fallback offers) overwrite the derived value.
+    fn derive_route_api_method(
+        provider_name: &str,
+        credential: Option<&jcode_provider_core::ResolvedCredential>,
+    ) -> Option<String> {
+        use jcode_provider_core::ResolvedCredential;
+        match (provider_name.to_ascii_lowercase().as_str(), credential) {
+            ("claude", Some(ResolvedCredential::Oauth)) => Some("claude-oauth".to_string()),
+            ("claude", Some(ResolvedCredential::ApiKey)) => Some("claude-api".to_string()),
+            ("openai", Some(ResolvedCredential::Oauth)) => Some("openai-oauth".to_string()),
+            ("openai", Some(ResolvedCredential::ApiKey)) => Some("openai-api".to_string()),
+            _ => None,
+        }
     }
 
     fn apply_provider_switch_for_failover(
@@ -204,23 +236,10 @@ impl App {
         if let Some(method) = self.session.route_api_method.clone() {
             return Some(method);
         }
-        let provider_name = self.provider.name().to_ascii_lowercase();
-        let credential = self.provider.active_resolved_credential();
-        match (provider_name.as_str(), credential) {
-            ("claude", Some(jcode_provider_core::ResolvedCredential::Oauth)) => {
-                Some("claude-oauth".to_string())
-            }
-            ("claude", Some(jcode_provider_core::ResolvedCredential::ApiKey)) => {
-                Some("claude-api".to_string())
-            }
-            ("openai", Some(jcode_provider_core::ResolvedCredential::Oauth)) => {
-                Some("openai-oauth".to_string())
-            }
-            ("openai", Some(jcode_provider_core::ResolvedCredential::ApiKey)) => {
-                Some("openai-api".to_string())
-            }
-            _ => None,
-        }
+        Self::derive_route_api_method(
+            self.provider.name(),
+            self.provider.active_resolved_credential().as_ref(),
+        )
     }
 
     fn current_provider_label_for_fallback(&self) -> String {
@@ -483,22 +502,12 @@ impl App {
         match self.provider.set_route_selection(&offer.selection) {
             Ok(()) => {
                 let spec = offer.selection.routed_model_spec();
-                self.provider_session_id = None;
-                self.session.provider_session_id = None;
-                self.upstream_provider = None;
-                self.status_detail = None;
-                self.invalidate_model_picker_cache();
-                let active_model = self.provider.model();
-                self.update_context_limit_for_model(&active_model);
-                self.session.provider_key =
-                    crate::provider::MultiProvider::session_provider_key_after_model_switch(
-                        &spec,
-                        self.provider.name(),
-                        self.session.provider_key.as_deref(),
-                    );
-                self.session.model = Some(active_model.clone());
+                // Shared post-switch bookkeeping so every local switch path
+                // (fallback, /model, cycle, picker) agrees on session state.
+                let active_model = self.finalize_model_switch(&spec);
+                // The fallback offer knows the exact route it applied; record it
+                // so subsequent fallback picks exclude the right auth method.
                 self.session.route_api_method = Some(offer.selection.api_method.clone());
-                let _ = self.session.save();
                 self.push_display_message(DisplayMessage::system(format!(
                     "↪ Switched to {} and resending (was {}).",
                     offer.target_label, offer.from_label,
@@ -1459,26 +1468,27 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    let is_model_command = trimmed == "/model"
-        || trimmed == "/models"
-        || trimmed.starts_with("/model ")
-        || trimmed.starts_with("/models ");
-    if is_model_command && let Some(reason) = runtime_switch_busy_reason(app) {
-        app.push_display_message(DisplayMessage::error(format!(
-            "Cannot switch models while {}. Wait for the session to become idle, then try /model again.",
-            reason
-        )));
+    // Only parameterized switches mutate the shared provider; browsing the
+    // picker (bare `/model`) is read-only and stays available while busy. The
+    // picker's confirm path applies the same busy gate before mutating.
+    // Command names are case-insensitive (`/MODEL gpt-5.5` is a switch).
+    let is_switch_request = slash_command_arg(trimmed, "/model").is_some()
+        || slash_command_arg(trimmed, "/models").is_some();
+    if is_switch_request && let Some(reason) = runtime_switch_busy_reason(app) {
+        app.push_display_message(DisplayMessage::error(model_switch_busy_message(reason)));
         app.set_status_notice("Model switch busy");
         return true;
     }
 
-    if trimmed == "/model" || trimmed == "/models" {
+    if trimmed.eq_ignore_ascii_case("/model") || trimmed.eq_ignore_ascii_case("/models") {
         app.record_keybinding_slow(crate::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
         app.open_model_picker();
         return true;
     }
 
-    if let Some(model_name) = trimmed.strip_prefix("/model ") {
+    if let Some(model_name) =
+        slash_command_arg(trimmed, "/model").or_else(|| slash_command_arg(trimmed, "/models"))
+    {
         app.record_keybinding_slow(crate::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
         let model_name = model_name.trim();
         if model_name.is_empty() {
@@ -1487,9 +1497,18 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
             return true;
         }
 
+        // OpenRouter `model@provider` pin spellings change the upstream route
+        // even when the model name is unchanged (`gpt-5.5@openai` while
+        // `openrouter:gpt-5.5` is active). The provider's `model()` does not
+        // carry the pin, so the before/after comparison below would wrongly
+        // classify a pin change as a no-op and keep the stale warm session.
+        let pin_spec = model_name
+            .rsplit_once('@')
+            .is_some_and(|(_, pin)| !pin.trim().is_empty());
+
         // Same-model switch is a no-op: keep the provider session id (and the
         // warm upstream conversation) instead of resetting it for nothing.
-        if model_name == app.provider.model() {
+        if !pin_spec && model_name == app.provider.model() {
             let active_model = app.provider.model();
             app.push_display_message(DisplayMessage::system(format!(
                 "Already using model: {}",
@@ -1519,8 +1538,11 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
                 // The request may use a provider-prefixed spelling that
                 // resolves back to the already-active model/route (e.g.
                 // `openai-api:gpt-5.5` while gpt-5.5 is active). Treat that as
-                // a no-op too instead of resetting the session.
-                if before_model == active_model
+                // a no-op too instead of resetting the session. Pin spellings
+                // are excluded: the effective route changes even when the
+                // model name and provider key stay the same.
+                if !pin_spec
+                    && before_model == active_model
                     && before_provider == after_provider
                     && before_key == after_key
                 {
@@ -1558,7 +1580,7 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
                     title: None,
                     tool_data: None,
                 });
-                app.set_status_notice(format!("Model → {}", model_name));
+                app.set_status_notice(format!("Model → {}", active_model));
             }
             Err(e) => {
                 app.push_display_message(DisplayMessage::error(model_switch_failure_message(
@@ -1833,6 +1855,23 @@ pub(super) fn runtime_switch_busy_reason(app: &App) -> Option<&'static str> {
     }
 }
 
+/// User-facing busy rejection for a model switch, with guidance that matches
+/// the blocking condition (a pending auto-switch can be cancelled with Esc,
+/// while a running turn just needs to finish).
+pub(super) fn model_switch_busy_message(reason: &str) -> String {
+    if reason.contains("auto-switch") {
+        format!(
+            "Cannot switch models while {}. Press Esc to cancel the pending provider auto-switch, then try /model again.",
+            reason
+        )
+    } else {
+        format!(
+            "Cannot switch models while {}. Wait for the session to become idle, then try /model again.",
+            reason
+        )
+    }
+}
+
 async fn refresh_model_catalog_with_progress(
     provider: std::sync::Arc<dyn crate::provider::Provider>,
     session_id: String,
@@ -1913,8 +1952,29 @@ impl App {
     }
 }
 
+/// Case-insensitive slash-command prefix match (`/MODEL` == `/model`). The
+/// first whitespace-delimited word is compared; the trailing argument (if any)
+/// keeps its original case.
+pub(super) fn slash_command_matches(input: &str, command: &str) -> bool {
+    input
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case(command))
+}
+
+/// Extract the argument after `command`, case-insensitively. Returns `None`
+/// when the input is not `<command> <arg>`. ASCII-lowercasing preserves byte
+/// length, so slicing the original input at the prefix length is safe.
+pub(super) fn slash_command_arg<'a>(input: &'a str, command: &str) -> Option<&'a str> {
+    let prefix = format!("{} ", command.to_ascii_lowercase());
+    input
+        .to_ascii_lowercase()
+        .starts_with(&prefix)
+        .then(|| &input[prefix.len()..])
+}
+
 pub(super) fn is_refresh_model_list_command(trimmed: &str) -> bool {
-    trimmed == "/refresh-model-list"
+    slash_command_matches(trimmed, "/refresh-model-list")
 }
 
 pub(super) fn format_model_refresh_summary(

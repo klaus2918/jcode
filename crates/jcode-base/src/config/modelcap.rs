@@ -18,6 +18,14 @@ pub const MODELCAP_FILENAME: &str = "modelcap.json";
 /// outside the config dir.
 pub const MODELCAP_ENV_KEY: &str = "JCODE_MODELCAP_PATH";
 
+/// Cache of the last successfully loaded registry file's (path, mtime) so
+/// frequent `Config::load()` calls (e.g. every `/model` default-model write)
+/// do not re-read and re-parse modelcap.json on every touch. A missing file is
+/// deliberately not cached: it costs one stat to rediscover a newly created
+/// registry.
+static LAST_LOADED: std::sync::Mutex<Option<(PathBuf, std::time::SystemTime)>> =
+    std::sync::Mutex::new(None);
+
 pub fn modelcap_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(MODELCAP_ENV_KEY) {
         return Some(PathBuf::from(path));
@@ -38,6 +46,16 @@ pub fn load_user_modelcap_registry() {
             return;
         }
     };
+
+    if let Ok(metadata) = std::fs::metadata(&path)
+        && let Ok(mtime) = metadata.modified()
+        && let Ok(last) = LAST_LOADED.lock()
+        && last.as_ref().is_some_and(|(cached_path, cached_mtime)| {
+            *cached_path == path && *cached_mtime == mtime
+        })
+    {
+        return;
+    }
 
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
@@ -90,6 +108,12 @@ pub fn load_user_modelcap_registry() {
             if installed == 1 { "y" } else { "ies" },
             path.display()
         ));
+    }
+    if let Ok(mut last) = LAST_LOADED.lock() {
+        *last = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .map(|mtime| (path.clone(), mtime));
     }
     jcode_provider_core::set_user_registry_entries(entries);
 }

@@ -402,9 +402,18 @@ impl Agent {
     /// (conservative default, matching prior behavior).
     pub(super) async fn gated_tool_definitions(&mut self) -> Vec<ToolDefinition> {
         let mut tools = self.tool_definitions().await;
+        // Explicit model config (`[[providers.<name>.models]] tools=false`)
+        // targets the *actual* profile for the OpenRouter slot (named
+        // OpenAI-compatible profiles), not the fixed "OpenRouter" transport
+        // name. Built-in providers have no named-profile config and pass None.
+        let provider_config_key = self.provider.tool_config_provider_key();
         let provider_name = self.provider.name();
         let model = self.provider.model();
-        if !crate::provider::models::model_supports_tools(provider_name, &model) {
+        if !crate::provider::models::model_supports_tools(
+            provider_config_key.as_deref(),
+            provider_name,
+            &model,
+        ) {
             logging::info(&format!(
                 "Model '{model}' on provider '{provider_name}' does not support tool calls; \
                  sending the request without tools"

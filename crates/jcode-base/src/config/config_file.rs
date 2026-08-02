@@ -26,6 +26,10 @@ impl Config {
     pub fn load_strict() -> anyhow::Result<Self> {
         let mut config = Self::load_from_file_strict()?.unwrap_or_default();
         config.apply_env_overrides();
+        // CLI commands that load via `load_strict` still need registry-backed
+        // capability data (model list diagnostics, provider-doctor), so load
+        // the user registry here too. The mtime cache makes repeat calls cheap.
+        super::modelcap::load_user_modelcap_registry();
         Ok(config)
     }
 
@@ -108,7 +112,23 @@ impl Config {
         }
 
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+        // Write to a sibling temp file and atomically rename over the real
+        // path. Concurrent config writers (multiple TUI windows / CLI +
+        // TUI) each read-modify-write the whole file, so a torn write would
+        // leave a corrupt config that silently falls back to defaults. The
+        // rename is atomic on both Unix and Windows (std uses
+        // MOVEFILE_REPLACE_EXISTING), so readers never observe a half-written
+        // file. A leftover `.tmp` on crash is harmless; the next save
+        // overwrites it.
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, content)?;
+        if let Err(error) = std::fs::rename(&tmp, &path) {
+            // Fallback for platforms/filesystems where rename cannot replace an
+            // existing target: remove then rename (still far better than a
+            // truncating write in place).
+            let _ = std::fs::remove_file(&path);
+            std::fs::rename(&tmp, &path).map_err(|_| error)?;
+        }
         Self::invalidate_cache();
         Ok(())
     }

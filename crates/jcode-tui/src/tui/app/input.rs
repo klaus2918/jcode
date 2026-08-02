@@ -3580,6 +3580,26 @@ impl App {
             }
         }
 
+        // A leading slash that no command, shell, or skill claimed is almost
+        // always a typo: wrong case (`/MODEL`), a command alias that does not
+        // exist, or a tab-separated argument. Surface it instead of silently
+        // sending a `/...` line to the model, which reads as an unknown
+        // command in the transcript and never does what the user wanted.
+        let input_trimmed = input.trim();
+        if input_trimmed.starts_with('/') {
+            let command_word = input_trimmed
+                .split_whitespace()
+                .next()
+                .unwrap_or(input_trimmed);
+            let message = format!(
+                "Unknown command: {}. Try /help to list commands.",
+                command_word
+            );
+            self.push_display_message(DisplayMessage::system(message.clone()));
+            self.set_status_notice(message);
+            return;
+        }
+
         // Leaving the preview should happen as soon as the user acts on it.
         self.onboarding_preview_mode = false;
 

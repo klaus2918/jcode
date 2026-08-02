@@ -1548,20 +1548,58 @@ impl MultiProvider {
     }
 
     fn ensure_model_switch_allowed(&self, requested: &str) -> Result<()> {
-        let allowlist = crate::config::config()
+        let Some(allowlist) = crate::config::config()
             .provider
             .model_picker_providers
-            .as_deref();
-        if allowlist.is_none() {
+            .as_deref()
+        else {
             return Ok(());
+        };
+        if allowlist.iter().all(|entry| entry.trim().is_empty()) {
+            return Ok(());
+        }
+
+        // Explicit routing prefixes (`openai:`, `claude-api:`, `gemini:`,
+        // `openrouter:`, `<profile>:`, `[providers.<name>]:`) resolve directly
+        // against the allowlist. These specs never equal a route's
+        // `routed_model_spec()` (e.g. `openai:gpt-5.5` vs `openai-oauth:gpt-5.5`
+        // or a bare `gpt-5.5` for Gemini), so the route-based matching below
+        // would wrongly reject them. Internal paths (fork, session restore,
+        // auth refresh, failover) reuse `set_model` with prefixed specs and
+        // must not depend on the route being momentarily available.
+        if let Some((profile, _model)) = Self::openai_compatible_model_prefix(requested) {
+            if self.allowlist_allows_label(allowlist, profile.id) {
+                return Ok(());
+            }
+        } else if let Some((profile_name, _model)) =
+            Self::named_provider_profile_model_prefix(requested)
+        {
+            if self.allowlist_allows_label(allowlist, &profile_name) {
+                return Ok(());
+            }
+        } else if let Some((target, prefix, _model)) = explicit_model_provider_prefix(requested) {
+            let label = prefix.trim_end_matches(':');
+            if self.allowlist_allows_label(allowlist, label)
+                || self.allowlist_allows_label(allowlist, jcode_provider_core::provider_key(target))
+            {
+                return Ok(());
+            }
+        } else if requested
+            .rsplit_once('@')
+            .is_some_and(|(_, pin)| !pin.trim().is_empty())
+        {
+            // OpenRouter catalog `model@provider` pin spec.
+            if self.allowlist_allows_label(allowlist, "openrouter") {
+                return Ok(());
+            }
         }
 
         let current_model = self.model();
         let routes = filter_model_routes_by_provider_allowlist(
             self.model_routes(),
-            allowlist,
+            Some(allowlist),
             &current_model,
-            true,
+            false,
         );
         let mut requested_specs = vec![requested.to_string()];
         if let Some(base) = requested.strip_suffix("@auto") {
@@ -1581,6 +1619,32 @@ impl MultiProvider {
                 requested
             )
         }
+    }
+
+    /// Whether an allowlist entry matches a provider/profile label. Matches the
+    /// same vocabulary the picker uses: normalized label equality, the shared
+    /// alias table (claude/anthropic, openrouter/auto, ...), and bare
+    /// openai-compatible profile ids (`my-gw` matches `openai-compatible:my-gw`).
+    fn allowlist_allows_label(&self, allowlist: &[String], label: &str) -> bool {
+        use jcode_provider_core::{
+            model_route_provider_labels_match, normalize_model_route_provider_label,
+        };
+        let normalized = normalize_model_route_provider_label(label);
+        if normalized.is_empty() {
+            return false;
+        }
+        let bare_profile = normalized
+            .strip_prefix("openaicompatible:")
+            .unwrap_or(&normalized);
+        allowlist.iter().any(|entry| {
+            let entry_norm = normalize_model_route_provider_label(entry);
+            if entry_norm.is_empty() {
+                return false;
+            }
+            entry_norm == normalized
+                || entry_norm == bare_profile
+                || model_route_provider_labels_match(label, entry)
+        })
     }
 }
 
@@ -1640,6 +1704,27 @@ impl Provider for MultiProvider {
             ActiveProvider::Bedrock => "Bedrock",
             ActiveProvider::OpenRouter => "OpenRouter",
         }
+    }
+
+    fn tool_config_provider_key(&self) -> Option<String> {
+        // The OpenRouter slot multiplexes the public aggregator and every
+        // direct OpenAI-compatible profile. Explicit model config
+        // (`[[providers.<name>.models]]`) targets the profile the user
+        // selected, so key the tool gate on the real profile id instead of the
+        // fixed "OpenRouter" transport name. Built-in providers have no
+        // named-profile config and return None (registry + heuristics only).
+        if matches!(self.active_provider(), ActiveProvider::OpenRouter)
+            && let Some(execution) = self.active_openrouter_execution_provider()
+            && let Some((_provider, api_method, _detail)) =
+                execution.direct_openai_compatible_route_parts()
+            && let Some(profile_id) = api_method
+                .strip_prefix("openai-compatible:")
+                .map(str::trim)
+                .filter(|profile_id| !profile_id.is_empty())
+        {
+            return Some(profile_id.to_string());
+        }
+        None
     }
 
     fn display_name(&self) -> String {

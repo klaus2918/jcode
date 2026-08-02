@@ -2,6 +2,13 @@ use super::pricing::{cheapness_for_route, openrouter_pricing_from_model_pricing}
 use super::{ModelRoute, RouteCostConfidence, RouteCostSource, provider_for_model};
 use std::collections::BTreeSet;
 
+/// Capability projection for a built-in route. Resolves through the unified
+/// capability pipeline so `model list` / remote clients see the declared
+/// modalities/tools/reasoning instead of always-null capability fields.
+fn capability_for(model: &str, provider: &str) -> Option<jcode_provider_core::RouteCapabilityView> {
+    super::models::route_capability_projection(model, Some(provider))
+}
+
 pub fn is_listable_model_name(model: &str) -> bool {
     let trimmed = model.trim();
     !trimmed.is_empty()
@@ -124,7 +131,7 @@ pub fn build_anthropic_oauth_route(
     detail: impl Into<String>,
 ) -> ModelRoute {
     ModelRoute {
-        capability: None,
+        capability: capability_for(model, "claude"),
         model: model.to_string(),
         provider: "Anthropic".to_string(),
         api_method: "claude-oauth".to_string(),
@@ -152,7 +159,7 @@ pub fn build_openai_api_key_route(
 
 pub fn build_chatgpt_web_route() -> ModelRoute {
     ModelRoute {
-        capability: None,
+        capability: capability_for(super::CHATGPT_WEB_MODEL, "openai"),
         model: super::CHATGPT_WEB_MODEL.to_string(),
         provider: "OpenAI".to_string(),
         api_method: "chatgpt-web".to_string(),
@@ -169,7 +176,7 @@ fn build_openai_route(
     detail: impl Into<String>,
 ) -> ModelRoute {
     ModelRoute {
-        capability: None,
+        capability: capability_for(model, "openai"),
         model: model.to_string(),
         provider: "OpenAI".to_string(),
         api_method: api_method.to_string(),
@@ -181,7 +188,7 @@ fn build_openai_route(
 
 pub fn build_copilot_route(model: &str, available: bool, detail: impl Into<String>) -> ModelRoute {
     ModelRoute {
-        capability: None,
+        capability: capability_for(model, "copilot"),
         model: model.to_string(),
         provider: "Copilot".to_string(),
         api_method: "copilot".to_string(),
@@ -197,7 +204,7 @@ pub fn build_openrouter_auto_route(
     auto_detail: impl Into<String>,
 ) -> ModelRoute {
     ModelRoute {
-        capability: None,
+        capability: capability_for(model, "openrouter"),
         model: model.to_string(),
         provider: "auto".to_string(),
         api_method: "openrouter".to_string(),
@@ -223,7 +230,7 @@ pub fn build_openrouter_endpoint_route(
     }
 
     ModelRoute {
-        capability: None,
+        capability: capability_for(model, "openrouter"),
         model: model.to_string(),
         provider: endpoint.provider_name.clone(),
         api_method: "openrouter".to_string(),
@@ -247,7 +254,7 @@ pub fn build_openrouter_fallback_provider_route(
     provider: &str,
 ) -> ModelRoute {
     ModelRoute {
-        capability: None,
+        capability: capability_for(display_model, "openrouter"),
         model: display_model.to_string(),
         provider: provider.to_string(),
         api_method: "openrouter".to_string(),

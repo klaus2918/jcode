@@ -383,6 +383,7 @@ fn send_model_changed_result(
     id: u64,
     result: anyhow::Result<(String, String)>,
     fallback_model: String,
+    switched: bool,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
     match result {
@@ -401,6 +402,7 @@ fn send_model_changed_result(
                 model: updated,
                 provider_name: Some(provider_name),
                 error: None,
+                switched,
             });
         }
         Err(error) => {
@@ -417,6 +419,7 @@ fn send_model_changed_result(
                 model: fallback_model,
                 provider_name: None,
                 error: Some(error.to_string()),
+                switched: false,
             });
         }
     }
@@ -467,6 +470,7 @@ fn apply_cycle_model(
             model: agent.provider_model(),
             provider_name: None,
             error: Some("Model switching is not available for this provider.".to_string()),
+            switched: false,
         });
         return;
     }
@@ -490,7 +494,7 @@ fn apply_cycle_model(
             ("available_models", len.to_string()),
         ],
     );
-    let result = {
+    let (result, switched) = {
         let (result, switched) =
             apply_model_switch_and_detect_noop(agent, |agent| agent.set_model(&next_model));
         if switched {
@@ -505,9 +509,9 @@ fn apply_cycle_model(
                 ],
             );
         }
-        result
+        (result, switched)
     };
-    send_model_changed_result(id, result, current, client_event_tx);
+    send_model_changed_result(id, result, current, switched, client_event_tx);
 }
 
 pub(super) async fn handle_cycle_model(
@@ -614,14 +618,30 @@ fn apply_set_model(
             model: current,
             provider_name: None,
             error: Some("Model switching is not available for this provider.".to_string()),
+            switched: false,
         });
         return;
     }
 
     let current = agent.provider_model();
-    let result = {
-        let (result, switched) =
-            apply_model_switch_and_detect_noop(agent, |agent| agent.set_model(&model));
+    let (result, switched) = {
+        // OpenRouter `model@provider` pin spellings change the upstream route
+        // even when the model name/provider key are unchanged, so the
+        // before/after comparison cannot detect them. Treat any `@pin` spec as
+        // a real switch (and reset the warm session) instead of a no-op.
+        let pin_spec = model
+            .rsplit_once('@')
+            .is_some_and(|(_, pin)| !pin.trim().is_empty());
+        let (result, switched) = if pin_spec {
+            let result = agent.set_model(&model);
+            let switched = result.is_ok();
+            (
+                result.map(|_| (agent.provider_model(), agent.provider_name())),
+                switched,
+            )
+        } else {
+            apply_model_switch_and_detect_noop(agent, |agent| agent.set_model(&model))
+        };
         if switched {
             agent.reset_provider_session();
         } else if result.is_ok() {
@@ -634,9 +654,9 @@ fn apply_set_model(
                 ],
             );
         }
-        result
+        (result, switched)
     };
-    send_model_changed_result(id, result, current, client_event_tx);
+    send_model_changed_result(id, result, current, switched, client_event_tx);
 }
 
 fn apply_set_route(
@@ -672,12 +692,13 @@ fn apply_set_route(
             model: current,
             provider_name: None,
             error: Some("Model switching is not available for this provider.".to_string()),
+            switched: false,
         });
         return;
     }
 
     let current = agent.provider_model();
-    let result = {
+    let (result, switched) = {
         let (result, switched) = apply_model_switch_and_detect_noop(agent, |agent| {
             agent.set_route_selection(&selection)
         });
@@ -693,9 +714,9 @@ fn apply_set_route(
                 ],
             );
         }
-        result
+        (result, switched)
     };
-    send_model_changed_result(id, result, current, client_event_tx);
+    send_model_changed_result(id, result, current, switched, client_event_tx);
 }
 
 pub(super) async fn handle_set_model(
@@ -1623,6 +1644,7 @@ mod tests {
                 model,
                 provider_name: Some(provider_name),
                 error: None,
+                switched: true,
             }) if model == "test-model-b" && provider_name == "test-effort"
         ));
     }

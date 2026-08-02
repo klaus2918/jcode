@@ -951,6 +951,7 @@ fn test_remote_model_switch_failure_shows_actionable_guidance() {
             model: "claude-opus-4.6".to_string(),
             provider_name: Some("Copilot".to_string()),
             error: Some("credentials expired".to_string()),
+            switched: false,
         },
         &mut remote,
     );
@@ -1062,6 +1063,7 @@ fn test_remote_model_switch_failure_restores_deferred_prompt() {
             model: "Qwen/Qwen3-32B-TEE".to_string(),
             provider_name: Some("Chutes".to_string()),
             error: Some("model switch failed".to_string()),
+            switched: false,
         },
         &mut remote,
     );

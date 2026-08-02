@@ -1427,11 +1427,15 @@ async fn same_model_set_request_is_noop_and_keeps_provider_session() {
             model,
             provider_name,
             error,
-            ..
+            switched,
         } => {
             assert_eq!(error, None, "same-model switch must succeed");
             assert_eq!(model, "user-picked-model");
             assert_eq!(provider_name.as_deref(), Some("mock-auth"));
+            assert!(
+                !switched,
+                "same-model switch must be reported as a no-op (switched=false)"
+            );
         }
         other => panic!("expected ModelChanged, got {other:?}"),
     }
@@ -1451,10 +1455,12 @@ async fn same_model_set_request_is_noop_and_keeps_provider_session() {
             id: 72,
             model,
             error,
+            switched,
             ..
         } => {
             assert_eq!(error, None, "real switch must succeed");
             assert_eq!(model, "second-model");
+            assert!(switched, "real switch must be reported as switched=true");
         }
         other => panic!("expected ModelChanged, got {other:?}"),
     }
