@@ -714,86 +714,33 @@ fn kimi_for_coding_tool_call_message_includes_reasoning_content() {
 }
 
 #[test]
-fn minimax_profile_exposes_static_models_before_catalog_refresh() {
+fn gemini_api_profile_exposes_static_models_before_catalog_refresh() {
     let models = jcode_base::provider_catalog::openai_compatible_profile_static_models(
-        jcode_provider_metadata::MINIMAX_PROFILE,
+        jcode_provider_metadata::GEMINI_OPENAI_COMPAT_PROFILE,
     );
-    assert!(models.iter().any(|model| model == "MiniMax-M2.7"));
-    assert!(models.iter().any(|model| model == "MiniMax-M2.7-highspeed"));
-    assert!(models.iter().any(|model| model == "MiniMax-M2"));
+    assert!(models.iter().any(|model| model == "gemini-2.5-flash"));
+    assert!(models.iter().any(|model| model == "gemini-2.5-pro"));
 }
 
 #[test]
-fn cerebras_profile_exposes_live_chat_models_before_catalog_refresh() {
+fn gemini_api_profile_exposes_live_chat_models_before_catalog_refresh() {
     assert_eq!(
-        jcode_provider_metadata::CEREBRAS_PROFILE.default_model,
-        Some("gpt-oss-120b")
+        jcode_provider_metadata::GEMINI_OPENAI_COMPAT_PROFILE.default_model,
+        Some("gemini-2.5-flash")
     );
-
     let models = jcode_base::provider_catalog::openai_compatible_profile_static_models(
-        jcode_provider_metadata::CEREBRAS_PROFILE,
+        jcode_provider_metadata::GEMINI_OPENAI_COMPAT_PROFILE,
     );
-
-    assert!(
-        !models.iter().any(|model| model == "qwen-3-coder-480b"),
-        "old Cerebras default is no longer returned by the live /models catalog"
-    );
-    assert!(models.iter().any(|model| model == "gpt-oss-120b"));
-    assert!(models.iter().any(|model| model == "zai-glm-4.7"));
-    assert!(
-        !models
-            .iter()
-            .any(|model| model == "qwen-3-235b-a22b-instruct-2507")
-    );
-    assert!(!models.iter().any(|model| model == "llama3.1-8b"));
+    assert!(models.iter().any(|model| model == "gemini-2.5-flash"));
+    assert!(models.iter().any(|model| model == "gemini-2.5-pro"));
 }
 
 #[test]
 fn openai_compatible_profiles_with_unverified_live_catalogs_have_static_fallbacks() {
-    let cases = [
-        (jcode_provider_metadata::OPENCODE_PROFILE, "minimax-m2.7"),
-        (jcode_provider_metadata::OPENCODE_GO_PROFILE, "kimi-k2.5"),
-        (jcode_provider_metadata::ZAI_PROFILE, "glm-4.7"),
-        (
-            jcode_provider_metadata::AI302_PROFILE,
-            "qwen3-235b-a22b-instruct-2507",
-        ),
-        (jcode_provider_metadata::BASETEN_PROFILE, "zai-org/GLM-4.7"),
-        (jcode_provider_metadata::CORTECS_PROFILE, "kimi-k2.5"),
-        (jcode_provider_metadata::KIMI_PROFILE, "kimi-for-coding"),
-        (jcode_provider_metadata::FIRMWARE_PROFILE, "kimi-k2.5"),
-        (
-            jcode_provider_metadata::HUGGING_FACE_PROFILE,
-            "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        ),
-        (jcode_provider_metadata::MOONSHOT_PROFILE, "kimi-k2.5"),
-        (
-            jcode_provider_metadata::NEBIUS_PROFILE,
-            "openai/gpt-oss-120b",
-        ),
-        (
-            jcode_provider_metadata::SCALEWAY_PROFILE,
-            "qwen3-coder-30b-a3b-instruct",
-        ),
-        (
-            jcode_provider_metadata::STACKIT_PROFILE,
-            "openai/gpt-oss-120b",
-        ),
-        (jcode_provider_metadata::PERPLEXITY_PROFILE, "sonar"),
-        (
-            jcode_provider_metadata::DEEPINFRA_PROFILE,
-            "moonshotai/Kimi-K2-Instruct",
-        ),
-        (
-            jcode_provider_metadata::FIREWORKS_PROFILE,
-            "accounts/fireworks/routers/kimi-k2p5-turbo",
-        ),
-        (jcode_provider_metadata::XIAOMI_MIMO_PROFILE, "mimo-v2.5"),
-        (
-            jcode_provider_metadata::ALIBABA_CODING_PLAN_PROFILE,
-            "qwen3-coder-plus",
-        ),
-    ];
+    let cases = [(
+        jcode_provider_metadata::GEMINI_OPENAI_COMPAT_PROFILE,
+        "gemini-2.5-flash",
+    )];
 
     for (profile, expected_model) in cases {
         let models = jcode_base::provider_catalog::openai_compatible_profile_static_models(profile);
@@ -870,7 +817,7 @@ fn autodetects_single_saved_openai_compatible_profile() {
     let _env = isolate_openrouter_autodetect_env();
 
     let opencode = jcode_base::provider_catalog::resolve_openai_compatible_profile(
-        jcode_base::provider_catalog::OPENCODE_PROFILE,
+        jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
     );
     write_test_api_key(
         &temp,
@@ -991,10 +938,10 @@ fn does_not_guess_when_multiple_saved_openai_compatible_profiles_exist() {
     let _env = isolate_openrouter_autodetect_env();
 
     let opencode = jcode_base::provider_catalog::resolve_openai_compatible_profile(
-        jcode_base::provider_catalog::OPENCODE_PROFILE,
+        jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
     );
     let chutes = jcode_base::provider_catalog::resolve_openai_compatible_profile(
-        jcode_base::provider_catalog::CHUTES_PROFILE,
+        jcode_base::provider_catalog::OLLAMA_PROFILE,
     );
     write_test_api_key(
         &temp,
@@ -1025,12 +972,12 @@ fn autodetected_profile_seeds_default_model_and_cache_namespace() {
     let _env = isolate_openrouter_autodetect_env();
 
     let zai = jcode_base::provider_catalog::resolve_openai_compatible_profile(
-        jcode_base::provider_catalog::ZAI_PROFILE,
+        jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
     );
     write_test_api_key(&temp, &zai.env_file, &zai.api_key_env, "test-zai-key");
 
     let provider = OpenRouterProvider::new().expect("provider");
-    assert_eq!(provider.model.blocking_read().clone(), "glm-4.5");
+    assert_eq!(provider.model.blocking_read().clone(), "gemini-2.5-flash");
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE")
             .ok()
@@ -2299,13 +2246,13 @@ fn runtime_display_name_for_profile_runtime_instance() {
     let _home = EnvVarGuard::set("HOME", temp.path());
     let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
     let _env = isolate_openrouter_autodetect_env();
-    let _key = EnvVarGuard::set("NVIDIA_API_KEY", "nim-test-key");
+    let _key = EnvVarGuard::set("GEMINI_API_KEY", "nim-test-key");
 
     let nim = OpenRouterProvider::new_openai_compatible_profile_runtime(
-        jcode_base::provider_catalog::NVIDIA_NIM_PROFILE,
+        jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
     )
     .expect("build nvidia-nim runtime");
-    assert_eq!(nim.runtime_display_name(), "NVIDIA NIM");
+    assert_eq!(nim.runtime_display_name(), "Gemini API");
     assert_eq!(Provider::name(&nim), "openrouter");
 }
 
@@ -2533,7 +2480,7 @@ fn named_provider_config_deserializes_nested_extra_body_toml() {
     let toml_str = r#"
 type = "openai-compatible"
 base_url = "https://integrate.api.nvidia.com/v1"
-api_key_env = "NVIDIA_API_KEY"
+api_key_env = "GEMINI_API_KEY"
 default_model = "deepseek-ai/deepseek-v4-flash"
 
 [extra_body.chat_template_kwargs]

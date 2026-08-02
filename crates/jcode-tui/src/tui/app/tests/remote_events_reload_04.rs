@@ -139,10 +139,11 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
         .expect("retry should surface a connection status message");
     assert_eq!(retry_notice.role, "system");
     assert!(retry_notice.content.contains("Connection lost - retrying"));
-    assert!(retry_notice.content.contains(&format!(
-        "attempt 1/{}",
-        App::AUTO_RETRY_MAX_ATTEMPTS
-    )));
+    assert!(
+        retry_notice
+            .content
+            .contains(&format!("attempt 1/{}", App::AUTO_RETRY_MAX_ATTEMPTS))
+    );
     assert!(retry_notice.content.contains("Remote request failed"));
 }
 
@@ -430,7 +431,8 @@ fn test_remote_connectivity_error_without_auto_retry_still_waits_for_network() {
 }
 
 fn openai_oauth_route(model: &str) -> crate::provider::ModelRoute {
-    crate::provider::ModelRoute { capability: None,
+    crate::provider::ModelRoute {
+        capability: None,
         model: model.to_string(),
         provider: "OpenAI".to_string(),
         api_method: "openai-oauth".to_string(),
@@ -441,7 +443,8 @@ fn openai_oauth_route(model: &str) -> crate::provider::ModelRoute {
 }
 
 fn claude_oauth_route(model: &str) -> crate::provider::ModelRoute {
-    crate::provider::ModelRoute { capability: None,
+    crate::provider::ModelRoute {
+        capability: None,
         model: model.to_string(),
         provider: "Anthropic".to_string(),
         api_method: "claude-oauth".to_string(),
@@ -733,7 +736,8 @@ fn test_guardrail_reroute_prefers_native_anthropic_route() {
     app.remote_provider_model = Some("gpt-5.5".to_string());
     app.remote_model_options = vec![
         openai_oauth_route("gpt-5.5"),
-        crate::provider::ModelRoute { capability: None,
+        crate::provider::ModelRoute {
+            capability: None,
             model: "claude-opus-4-8".to_string(),
             provider: "OpenRouter".to_string(),
             api_method: "openrouter".to_string(),
@@ -1158,7 +1162,7 @@ fn test_remote_effort_identity_falls_back_to_session_model_before_history() {
 fn test_openai_compatible_login_preserves_profile_for_runtime_activation() {
     let mut app = create_test_app();
 
-    app.start_login_provider(crate::provider_catalog::ZAI_LOGIN_PROVIDER);
+    app.start_login_provider(crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER);
 
     match app.pending_login {
         Some(crate::tui::app::PendingLogin::ApiKeyProfile {
@@ -1167,7 +1171,10 @@ fn test_openai_compatible_login_preserves_profile_for_runtime_activation() {
             ..
         }) => {
             assert_eq!(provider, "Z.AI");
-            assert_eq!(profile.id, crate::provider_catalog::ZAI_PROFILE.id);
+            assert_eq!(
+                profile.id,
+                crate::provider_catalog::OPENAI_COMPAT_PROFILE.id
+            );
         }
         ref other => panic!("unexpected pending login state: {other:?}"),
     }
@@ -1895,7 +1902,9 @@ fn test_debug_command_side_panel_latency_bench_reports_immediate_redraw() {
     // against 16.0ms purely from machine load, while passing in isolation. The
     // behavioral assertions above are the real subject, so gate only the timing
     // (refs #592).
-    let p95 = value["summary"]["latency_ms"]["p95"].as_f64().unwrap_or(0.0);
+    let p95 = value["summary"]["latency_ms"]["p95"]
+        .as_f64()
+        .unwrap_or(0.0);
     assert_perf_budget(p95 < 16.0, || {
         format!("side-panel p95 should stay within a 60fps frame budget: {result}")
     });
@@ -1923,8 +1932,6 @@ fn test_debug_command_mermaid_flicker_bench_returns_json() {
         result
     );
 }
-
-
 
 #[test]
 fn test_remote_review_shows_processing_until_split_response() {
@@ -2133,7 +2140,10 @@ fn test_externally_started_turn_adopts_processing_state_and_settles_on_done() {
         app.status
     );
 
-    app.handle_server_event(crate::protocol::ServerEvent::MessageEnd { stop_reason: None }, &mut remote);
+    app.handle_server_event(
+        crate::protocol::ServerEvent::MessageEnd { stop_reason: None },
+        &mut remote,
+    );
     app.handle_server_event(crate::protocol::ServerEvent::Done { id: 0 }, &mut remote);
 
     // Streaming text is revealed at a paced rate, so a `Done` that arrives with

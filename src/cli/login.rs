@@ -210,8 +210,6 @@ pub async fn run_login_provider(
     account_label: Option<&str>,
     options: LoginOptions,
 ) -> Result<()> {
-
-
     let explicit_scriptable_flow = options.uses_scriptable_flow()?;
     let auto_scriptable_reason = if explicit_scriptable_flow {
         None
@@ -248,7 +246,6 @@ pub async fn run_login_provider(
     let login_result = if explicit_scriptable_flow {
         run_scriptable_login_provider(provider, account_label, &options).await
     } else if let Some(_reason) = auto_scriptable_reason {
-
         if !options.json {
             eprintln!(
                 "Detected a manual-safe login environment for {}. Starting the auth URL flow instead of browser-first login.",
@@ -732,10 +729,7 @@ fn login_openai_compatible_flow(
     let mut resolved = resolve_openai_compatible_profile(*profile);
 
     eprintln!("Setting up {}...", resolved.display_name);
-    let setup_url_depends_on_key = profile.id == crate::provider_catalog::MINIMAX_PROFILE.id;
-    if !setup_url_depends_on_key {
-        eprintln!("See setup details: {}\n", resolved.setup_url);
-    }
+    eprintln!("See setup details: {}\n", resolved.setup_url);
 
     if is_custom_profile {
         if !io::stdin().is_terminal()
@@ -825,14 +819,9 @@ fn login_openai_compatible_flow(
         if key.is_empty() {
             anyhow::bail!("No API key provided.");
         }
-        resolved = crate::provider_catalog::resolve_openai_compatible_profile_with_api_key_hint(
-            *profile,
-            Some(&key),
-        );
+        resolved =
+            crate::provider_catalog::resolve_openai_compatible_profile_with_api_key_hint(*profile);
         eprintln!("Endpoint: {}", resolved.api_base);
-        if setup_url_depends_on_key {
-            eprintln!("See setup details: {}", resolved.setup_url);
-        }
 
         crate::provider_catalog::save_env_value_to_env_file(
             OPENAI_COMPAT_LOCAL_ENABLED_ENV,
@@ -844,9 +833,6 @@ fn login_openai_compatible_flow(
         "api_key"
     } else {
         eprintln!("Endpoint: {}", resolved.api_base);
-        if setup_url_depends_on_key {
-            eprintln!("See setup details: {}", resolved.setup_url);
-        }
         eprintln!("This provider uses a local OpenAI-compatible endpoint.");
         eprintln!(
             "An API key is optional here. Press Enter to skip if your local server does not require one.\n"
@@ -1360,7 +1346,6 @@ async fn login_google_flow(
     eprintln!("The 'gmail' tool is enabled by default in the full tool profile.");
     eprintln!("To hide it, add `disabled = [\"gmail\"]` to [tools] in config.toml.");
     eprintln!("Then try asking: \"check my recent emails\" or \"search emails from ...\"");
-
 
     Ok(())
 }

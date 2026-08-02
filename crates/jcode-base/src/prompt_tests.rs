@@ -302,8 +302,6 @@ fn test_selfdev_prompt_uses_full_selfdev_instructions() {
     assert!(!prompt.contains("Self-Development Access"));
 }
 
-
-
 #[test]
 fn test_split_selfdev_prompt_defaults_to_tui_focus_for_repo_root() {
     let repo_dir = std::path::Path::new("/tmp/jcode");

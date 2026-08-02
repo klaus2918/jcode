@@ -1342,13 +1342,13 @@ mod tests {
     fn typed_auth_request_provider_id_wins_over_legacy_hint() {
         let request = AuthActivationRequest::new(
             Some("openai".to_string()),
-            Some(AuthChanged::new("cerebras")),
+            Some(AuthChanged::new("gemini-api")),
         );
 
-        assert_eq!(request.provider_id().as_deref(), Some("cerebras"));
+        assert_eq!(request.provider_id().as_deref(), Some("gemini-api"));
         assert_eq!(
             provider_display_label(request.provider_id().as_deref()).as_deref(),
-            Some("Cerebras")
+            Some("Gemini API")
         );
     }
 
@@ -1578,12 +1578,20 @@ mod tests {
     #[test]
     fn model_switch_request_prefixes_openai_compatible_profiles_with_profile_id() {
         assert_eq!(
-            model_switch_request_for_provider_id(Some("cerebras"), "mock-auth", "llama3.1-8b"),
-            "cerebras:llama3.1-8b"
+            model_switch_request_for_provider_id(
+                Some("gemini-api"),
+                "mock-auth",
+                "gemini-2.5-flash"
+            ),
+            "gemini-api:gemini-2.5-flash"
         );
         assert_eq!(
-            model_switch_request_for_provider_id(Some("cerebras"), "openrouter", "llama3.1-8b"),
-            "cerebras:llama3.1-8b"
+            model_switch_request_for_provider_id(
+                Some("gemini-api"),
+                "openrouter",
+                "gemini-2.5-flash"
+            ),
+            "gemini-api:gemini-2.5-flash"
         );
     }
 
@@ -1603,7 +1611,7 @@ mod tests {
             ("copilot", "copilot:shared-model"),
             ("gemini", "gemini:shared-model"),
             ("antigravity", "antigravity:shared-model"),
-            ("cerebras", "cerebras:shared-model"),
+            ("gemini-api", "gemini-api:shared-model"),
         ] {
             assert_eq!(
                 model_switch_request_for_provider_id(Some(provider), "mock-auth", "shared-model"),
@@ -1654,30 +1662,30 @@ mod tests {
     #[test]
     fn post_auth_model_selection_reselects_duplicate_model_name_from_matching_provider_route() {
         let activation = AuthActivationResult {
-            provider_id: Some("cerebras".to_string()),
-            provider_label: Some("Cerebras".to_string()),
-            activated_model: Some("llama3.1-8b".to_string()),
+            provider_id: Some("gemini-api".to_string()),
+            provider_label: Some("Gemini API".to_string()),
+            activated_model: Some("gemini-2.5-flash".to_string()),
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("cerebras".to_string()),
+            expected_catalog_namespace: Some("gemini-api".to_string()),
         };
         let routes = vec![
             route(
-                "llama3.1-8b",
+                "gemini-2.5-flash",
                 "Other Gateway",
                 "openai-compatible:other",
                 true,
             ),
             route(
-                "llama3.1-8b",
-                "Cerebras",
-                "openai-compatible:cerebras",
+                "gemini-2.5-flash",
+                "Gemini API",
+                "openai-compatible:gemini-api",
                 true,
             ),
         ];
 
         assert_eq!(
-            provider_model_to_select_after_auth(&activation, Some("llama3.1-8b"), &routes),
-            Some("llama3.1-8b".to_string()),
+            provider_model_to_select_after_auth(&activation, Some("gemini-2.5-flash"), &routes),
+            Some("gemini-2.5-flash".to_string()),
             "duplicate model IDs must force an explicit provider-profile model switch"
         );
     }
@@ -1685,23 +1693,23 @@ mod tests {
     #[test]
     fn catalog_invariants_pass_when_selected_model_matches_provider_route() {
         let activation = AuthActivationResult {
-            provider_id: Some("cerebras".to_string()),
-            provider_label: Some("Cerebras".to_string()),
-            activated_model: Some("llama3.1-8b".to_string()),
+            provider_id: Some("gemini-api".to_string()),
+            provider_label: Some("Gemini API".to_string()),
+            activated_model: Some("gemini-2.5-flash".to_string()),
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("cerebras".to_string()),
+            expected_catalog_namespace: Some("gemini-api".to_string()),
         };
         let routes = vec![
             route("gpt-5.5", "OpenAI", "openai", true),
             route(
-                "llama3.1-8b",
-                "Cerebras",
-                "openai-compatible:cerebras",
+                "gemini-2.5-flash",
+                "Gemini API",
+                "openai-compatible:gemini-api",
                 true,
             ),
         ];
 
-        let report = validate_catalog_invariants(&activation, Some("llama3.1-8b"), &routes);
+        let report = validate_catalog_invariants(&activation, Some("gemini-2.5-flash"), &routes);
 
         assert!(
             report.ok(),
@@ -1714,15 +1722,20 @@ mod tests {
     #[test]
     fn catalog_invariants_reject_generic_openai_compatible_route_for_namespaced_auth() {
         let activation = AuthActivationResult {
-            provider_id: Some("cerebras".to_string()),
-            provider_label: Some("Cerebras".to_string()),
-            activated_model: Some("llama3.1-8b".to_string()),
+            provider_id: Some("gemini-api".to_string()),
+            provider_label: Some("Gemini API".to_string()),
+            activated_model: Some("gemini-2.5-flash".to_string()),
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("cerebras".to_string()),
+            expected_catalog_namespace: Some("gemini-api".to_string()),
         };
-        let routes = vec![route("llama3.1-8b", "Cerebras", "openai-compatible", true)];
+        let routes = vec![route(
+            "gemini-2.5-flash",
+            "Gemini API",
+            "openai-compatible",
+            true,
+        )];
 
-        let report = validate_catalog_invariants(&activation, Some("llama3.1-8b"), &routes);
+        let report = validate_catalog_invariants(&activation, Some("gemini-2.5-flash"), &routes);
 
         assert!(
             !report.ok(),
@@ -1733,18 +1746,18 @@ mod tests {
             report
                 .warning_message()
                 .expect("warning")
-                .contains("Expected selectable Cerebras model routes")
+                .contains("Expected selectable Gemini API model routes")
         );
     }
 
     #[test]
     fn catalog_invariants_warn_when_selected_model_is_from_stale_provider() {
         let activation = AuthActivationResult {
-            provider_id: Some("cerebras".to_string()),
-            provider_label: Some("Cerebras".to_string()),
-            activated_model: Some("llama3.1-8b".to_string()),
+            provider_id: Some("gemini-api".to_string()),
+            provider_label: Some("Gemini API".to_string()),
+            activated_model: Some("gemini-2.5-flash".to_string()),
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("cerebras".to_string()),
+            expected_catalog_namespace: Some("gemini-api".to_string()),
         };
         let routes = vec![route("gpt-5.5", "OpenAI", "openai", true)];
 
@@ -1752,45 +1765,41 @@ mod tests {
 
         assert!(!report.ok());
         let warning = report.warning_message().expect("warning expected");
-        assert!(warning.contains("Expected selectable Cerebras model routes"));
+        assert!(warning.contains("Expected selectable Gemini API model routes"));
         assert!(warning.contains("Selected model: `gpt-5.5`"));
     }
 
     #[test]
     fn post_auth_model_selection_prefers_matching_provider_route_over_stale_model() {
         let activation = AuthActivationResult {
-            provider_id: Some("cerebras".to_string()),
-            provider_label: Some("Cerebras".to_string()),
-            activated_model: Some("qwen-3-235b-a22b-instruct-2507".to_string()),
+            provider_id: Some("gemini-api".to_string()),
+            provider_label: Some("Gemini API".to_string()),
+            activated_model: Some("gemini-2.5-pro".to_string()),
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("cerebras".to_string()),
+            expected_catalog_namespace: Some("gemini-api".to_string()),
         };
         let routes = vec![
             route("gpt-5.5", "OpenAI", "openai", true),
             route(
-                "qwen-3-235b-a22b-instruct-2507",
-                "Cerebras",
-                "openai-compatible:cerebras",
+                "gemini-2.5-pro",
+                "Gemini API",
+                "openai-compatible:gemini-api",
                 true,
             ),
             route(
-                "llama3.1-8b",
-                "Cerebras",
-                "openai-compatible:cerebras",
+                "gemini-2.5-flash",
+                "Gemini API",
+                "openai-compatible:gemini-api",
                 true,
             ),
         ];
 
         assert_eq!(
             provider_model_to_select_after_auth(&activation, Some("gpt-5.5"), &routes).as_deref(),
-            Some("qwen-3-235b-a22b-instruct-2507")
+            Some("gemini-2.5-pro")
         );
         assert_eq!(
-            provider_model_to_select_after_auth(
-                &activation,
-                Some("qwen-3-235b-a22b-instruct-2507"),
-                &routes
-            ),
+            provider_model_to_select_after_auth(&activation, Some("gemini-2.5-pro"), &routes),
             None
         );
     }
@@ -1968,30 +1977,30 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         crate::env::set_var("JCODE_HOME", temp.path());
         let activation = AuthActivationResult {
-            provider_id: Some("cerebras".to_string()),
-            provider_label: Some("Cerebras".to_string()),
+            provider_id: Some("gemini-api".to_string()),
+            provider_label: Some("Gemini API".to_string()),
             activated_model: None,
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("cerebras".to_string()),
+            expected_catalog_namespace: Some("gemini-api".to_string()),
         };
         let routes = vec![
             route(
-                "llama3.1-8b",
-                "Cerebras",
-                "openai-compatible:cerebras",
+                "gemini-2.5-flash",
+                "Gemini API",
+                "openai-compatible:gemini-api",
                 true,
             ),
             route(
-                "qwen-3-235b-a22b-instruct-2507",
-                "Cerebras",
-                "openai-compatible:cerebras",
+                "gemini-2.5-pro",
+                "Gemini API",
+                "openai-compatible:gemini-api",
                 true,
             ),
         ];
 
         assert_eq!(
             provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("llama3.1-8b"),
+            Some("gemini-2.5-flash"),
             "providers without a curated flagship order keep live-catalog order"
         );
     }
@@ -2002,51 +2011,51 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         crate::env::set_var("JCODE_HOME", temp.path());
         jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
-            "cerebras",
+            "gemini-api",
             &[
                 jcode_provider_openrouter::ModelInfo {
-                    id: "llama3.1-8b".to_string(),
+                    id: "gemini-2.5-flash".to_string(),
                     name: String::new(),
                     context_length: None,
                     pricing: Default::default(),
                     created: Some(1_700_000_000),
                 },
                 jcode_provider_openrouter::ModelInfo {
-                    id: "qwen-3-235b-a22b-instruct-2507".to_string(),
+                    id: "gemini-2.5-pro".to_string(),
                     name: String::new(),
                     context_length: None,
                     pricing: Default::default(),
                     created: Some(1_800_000_000),
                 },
             ],
-            Some("https://api.cerebras.ai/v1"),
+            Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         );
 
         let activation = AuthActivationResult {
-            provider_id: Some("cerebras".to_string()),
-            provider_label: Some("Cerebras".to_string()),
+            provider_id: Some("gemini-api".to_string()),
+            provider_label: Some("Gemini API".to_string()),
             activated_model: None,
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("cerebras".to_string()),
+            expected_catalog_namespace: Some("gemini-api".to_string()),
         };
         let routes = vec![
             route(
-                "llama3.1-8b",
-                "Cerebras",
-                "openai-compatible:cerebras",
+                "gemini-2.5-flash",
+                "Gemini API",
+                "openai-compatible:gemini-api",
                 true,
             ),
             route(
-                "qwen-3-235b-a22b-instruct-2507",
-                "Cerebras",
-                "openai-compatible:cerebras",
+                "gemini-2.5-pro",
+                "Gemini API",
+                "openai-compatible:gemini-api",
                 true,
             ),
         ];
 
         assert_eq!(
             provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("qwen-3-235b-a22b-instruct-2507"),
+            Some("gemini-2.5-pro"),
             "unranked providers should prefer the newest live release when the catalog includes release timestamps"
         );
     }

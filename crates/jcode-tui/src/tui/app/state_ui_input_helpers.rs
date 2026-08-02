@@ -87,7 +87,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "/triage",
         "Triage new GitHub issues and autonomously fix the safe ones",
     ),
-        RegisteredCommand::public("/subagent-model", "Show/change subagent model policy"),
+    RegisteredCommand::public("/subagent-model", "Show/change subagent model policy"),
     RegisteredCommand::public("/autoreview", "Show/toggle automatic end-of-turn review"),
     RegisteredCommand::public("/autojudge", "Show/toggle automatic end-of-turn judging"),
     RegisteredCommand::public("/review", "Launch a one-shot headed review session"),
@@ -125,7 +125,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/refactor", "Run a safe refactor loop"),
     RegisteredCommand::public("/compact", "Compact context"),
     RegisteredCommand::public("/fix", "Recover when the model cannot continue"),
-            RegisteredCommand::public("/memory", "Toggle memory feature"),
+    RegisteredCommand::public("/memory", "Toggle memory feature"),
     RegisteredCommand::public("/test", "Verify a claim/current changes with layered tests"),
     RegisteredCommand::public(
         "/initiatives",
@@ -768,7 +768,6 @@ impl App {
         if prefix_trimmed == "/git" {
             return vec![("/git status".into(), "Show branch and working tree status")];
         }
-
 
         if prefix.starts_with("/fast ") {
             let modes = [

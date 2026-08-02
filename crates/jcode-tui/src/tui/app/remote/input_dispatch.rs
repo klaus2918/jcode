@@ -322,11 +322,6 @@ pub(in crate::tui::app) fn finish_remote_split_launch(app: &mut App) {
     app.current_message_id = None;
 }
 
-
-
-
-
-
 async fn submit_remote_input_shell(
     app: &mut App,
     remote: &mut RemoteConnection,
@@ -365,8 +360,6 @@ async fn submit_remote_input_shell(
     ));
     Ok(())
 }
-
-
 
 /// Stage a submitted turn for the remote tick loop when the app is attached to
 /// a remote session, returning true when it took ownership of the turn.

@@ -135,5 +135,4 @@ mod tests {
         // i32 overflow falls back to default rather than wrapping.
         assert_eq!(parse_alloc_tuning(Some("4294967296"), 4), 4);
     }
-
 }

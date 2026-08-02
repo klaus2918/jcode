@@ -234,7 +234,6 @@ impl App {
     /// provider picker, since that is the most common first login. The provider
     /// picker is still reachable via `/login`.
     pub(super) fn onboarding_start_default_login(&mut self) {
-
         self.start_login_provider(crate::provider_catalog::OPENAI_LOGIN_PROVIDER);
         self.set_status_notice("Login: opening OpenAI sign-in (or type /login for others)");
     }
@@ -347,7 +346,8 @@ impl App {
         // overlay (picker / sign-in) is open we let Esc close that first.
         if code == KeyCode::Esc
             && self.inline_interactive_state.is_none()
-            && self.session_picker_overlay.is_none()            && self.session_picker_overlay.is_none()
+            && self.session_picker_overlay.is_none()
+            && self.session_picker_overlay.is_none()
             && self.login_picker_overlay.is_none()
             && self.account_picker_overlay.is_none()
             && matches!(

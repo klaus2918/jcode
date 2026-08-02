@@ -352,7 +352,6 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
-
     if app.new_terminal_key_matches(code, modifiers) {
         app.handle_new_terminal_hotkey();
         return Ok(());
@@ -899,7 +898,6 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-
                 if handle_remote_rewind_command(app, remote, trimmed).await? {
                     return Ok(());
                 }
@@ -982,7 +980,6 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/quit" {
-
                     // In remote mode the shared server owns session lifecycle persistence.
                     // Exiting this client should not overwrite the server's session file.
                     app.should_quit = true;

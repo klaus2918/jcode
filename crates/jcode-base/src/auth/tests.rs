@@ -533,29 +533,29 @@ fn openrouter_like_status_is_provider_specific() {
     let _lock = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let prev_home = std::env::var_os("JCODE_HOME");
-    let prev_chutes = std::env::var_os("CHUTES_API_KEY");
-    let prev_opencode = std::env::var_os("OPENCODE_API_KEY");
+    let prev_Ollama = std::env::var_os("GEMINI_API_KEY");
+    let prev_opencode = std::env::var_os("OLLAMA_API_KEY");
 
     crate::env::set_var("JCODE_HOME", temp.path());
-    crate::env::set_var("CHUTES_API_KEY", "chutes-test-key");
-    crate::env::remove_var("OPENCODE_API_KEY");
+    crate::env::set_var("GEMINI_API_KEY", "Ollama-test-key");
+    crate::env::remove_var("OLLAMA_API_KEY");
     AuthStatus::invalidate_cache();
 
     let status = AuthStatus::check_fast();
-    let chutes_assessment =
-        status.assessment_for_provider(crate::provider_catalog::CHUTES_LOGIN_PROVIDER);
+    let Ollama_assessment =
+        status.assessment_for_provider(crate::provider_catalog::GEMINI_API_LOGIN_PROVIDER);
     let opencode_assessment =
-        status.assessment_for_provider(crate::provider_catalog::OPENCODE_LOGIN_PROVIDER);
-    assert!(chutes_assessment.is_available());
+        status.assessment_for_provider(crate::provider_catalog::OLLAMA_LOGIN_PROVIDER);
+    assert!(Ollama_assessment.is_available());
     assert_eq!(opencode_assessment.state, AuthState::NotConfigured);
     assert_eq!(
-        chutes_assessment.method_detail,
-        "API key (`CHUTES_API_KEY`)".to_string()
+        Ollama_assessment.method_detail,
+        "API key (`Ollama_API_KEY`)".to_string()
     );
 
     restore_env_var("JCODE_HOME", prev_home);
-    restore_env_var("CHUTES_API_KEY", prev_chutes);
-    restore_env_var("OPENCODE_API_KEY", prev_opencode);
+    restore_env_var("GEMINI_API_KEY", prev_Ollama);
+    restore_env_var("OLLAMA_API_KEY", prev_opencode);
     AuthStatus::invalidate_cache();
 }
 

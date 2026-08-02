@@ -158,7 +158,6 @@ fn import_summary_pills_line(
     Line::from(spans).alignment(align)
 }
 
-
 /// Render the read-only detected-login list for the import summary screen: one
 /// dim checkmarked row per detected login. No cursor, no columns - the user is
 /// just being shown what we found before they hit Continue.
@@ -286,7 +285,6 @@ fn import_two_column_lines(prompt: &crate::tui::LoginImportPrompt) -> Vec<Line<'
 
     out
 }
-
 
 /// Welcome title line, rendered just above the donut.
 fn welcome_title_line() -> Line<'static> {
@@ -590,7 +588,8 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
     // Donut shrinks if the area is short so the welcome text always fits. The
     // title + hint lines that hug the donut are part of the reserved chrome.
     let donut_h = DONUT_HEIGHT.min(
-        area.height.saturating_sub(TITLE_H + HINT_H + body_h + GAP * 2 + 1),
+        area.height
+            .saturating_sub(TITLE_H + HINT_H + body_h + GAP * 2 + 1),
     );
     let show_donut_block = donut_h > 0;
 

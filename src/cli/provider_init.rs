@@ -44,71 +44,9 @@ pub enum ProviderChoice {
     Bedrock,
     #[value(alias = "azure-openai", alias = "aoai")]
     Azure,
-    #[value(alias = "opencode-zen", alias = "zen")]
-    Opencode,
-    #[value(alias = "opencodego")]
-    OpencodeGo,
-    #[value(alias = "z.ai", alias = "z-ai", alias = "zai-coding")]
-    Zai,
-    #[value(
-        alias = "kimi-code",
-        alias = "kimi-coding",
-        alias = "kimi-coding-plan",
-        alias = "kimi-for-coding",
-        alias = "moonshot-coding"
-    )]
-    Kimi,
-    #[value(alias = "302.ai")]
-    Ai302,
-    Baseten,
-    Cortecs,
-    #[value(alias = "cgc", alias = "comtegra-gpu-cloud")]
-    Comtegra,
-    Deepseek,
-    #[value(alias = "fpt-ai", alias = "fptcloud", alias = "fpt-cloud")]
-    Fpt,
-    Firmware,
-    #[value(alias = "hugging-face", alias = "hf")]
-    HuggingFace,
-    #[value(alias = "moonshot")]
-    MoonshotAi,
-    Nebius,
-    Scaleway,
-    Stackit,
-    Groq,
-    #[value(alias = "mistralai")]
-    Mistral,
-    #[value(alias = "pplx")]
-    Perplexity,
-    #[value(alias = "together", alias = "together-ai")]
-    TogetherAi,
-    #[value(alias = "deep-infra")]
-    Deepinfra,
-    #[value(alias = "fireworks-ai", alias = "fireworks.ai")]
-    Fireworks,
-    #[value(alias = "minimax-ai", alias = "minimaxi")]
-    Minimax,
-    #[value(alias = "x.ai", alias = "x-ai", alias = "grok")]
-    Xai,
-    #[value(alias = "nvidia", alias = "nim")]
-    NvidiaNim,
-    #[value(alias = "xiaomi", alias = "mimo", alias = "xiaomi-mimo-api")]
-    XiaomiMimo,
-    #[value(alias = "celeris-ai", alias = "celeris1", alias = "celeris-1")]
-    Celeris,
     #[value(alias = "lm-studio")]
     Lmstudio,
     Ollama,
-    Chutes,
-    #[value(alias = "cerebrascode", alias = "cerberascode")]
-    Cerebras,
-    #[value(
-        alias = "bailian",
-        alias = "aliyun-bailian",
-        alias = "coding-plan",
-        alias = "alibaba-coding"
-    )]
-    AlibabaCodingPlan,
     #[value(alias = "compat", alias = "custom")]
     OpenaiCompatible,
     Cursor,
@@ -139,38 +77,8 @@ impl ProviderChoice {
             Self::Openrouter => "openrouter",
             Self::Bedrock => "bedrock",
             Self::Azure => "azure",
-            Self::Opencode => "opencode",
-            Self::OpencodeGo => "opencode-go",
-            Self::Zai => "zai",
-            Self::Kimi => "kimi",
-            Self::Ai302 => "302ai",
-            Self::Baseten => "baseten",
-            Self::Cortecs => "cortecs",
-            Self::Comtegra => "comtegra",
-            Self::Deepseek => "deepseek",
-            Self::Fpt => "fpt",
-            Self::Firmware => "firmware",
-            Self::HuggingFace => "huggingface",
-            Self::MoonshotAi => "moonshotai",
-            Self::Nebius => "nebius",
-            Self::Scaleway => "scaleway",
-            Self::Stackit => "stackit",
-            Self::Groq => "groq",
-            Self::Mistral => "mistral",
-            Self::Perplexity => "perplexity",
-            Self::TogetherAi => "togetherai",
-            Self::Deepinfra => "deepinfra",
-            Self::Fireworks => "fireworks",
-            Self::Minimax => "minimax",
-            Self::Xai => "xai",
-            Self::NvidiaNim => "nvidia-nim",
-            Self::XiaomiMimo => "xiaomi-mimo",
-            Self::Celeris => "celeris",
             Self::Lmstudio => "lmstudio",
             Self::Ollama => "ollama",
-            Self::Chutes => "chutes",
-            Self::Cerebras => "cerebras",
-            Self::AlibabaCodingPlan => "alibaba-coding-plan",
             Self::OpenaiCompatible => "openai-compatible",
             Self::Cursor => "cursor",
             Self::Copilot => "copilot",
@@ -222,132 +130,12 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
         crate::provider_catalog::AZURE_LOGIN_PROVIDER,
     ),
     (
-        ProviderChoice::Opencode,
-        crate::provider_catalog::OPENCODE_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::OpencodeGo,
-        crate::provider_catalog::OPENCODE_GO_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Zai,
-        crate::provider_catalog::ZAI_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Kimi,
-        crate::provider_catalog::KIMI_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Ai302,
-        crate::provider_catalog::AI302_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Baseten,
-        crate::provider_catalog::BASETEN_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Cortecs,
-        crate::provider_catalog::CORTECS_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Comtegra,
-        crate::provider_catalog::COMTEGRA_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Deepseek,
-        crate::provider_catalog::DEEPSEEK_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Fpt,
-        crate::provider_catalog::FPT_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Firmware,
-        crate::provider_catalog::FIRMWARE_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::HuggingFace,
-        crate::provider_catalog::HUGGING_FACE_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::MoonshotAi,
-        crate::provider_catalog::MOONSHOT_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Nebius,
-        crate::provider_catalog::NEBIUS_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Scaleway,
-        crate::provider_catalog::SCALEWAY_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Stackit,
-        crate::provider_catalog::STACKIT_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Groq,
-        crate::provider_catalog::GROQ_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Mistral,
-        crate::provider_catalog::MISTRAL_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Perplexity,
-        crate::provider_catalog::PERPLEXITY_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::TogetherAi,
-        crate::provider_catalog::TOGETHER_AI_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Deepinfra,
-        crate::provider_catalog::DEEPINFRA_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Fireworks,
-        crate::provider_catalog::FIREWORKS_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Minimax,
-        crate::provider_catalog::MINIMAX_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Xai,
-        crate::provider_catalog::XAI_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::NvidiaNim,
-        crate::provider_catalog::NVIDIA_NIM_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::XiaomiMimo,
-        crate::provider_catalog::XIAOMI_MIMO_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Celeris,
-        crate::provider_catalog::CELERIS_LOGIN_PROVIDER,
-    ),
-    (
         ProviderChoice::Lmstudio,
         crate::provider_catalog::LMSTUDIO_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::Ollama,
         crate::provider_catalog::OLLAMA_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Chutes,
-        crate::provider_catalog::CHUTES_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Cerebras,
-        crate::provider_catalog::CEREBRAS_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::AlibabaCodingPlan,
-        crate::provider_catalog::ALIBABA_CODING_PLAN_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::OpenaiCompatible,
@@ -1327,7 +1115,9 @@ pub async fn login_and_bootstrap_provider(
             }
             #[cfg(not(feature = "extra-providers"))]
             {
-                anyhow::bail!("antigravity runtime is not built; enable the `extra-providers` feature")
+                anyhow::bail!(
+                    "antigravity runtime is not built; enable the `extra-providers` feature"
+                )
             }
         }
         LoginProviderTarget::Google => {
@@ -1519,38 +1309,8 @@ async fn init_provider_with_options(
             }
             Arc::new(multi)
         }
-        ProviderChoice::Opencode
-        | ProviderChoice::OpencodeGo
-        | ProviderChoice::Zai
-        | ProviderChoice::Ai302
-        | ProviderChoice::Baseten
-        | ProviderChoice::Cortecs
-        | ProviderChoice::Comtegra
-        | ProviderChoice::Deepseek
-        | ProviderChoice::Fpt
-        | ProviderChoice::Firmware
-        | ProviderChoice::HuggingFace
-        | ProviderChoice::MoonshotAi
-        | ProviderChoice::Kimi
-        | ProviderChoice::Nebius
-        | ProviderChoice::Scaleway
-        | ProviderChoice::Stackit
-        | ProviderChoice::Groq
-        | ProviderChoice::Mistral
-        | ProviderChoice::Perplexity
-        | ProviderChoice::TogetherAi
-        | ProviderChoice::Deepinfra
-        | ProviderChoice::Fireworks
-        | ProviderChoice::Minimax
-        | ProviderChoice::Xai
-        | ProviderChoice::NvidiaNim
-        | ProviderChoice::XiaomiMimo
-        | ProviderChoice::Celeris
-        | ProviderChoice::Lmstudio
+        ProviderChoice::Lmstudio
         | ProviderChoice::Ollama
-        | ProviderChoice::Chutes
-        | ProviderChoice::Cerebras
-        | ProviderChoice::AlibabaCodingPlan
         | ProviderChoice::GeminiApi
         | ProviderChoice::OpenaiCompatible => {
             disable_subscription_runtime_mode();
@@ -1644,7 +1404,9 @@ async fn init_provider_with_options(
             }
             #[cfg(not(feature = "extra-providers"))]
             {
-                anyhow::bail!("antigravity runtime is not built; enable the `extra-providers` feature")
+                anyhow::bail!(
+                    "antigravity runtime is not built; enable the `extra-providers` feature"
+                )
             }
         }
         ProviderChoice::Google => {

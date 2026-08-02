@@ -35,27 +35,8 @@ fn test_provider_choice_arg_values() {
     assert_eq!(ProviderChoice::Openrouter.as_arg_value(), "openrouter");
     assert_eq!(ProviderChoice::Bedrock.as_arg_value(), "bedrock");
     assert_eq!(ProviderChoice::Azure.as_arg_value(), "azure");
-    assert_eq!(ProviderChoice::Opencode.as_arg_value(), "opencode");
-    assert_eq!(ProviderChoice::OpencodeGo.as_arg_value(), "opencode-go");
-    assert_eq!(ProviderChoice::Zai.as_arg_value(), "zai");
-    assert_eq!(ProviderChoice::Groq.as_arg_value(), "groq");
-    assert_eq!(ProviderChoice::Mistral.as_arg_value(), "mistral");
-    assert_eq!(ProviderChoice::Perplexity.as_arg_value(), "perplexity");
-    assert_eq!(ProviderChoice::TogetherAi.as_arg_value(), "togetherai");
-    assert_eq!(ProviderChoice::Deepinfra.as_arg_value(), "deepinfra");
-    assert_eq!(ProviderChoice::Fireworks.as_arg_value(), "fireworks");
-    assert_eq!(ProviderChoice::Minimax.as_arg_value(), "minimax");
-    assert_eq!(ProviderChoice::Xai.as_arg_value(), "xai");
-    assert_eq!(ProviderChoice::XiaomiMimo.as_arg_value(), "xiaomi-mimo");
-    assert_eq!(ProviderChoice::Celeris.as_arg_value(), "celeris");
     assert_eq!(ProviderChoice::Lmstudio.as_arg_value(), "lmstudio");
     assert_eq!(ProviderChoice::Ollama.as_arg_value(), "ollama");
-    assert_eq!(ProviderChoice::Chutes.as_arg_value(), "chutes");
-    assert_eq!(ProviderChoice::Cerebras.as_arg_value(), "cerebras");
-    assert_eq!(
-        ProviderChoice::AlibabaCodingPlan.as_arg_value(),
-        "alibaba-coding-plan"
-    );
     assert_eq!(
         ProviderChoice::OpenaiCompatible.as_arg_value(),
         "openai-compatible"
@@ -501,10 +482,6 @@ fn choice_for_login_provider_round_trips_core_targets() {
 #[test]
 fn choice_for_login_provider_round_trips_openai_compatible_profiles() {
     assert_eq!(
-        choice_for_login_provider(provider_catalog::OPENCODE_LOGIN_PROVIDER),
-        Some(ProviderChoice::Opencode)
-    );
-    assert_eq!(
         choice_for_login_provider(provider_catalog::LMSTUDIO_LOGIN_PROVIDER),
         Some(ProviderChoice::Lmstudio)
     );
@@ -644,21 +621,21 @@ fn apply_login_provider_profile_env_preserves_compatible_profile_for_auto_spawn(
         crate::env::remove_var(key);
     }
 
-    apply_login_provider_profile_env(provider_catalog::OPENCODE_GO_LOGIN_PROVIDER);
+    apply_login_provider_profile_env(provider_catalog::OLLAMA_LOGIN_PROVIDER);
 
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_BASE").ok().as_deref(),
-        Some("https://opencode.ai/zen/go/v1")
+        Some("http://localhost:11434/v1")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_KEY_NAME")
             .ok()
             .as_deref(),
-        Some("OPENCODE_GO_API_KEY")
+        Some("OLLAMA_API_KEY")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_ENV_FILE").ok().as_deref(),
-        Some("opencode-go.env")
+        Some("ollama.env")
     );
     assert_eq!(
         std::env::var("JCODE_PROVIDER_PROFILE_ACTIVE")
@@ -674,17 +651,17 @@ fn apply_login_provider_profile_env_preserves_compatible_profile_for_auto_spawn(
         std::env::var("JCODE_OPENROUTER_API_KEY_NAME")
             .ok()
             .as_deref(),
-        Some("OPENCODE_GO_API_KEY")
+        Some("OLLAMA_API_KEY")
     );
 
     // A later explicit compatible-provider selection in the same process must
     // still replace the active profile instead of being blocked by the marker.
-    apply_login_provider_profile_env(provider_catalog::OPENCODE_LOGIN_PROVIDER);
+    apply_login_provider_profile_env(provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER);
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_KEY_NAME")
             .ok()
             .as_deref(),
-        Some("OPENCODE_API_KEY")
+        Some("OPENAI_COMPAT_API_KEY")
     );
     assert_eq!(
         std::env::var("JCODE_PROVIDER_PROFILE_ACTIVE")

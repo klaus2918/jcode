@@ -2,9 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::process::Command as ProcessCommand;
 
-use crate::{
-    build, logging, perf, server, startup_profile, storage, update,
-};
+use crate::{build, logging, perf, server, startup_profile, storage, update};
 
 use super::{
     args::{Args, Command},
@@ -112,7 +110,6 @@ pub async fn run() -> Result<()> {
 
     perf::init_background();
     startup_profile::mark("perf_init");
-
 
     let args = parse_and_prepare_args()?;
     spawn_background_update_check(&args);

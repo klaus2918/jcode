@@ -159,12 +159,12 @@ mod tests {
     #[test]
     fn provider_state_resolves_default_provider_through_canonical_selection() {
         let mut cfg = Config::default();
-        cfg.provider.default_provider = Some("kimi".to_string());
+        cfg.provider.default_provider = Some("ollama".to_string());
         cfg.provider.default_model = Some("moonshot-v1-8k".to_string());
         let auth = AuthStatus::default();
         let state = ProviderState::from_parts(&cfg, &auth);
 
-        assert_eq!(state.default_provider_key(), Some("kimi"));
+        assert_eq!(state.default_provider_key(), Some("ollama"));
         assert_eq!(state.default_model(), Some("moonshot-v1-8k"));
         assert_eq!(
             state.preferred_active_provider(),

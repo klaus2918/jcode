@@ -100,7 +100,8 @@ impl AuthUxStateSpaceProvider {
         let authed = self.authed.load(Ordering::SeqCst);
         let mut routes = Vec::new();
         if self.include_wrong_profile_first {
-            routes.push(crate::provider::ModelRoute { capability: None,
+            routes.push(crate::provider::ModelRoute {
+                capability: None,
                 model: "wrong-profile-first".to_string(),
                 provider: self.provider_label.to_string(),
                 api_method: "openai-compatible:other-provider".to_string(),
@@ -114,7 +115,8 @@ impl AuthUxStateSpaceProvider {
             });
         }
         for model in self.models {
-            routes.push(crate::provider::ModelRoute { capability: None,
+            routes.push(crate::provider::ModelRoute {
+                capability: None,
                 model: (*model).to_string(),
                 provider: self.provider_label.to_string(),
                 api_method: format!("openai-compatible:{}", self.provider_id),
@@ -127,7 +129,8 @@ impl AuthUxStateSpaceProvider {
                 cheapness: None,
             });
             if self.include_generic_profile_duplicate {
-                routes.push(crate::provider::ModelRoute { capability: None,
+                routes.push(crate::provider::ModelRoute {
+                    capability: None,
                     model: (*model).to_string(),
                     provider: self.provider_label.to_string(),
                     api_method: "openai-compatible".to_string(),
@@ -148,7 +151,8 @@ impl AuthUxStateSpaceProvider {
 impl MixedModelRoutesProvider {
     fn routes() -> Vec<crate::provider::ModelRoute> {
         vec![
-            crate::provider::ModelRoute { capability: None,
+            crate::provider::ModelRoute {
+                capability: None,
                 model: "gpt-5.5".to_string(),
                 provider: "OpenAI".to_string(),
                 api_method: "openai-oauth".to_string(),
@@ -156,7 +160,8 @@ impl MixedModelRoutesProvider {
                 detail: String::new(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute { capability: None,
+            crate::provider::ModelRoute {
+                capability: None,
                 model: "claude-opus-4-6".to_string(),
                 provider: "Anthropic".to_string(),
                 api_method: "claude-oauth".to_string(),
@@ -164,7 +169,8 @@ impl MixedModelRoutesProvider {
                 detail: String::new(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute { capability: None,
+            crate::provider::ModelRoute {
+                capability: None,
                 model: "Qwen/Qwen3-Coder-480B-A35B-Instruct".to_string(),
                 provider: "Chutes".to_string(),
                 api_method: "openai-compatible:chutes".to_string(),
@@ -172,7 +178,8 @@ impl MixedModelRoutesProvider {
                 detail: "https://llm.chutes.ai/v1".to_string(),
                 cheapness: None,
             },
-            crate::provider::ModelRoute { capability: None,
+            crate::provider::ModelRoute {
+                capability: None,
                 model: "deepseek/deepseek-v4-pro".to_string(),
                 provider: "auto".to_string(),
                 api_method: "openrouter".to_string(),
@@ -422,7 +429,8 @@ impl Provider for CountingModelRoutesProvider {
             std::thread::sleep(self.delay);
         }
         (0..self.route_count)
-            .map(|idx| crate::provider::ModelRoute { capability: None,
+            .map(|idx| crate::provider::ModelRoute {
+                capability: None,
                 model: format!("counting-{}", (b'a' + idx as u8) as char),
                 provider: "Counting".to_string(),
                 api_method: "test".to_string(),
@@ -1444,7 +1452,8 @@ impl Provider for AzureLoginMockProvider {
     }
 
     fn model_routes(&self) -> Vec<crate::provider::ModelRoute> {
-        vec![crate::provider::ModelRoute { capability: None,
+        vec![crate::provider::ModelRoute {
+            capability: None,
             model: self.model(),
             provider: "Azure OpenAI".to_string(),
             api_method: "openai-compatible".to_string(),
@@ -1704,8 +1713,7 @@ fn test_local_model_picker_render_shows_antigravity_models_exactly_as_user_sees_
         App::apply_inline_interactive_filter(picker);
         let _render_lock = scroll_render_test_lock();
         let backend = ratatui::backend::TestBackend::new(90, 14);
-        let mut terminal =
-            ratatui::Terminal::new(backend).expect("failed to create test terminal");
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
         render_and_snap(app, &mut terminal)
     };
     let claude_text = render_filtered(&mut app, "claude-sonnet-4-6");
@@ -1770,8 +1778,7 @@ fn test_login_smoke_model_picker_renders_unstacked_provider_rows() {
         App::apply_inline_interactive_filter(picker);
         let _render_lock = scroll_render_test_lock();
         let backend = ratatui::backend::TestBackend::new(180, 48);
-        let mut terminal =
-            ratatui::Terminal::new(backend).expect("failed to create test terminal");
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
         render_and_snap(app, &mut terminal)
     };
 
@@ -1825,8 +1832,7 @@ fn test_login_smoke_model_picker_renders_unstacked_provider_rows() {
         copilot_text
     );
     assert!(
-        deepseek_text.contains("deepseek/deepseek-v4-pro")
-            && deepseek_text.contains("openrouter"),
+        deepseek_text.contains("deepseek/deepseek-v4-pro") && deepseek_text.contains("openrouter"),
         "OpenRouter route should be visible, got:\n{}",
         deepseek_text
     );
@@ -1962,7 +1968,10 @@ fn test_login_picker_preview_enter_starts_login_flow() {
             ..
         }) => {
             assert_eq!(provider, "Z.AI");
-            assert_eq!(profile.id, crate::provider_catalog::ZAI_PROFILE.id);
+            assert_eq!(
+                profile.id,
+                crate::provider_catalog::OPENAI_COMPAT_PROFILE.id
+            );
         }
         ref other => panic!("unexpected pending login state: {other:?}"),
     }
@@ -2154,7 +2163,8 @@ fn test_poke_arms_auto_poke_until_todos_are_done() {
         assert!(app.auto_poke_incomplete_todos);
         assert!(app.pending_turn);
         assert!(app.display_messages().iter().any(|msg| {
-            msg.content.contains("1 incomplete todo. We poked the agent")
+            msg.content
+                .contains("1 incomplete todo. We poked the agent")
                 && msg.content.contains("/poke off")
         }));
     });
@@ -2450,13 +2460,10 @@ fn test_finish_turn_auto_poke_queues_confidence_summary_when_todos_done() {
         assert!(summary.contains("automated todo completion gate"));
         assert!(!summary.to_ascii_lowercase().contains("threshold"));
         assert!(!summary.contains("Finish risky provider path"));
-        assert!(
-            app.display_messages()
-                .iter()
-                .any(|msg| msg.content.contains(
-                    "marked its work done without strong enough validation"
-                ))
-        );
+        assert!(app.display_messages().iter().any(|msg| {
+            msg.content
+                .contains("marked its work done without strong enough validation")
+        }));
 
         // Dispatching the follow-up does not disarm the gate. If the model
         // finishes another turn without improving completion confidence, the
@@ -2559,10 +2566,11 @@ fn test_finish_turn_challenges_confidence_spike_once() {
             app.queued_messages,
             vec![crate::todo::TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE]
         );
-        assert!(app.display_messages().iter().any(|msg| {
-            msg.content
-                .contains("confidence jumped suddenly")
-        }));
+        assert!(
+            app.display_messages()
+                .iter()
+                .any(|msg| { msg.content.contains("confidence jumped suddenly") })
+        );
 
         app.queued_messages.clear();
         app.pending_queued_dispatch = false;

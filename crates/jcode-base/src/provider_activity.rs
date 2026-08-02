@@ -296,8 +296,8 @@ pub fn format_relative_age(unix_secs: u64) -> String {
     }
 }
 
-/// Map a human-facing provider label (e.g. `"DeepSeek"`, `"OpenRouter"`,
-/// `"NVIDIA NIM"`) plus the optional `JCODE_RUNTIME_PROVIDER` key onto a
+/// Map a human-facing provider label (e.g. `"gemini-api"`, `"OpenRouter"`,
+/// `"Gemini API"`) plus the optional `JCODE_RUNTIME_PROVIDER` key onto a
 /// ledger source key. Used by spend recorders that only know display names.
 pub fn source_key_for_provider_label(label: &str, runtime_provider: Option<&str>) -> String {
     let normalized = label.trim().to_ascii_lowercase();
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn source_key_mapping_covers_known_providers() {
         assert_eq!(
-            source_key_for_provider_label("DeepSeek", None),
+            source_key_for_provider_label("gemini-api", None),
             "openai-compatible:deepseek"
         );
         assert_eq!(
@@ -457,7 +457,7 @@ mod tests {
             "openrouter"
         );
         assert_eq!(
-            source_key_for_provider_label("OpenRouter", Some("deepseek")),
+            source_key_for_provider_label("OpenRouter", Some("gemini-api")),
             "openai-compatible:deepseek"
         );
         assert_eq!(
