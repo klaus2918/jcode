@@ -60,45 +60,6 @@ pub(crate) fn tool_smoke_skip_detail_for_choice(
     None
 }
 
-fn effective_openai_compatible_auth_test_model(
-    profile: crate::provider_catalog::OpenAiCompatibleProfile,
-    model: Option<&str>,
-) -> Option<String> {
-    model
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .map(ToString::to_string)
-        .or_else(|| {
-            std::env::var("JCODE_OPENROUTER_MODEL")
-                .ok()
-                .map(|model| model.trim().to_string())
-                .filter(|model| !model.is_empty())
-        })
-        .or_else(|| {
-            let cfg = crate::config::config();
-            let default_provider_is_profile = cfg
-                .provider
-                .default_provider
-                .as_deref()
-                .map(str::trim)
-                .map(|provider| {
-                    provider == profile.id
-                        || crate::provider_catalog::resolve_openai_compatible_profile_selection(
-                            provider,
-                        )
-                        .map(|resolved| resolved.id == profile.id)
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false);
-            default_provider_is_profile
-                .then(|| cfg.provider.default_model.clone())
-                .flatten()
-        })
-        .or_else(|| {
-            crate::provider_catalog::resolve_openai_compatible_profile(profile).default_model
-        })
-}
-
 async fn discover_openai_compatible_validation_model(
     profile: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
 ) -> Result<Option<String>> {
