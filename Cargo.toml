@@ -184,7 +184,7 @@ jcode-provider-doctor = { path = "crates/jcode-provider-doctor" }
 # Gemini provider runtime; sits downstream of jcode-base so gemini edits do
 # not rebuild the base -> app-core -> tui spine. Registered with the external
 # provider registry at startup (src/cli/startup.rs).
-jcode-provider-gemini-runtime = { path = "crates/jcode-provider-gemini-runtime" }
+jcode-provider-gemini-runtime = { path = "crates/jcode-provider-gemini-runtime", optional = true }
 jcode-provider-cursor-runtime = { path = "crates/jcode-provider-cursor-runtime", optional = true }
 jcode-provider-antigravity-runtime = { path = "crates/jcode-provider-antigravity-runtime", optional = true }
 jcode-provider-copilot-runtime = { path = "crates/jcode-provider-copilot-runtime", optional = true }
@@ -207,6 +207,7 @@ dev-bins = ["jcode-tui/dev-bins"]
 # Niche provider runtimes (copilot / cursor / antigravity / claude-cli) are
 # excluded from default builds. Enable to restore them.
 extra-providers = [
+    "dep:jcode-provider-gemini-runtime",
     "dep:jcode-provider-cursor-runtime",
     "dep:jcode-provider-antigravity-runtime",
     "dep:jcode-provider-copilot-runtime",
