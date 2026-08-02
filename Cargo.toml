@@ -94,6 +94,7 @@ path = "src/main.rs"
 [[bin]]
 name = "test_api"
 path = "src/bin/test_api.rs"
+required-features = ["extra-providers"]
 
 [[bin]]
 name = "jcode-harness"
@@ -184,10 +185,10 @@ jcode-provider-doctor = { path = "crates/jcode-provider-doctor" }
 # not rebuild the base -> app-core -> tui spine. Registered with the external
 # provider registry at startup (src/cli/startup.rs).
 jcode-provider-gemini-runtime = { path = "crates/jcode-provider-gemini-runtime" }
-jcode-provider-cursor-runtime = { path = "crates/jcode-provider-cursor-runtime" }
-jcode-provider-antigravity-runtime = { path = "crates/jcode-provider-antigravity-runtime" }
-jcode-provider-copilot-runtime = { path = "crates/jcode-provider-copilot-runtime" }
-jcode-provider-claude-cli-runtime = { path = "crates/jcode-provider-claude-cli-runtime" }
+jcode-provider-cursor-runtime = { path = "crates/jcode-provider-cursor-runtime", optional = true }
+jcode-provider-antigravity-runtime = { path = "crates/jcode-provider-antigravity-runtime", optional = true }
+jcode-provider-copilot-runtime = { path = "crates/jcode-provider-copilot-runtime", optional = true }
+jcode-provider-claude-cli-runtime = { path = "crates/jcode-provider-claude-cli-runtime", optional = true }
 jcode-provider-openrouter-runtime = { path = "crates/jcode-provider-openrouter-runtime" }
 jcode-provider-anthropic-runtime = { path = "crates/jcode-provider-anthropic-runtime" }
 jcode-provider-openai-runtime = { path = "crates/jcode-provider-openai-runtime" }
@@ -203,6 +204,14 @@ tempfile = "3"
 # to skip optional default feature stacks.
 default = ["pdf", "embeddings", "bedrock"]
 dev-bins = ["jcode-tui/dev-bins"]
+# Niche provider runtimes (copilot / cursor / antigravity / claude-cli) are
+# excluded from default builds. Enable to restore them.
+extra-providers = [
+    "dep:jcode-provider-cursor-runtime",
+    "dep:jcode-provider-antigravity-runtime",
+    "dep:jcode-provider-copilot-runtime",
+    "dep:jcode-provider-claude-cli-runtime",
+]
 jemalloc = [
     "dep:tikv-jemallocator",
     "tikv-jemallocator/stats",

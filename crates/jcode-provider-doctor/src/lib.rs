@@ -20,6 +20,8 @@ mod lifecycle_driver;
 
 pub use provider_e2e::{
     DoctorCheck, DoctorReport, DoctorSpend, DoctorTier, NativeProviderKind,
-    native_doctor_supports_provider, run_antigravity_native_e2e, run_claude_native_e2e,
+    native_doctor_supports_provider, run_claude_native_e2e,
     run_generic_native_e2e, run_provider_e2e,
 };
+#[cfg(feature = "extra-providers")]
+pub use provider_e2e::run_antigravity_native_e2e;

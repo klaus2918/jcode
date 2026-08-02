@@ -134,14 +134,17 @@ pub fn register_external_provider_runtimes() {
         crate::provider::external::GEMINI_RUNTIME,
         || std::sync::Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new()),
     );
+    #[cfg(feature = "extra-providers")]
     crate::provider::external::register_external_provider(
         crate::provider::external::CURSOR_RUNTIME,
         || std::sync::Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new()),
     );
+    #[cfg(feature = "extra-providers")]
     crate::provider::external::register_external_provider(
         crate::provider::external::ANTIGRAVITY_RUNTIME,
         || std::sync::Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new()),
     );
+    #[cfg(feature = "extra-providers")]
     crate::provider::external::register_external_provider(
         crate::provider::external::CLAUDE_CLI_RUNTIME,
         || std::sync::Arc::new(jcode_provider_claude_cli_runtime::ClaudeProvider::new()),
@@ -207,6 +210,7 @@ pub fn register_external_provider_runtimes() {
     // wants tier detection scheduled right after construction, eagerly for
     // interactive sessions and deferred for non-interactive ones. That policy
     // lives here in the composition root so base stays provider-agnostic.
+    #[cfg(feature = "extra-providers")]
     crate::provider::external::register_external_provider_fallible(
         crate::provider::external::COPILOT_RUNTIME,
         || {

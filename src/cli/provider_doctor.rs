@@ -7,8 +7,10 @@ use anyhow::{Context, Result, anyhow};
 use crate::live_tests::LiveVerificationStageStatus;
 use jcode_provider_doctor::{
     DoctorReport, DoctorTier, NativeProviderKind, native_doctor_supports_provider,
-    run_antigravity_native_e2e, run_claude_native_e2e, run_generic_native_e2e, run_provider_e2e,
+    run_claude_native_e2e, run_generic_native_e2e, run_provider_e2e,
 };
+#[cfg(feature = "extra-providers")]
+use jcode_provider_doctor::run_antigravity_native_e2e;
 
 pub async fn run_provider_doctor_command(
     provider: &str,
@@ -28,7 +30,18 @@ pub async fn run_provider_doctor_command(
         let normalized = crate::auth::lifecycle::normalized_auth_provider_id(Some(provider));
         let report = match normalized {
             Some("claude") => run_claude_native_e2e(provider, model, tier).await?,
-            Some("antigravity") => run_antigravity_native_e2e(provider, model, tier).await?,
+            Some("antigravity") => {
+                #[cfg(feature = "extra-providers")]
+                {
+                    run_antigravity_native_e2e(provider, model, tier).await?
+                }
+                #[cfg(not(feature = "extra-providers"))]
+                {
+                    anyhow::bail!(
+                        "antigravity runtime is not built; enable the `extra-providers` feature"
+                    )
+                }
+            }
             Some(other) => {
                 let kind = NativeProviderKind::from_normalized(other)
                     .ok_or_else(|| anyhow!("`{provider}` has no native provider-doctor driver"))?;
