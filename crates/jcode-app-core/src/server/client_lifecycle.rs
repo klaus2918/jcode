@@ -752,12 +752,12 @@ pub(super) async fn handle_client(
                             }
                             let retry_after_secs = e.downcast_ref::<StreamError>().and_then(|se| se.retry_after_secs);
                             if retry_after_secs.is_some() {
-                                crate::telemetry::record_error(crate::telemetry::ErrorCategory::RateLimited);
+
                             } else {
                                 let msg = e.to_string();
                                 let lower = msg.to_lowercase();
                                 if lower.contains("timeout") {
-                                    crate::telemetry::record_error(crate::telemetry::ErrorCategory::ProviderTimeout);
+
                                 } else if crate::provider::error_looks_like_credential_failure(&msg)
                                     || lower.contains("403 forbidden")
                                 {
@@ -766,7 +766,7 @@ pub(super) async fn handle_client(
                                     // unrelated errors (e.g. any message mentioning "author" or
                                     // OAuth flow noise) and inflated the auth_failed telemetry
                                     // counter.
-                                    crate::telemetry::record_error(crate::telemetry::ErrorCategory::AuthFailed);
+
                                 }
                             }
                         }

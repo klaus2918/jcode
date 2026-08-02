@@ -20,7 +20,6 @@ use crate::tui::color_support::rgb;
 use ratatui::{prelude::*, widgets::Paragraph};
 
 const DONUT_HEIGHT: u16 = 18;
-const TELEMETRY_LINES: u16 = 4;
 const GAP: u16 = 1;
 
 /// Accent color for the welcome title.
@@ -156,77 +155,9 @@ fn import_summary_pills_line(
         "Import less",
         focused == Pill::ImportLess,
     ));
-    spans.push(Span::raw("   "));
-    spans.extend(lozenge_pill_spans(
-        "Telemetry settings",
-        focused == Pill::Telemetry,
-    ));
     Line::from(spans).alignment(align)
 }
 
-/// The telemetry settings sub-page: three stacked pills, most sharing first,
-/// each with a dim one-line consequence caption. Reached from the "Telemetry
-/// settings" pill on the import summary; Esc returns without changing anything.
-fn telemetry_settings_lines(
-    highlighted: crate::tui::TelemetryChoice,
-    env_forced_off: bool,
-    align: Alignment,
-) -> Vec<Line<'static>> {
-    use crate::tui::TelemetryChoice as Choice;
-    let dim = Style::default().fg(dim_color());
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(
-        Line::from(Span::styled(
-            "Telemetry settings",
-            Style::default()
-                .fg(welcome_accent())
-                .add_modifier(Modifier::BOLD),
-        ))
-        .alignment(align),
-    );
-    lines.push(Line::from(""));
-
-    let options = [
-        (
-            Choice::Everything,
-            "Send everything, including prompts",
-            "Helps jcode the most",
-        ),
-        (
-            Choice::NoContent,
-            "No prompts or transcripts",
-            "Usage stats and crash reports only",
-        ),
-        (
-            Choice::Nothing,
-            "Send nothing",
-            "We stop seeing crashes and can't fix them",
-        ),
-    ];
-    for (choice, label, caption) in options {
-        lines.push(Line::from(lozenge_pill_spans(label, choice == highlighted)).alignment(align));
-        lines.push(Line::from(Span::styled(caption, dim)).alignment(align));
-        lines.push(Line::from(""));
-    }
-
-    if env_forced_off {
-        lines.push(
-            Line::from(Span::styled(
-                "Your environment already disables telemetry (JCODE_NO_TELEMETRY).",
-                dim,
-            ))
-            .alignment(align),
-        );
-    }
-    lines.push(
-        Line::from(Span::styled(
-            "Esc goes back. Change this later with /telemetry.",
-            dim,
-        ))
-        .alignment(align),
-    );
-    lines
-}
 
 /// Render the read-only detected-login list for the import summary screen: one
 /// dim checkmarked row per detected login. No cursor, no columns - the user is
@@ -356,31 +287,6 @@ fn import_two_column_lines(prompt: &crate::tui::LoginImportPrompt) -> Vec<Line<'
     out
 }
 
-/// Grayed telemetry notice shown at the very top of the onboarding screen.
-fn telemetry_header_lines(width: u16) -> Vec<Line<'static>> {
-    let align = Alignment::Center;
-    let dim = Style::default().fg(dim_color());
-    let lines = vec![
-        "jcode collects anonymous usage statistics (version, OS, session",
-        "activity, and crash reasons). No code, prompts, or personal data.",
-        "Change anytime: /telemetry (or export JCODE_NO_TELEMETRY=1)",
-    ];
-    lines
-        .into_iter()
-        .map(|text| {
-            // Truncate defensively on very narrow terminals.
-            let text = if (text.chars().count() as u16) > width.saturating_sub(2) {
-                text.chars()
-                    .take(width.saturating_sub(3) as usize)
-                    .collect::<String>()
-                    + "…"
-            } else {
-                text.to_string()
-            };
-            Line::from(Span::styled(text, dim)).alignment(align)
-        })
-        .collect()
-}
 
 /// Welcome title line, rendered just above the donut.
 fn welcome_title_line() -> Line<'static> {
@@ -509,16 +415,6 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
                     );
                 }
                 Some(prompt) if !prompt.choosing => {
-                    // Telemetry settings sub-page takes over the body while
-                    // it is open, then returns to the summary below.
-                    if let Some(choice) = prompt.telemetry {
-                        lines.extend(telemetry_settings_lines(
-                            choice,
-                            prompt.telemetry_env_forced_off,
-                            align,
-                        ));
-                        return lines;
-                    }
                     // Summary screen (default): show what we detected as a
                     // read-only checkmarked list, then land the user on a
                     // preselected "Continue" pill that imports everything.
@@ -684,9 +580,7 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         return;
     }
 
-    let telemetry = telemetry_header_lines(area.width);
     let body = welcome_body_lines(app);
-    let telemetry_h = (telemetry.len() as u16).min(TELEMETRY_LINES);
     let body_h = body.len() as u16;
     // Title above the donut, keyboard hint below it. Both are single lines and
     // only shown when there is room for the donut treatment.
@@ -696,19 +590,18 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
     // Donut shrinks if the area is short so the welcome text always fits. The
     // title + hint lines that hug the donut are part of the reserved chrome.
     let donut_h = DONUT_HEIGHT.min(
-        area.height
-            .saturating_sub(telemetry_h + TITLE_H + HINT_H + body_h + GAP * 2 + 1),
+        area.height.saturating_sub(TITLE_H + HINT_H + body_h + GAP * 2 + 1),
     );
     let show_donut_block = donut_h > 0;
 
     let used = if show_donut_block {
-        telemetry_h + GAP + TITLE_H + donut_h + HINT_H + GAP + body_h
+        GAP + TITLE_H + donut_h + HINT_H + GAP + body_h
     } else {
-        telemetry_h + GAP + body_h
+        GAP + body_h
     };
     let pad_top = area.height.saturating_sub(used) / 2;
 
-    let mut constraints = vec![Constraint::Length(pad_top), Constraint::Length(telemetry_h)];
+    let mut constraints = vec![Constraint::Length(pad_top)];
     if show_donut_block {
         constraints.push(Constraint::Length(GAP));
         constraints.push(Constraint::Length(TITLE_H));
@@ -724,14 +617,8 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         .constraints(constraints)
         .split(area);
 
-    // chunks[0] = top pad, [1] = telemetry, then optional gap/title/donut/hint,
-    // gap, body.
-    frame.render_widget(
-        Paragraph::new(telemetry).alignment(Alignment::Center),
-        chunks[1],
-    );
-
-    let mut idx = 2;
+    // chunks[0] = top pad, then optional gap/title/donut/hint, gap, body.
+    let mut idx = 1;
     if show_donut_block {
         idx += 1; // skip gap chunk
         frame.render_widget(

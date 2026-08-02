@@ -16,7 +16,7 @@
 
 use super::App;
 use super::SessionPickerMode;
-use super::onboarding_flow::{ImportReview, OnboardingFlow, OnboardingPhase, SummaryPill};
+use super::onboarding_flow::{ImportReview, OnboardingFlow, OnboardingPhase};
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::time::Instant;
 
@@ -192,9 +192,7 @@ impl App {
                             "Claude Code",
                         ),
                     ])
-                    .map(|mut review| {
-                        review.focus_summary_pill(SummaryPill::Telemetry);
-                        review.open_telemetry();
+                    .map(|review| {
                         review
                     }),
                 },
@@ -329,9 +327,7 @@ impl App {
                 import: Some(review),
             } = &mut flow.phase
         {
-            if review.telemetry.is_some() {
-                review.telemetry_step(down);
-            } else if down {
+            if down {
                 review.cursor_down();
             } else {
                 review.cursor_up();
@@ -350,7 +346,6 @@ impl App {
                 import: Some(review),
             } = &mut flow.phase
             && !review.choosing
-            && review.telemetry.is_none()
         {
             review.summary_step(forward);
             return true;

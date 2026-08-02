@@ -42,6 +42,7 @@ fn discovery_benchmark_run() -> bool {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // fields are asserted by tests; lib code no longer reads them
 struct DiscoveryFetchResult {
     listing: Value,
     http_status: u16,
@@ -49,6 +50,7 @@ struct DiscoveryFetchResult {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // fields are asserted by tests; lib code no longer reads them
 struct DiscoveryFetchError {
     message: String,
     failure_reason: &'static str,
@@ -84,7 +86,7 @@ struct DiscoveryRequestProvenance {
 impl DiscoveryRequestProvenance {
     fn from_tool_context(ctx: &ToolContext) -> Self {
         let session = crate::session::Session::load(&ctx.session_id).ok();
-        let runtime = crate::telemetry::runtime_provenance();
+        let runtime = crate::provenance::runtime_provenance();
         Self {
             session_id: ctx.session_id.clone(),
             session_metadata_available: session.is_some(),
@@ -140,39 +142,6 @@ impl fmt::Display for DiscoveryFetchError {
 
 impl std::error::Error for DiscoveryFetchError {}
 
-#[allow(clippy::too_many_arguments)]
-fn record_discovery_telemetry(
-    request_id: &str,
-    started_at: Instant,
-    endpoint: &str,
-    phase: &str,
-    category: Option<&str>,
-    selected_tool: Option<&str>,
-    outcome: &str,
-    failure_reason: Option<&str>,
-    http_status: Option<u16>,
-    response_bytes: Option<u64>,
-    result_count: Option<u32>,
-    query_present: bool,
-    reason_present: bool,
-) {
-    crate::telemetry::record_discovery_event(crate::telemetry::DiscoveryTelemetry {
-        request_id,
-        phase,
-        category,
-        selected_tool,
-        outcome,
-        failure_reason,
-        http_status,
-        latency_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-        response_bytes,
-        result_count,
-        query_present,
-        reason_present,
-        benchmark_run: discovery_benchmark_run(),
-        endpoint,
-    });
-}
 
 /// `discover_tools`: fetch discoverable third-party tools for a category from
 /// the hosted integration directory.
@@ -261,6 +230,7 @@ struct ValidatedSuggestion {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // fields are asserted by tests; lib code no longer reads them
 struct DiscoveryInputError {
     message: String,
     failure_reason: &'static str,
@@ -618,27 +588,13 @@ impl Tool for DiscoverToolsTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let started_at = Instant::now();
+        let _started_at = Instant::now();
         let request_id = uuid::Uuid::new_v4().to_string();
         let config = crate::config::config();
         let endpoint = config.sponsors.endpoint.clone();
         let benchmark_run = discovery_benchmark_run();
         if !config.sponsors.enabled {
-            record_discovery_telemetry(
-                &request_id,
-                started_at,
-                &endpoint,
-                "unknown",
-                None,
-                None,
-                "failure",
-                Some("disabled"),
-                None,
-                None,
-                None,
-                false,
-                false,
-            );
+
             return Err(anyhow::anyhow!(
                 "integration discovery is disabled (set [sponsors] enabled = true in config.toml)"
             ));
@@ -647,49 +603,21 @@ impl Tool for DiscoverToolsTool {
         let params: DiscoverToolsInput = match serde_json::from_value(input) {
             Ok(params) => params,
             Err(err) => {
-                record_discovery_telemetry(
-                    &request_id,
-                    started_at,
-                    &endpoint,
-                    "unknown",
-                    None,
-                    None,
-                    "failure",
-                    Some("invalid_input"),
-                    None,
-                    None,
-                    None,
-                    false,
-                    false,
-                );
+
                 return Err(err.into());
             }
         };
         let category = params.category.trim().to_ascii_lowercase();
-        let query_present = params
+        let _query_present = params
             .query
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
-        let reason_present = params
+        let _reason_present = params
             .reason
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
         if !crate::sponsors::DISCOVERY_CATEGORIES.contains(&category.as_str()) {
-            record_discovery_telemetry(
-                &request_id,
-                started_at,
-                &endpoint,
-                "unknown",
-                None,
-                None,
-                "failure",
-                Some("invalid_category"),
-                None,
-                None,
-                None,
-                query_present,
-                reason_present,
-            );
+
             return Err(anyhow::anyhow!(
                 "unknown discovery category '{}'. Available: {}",
                 category,
@@ -705,21 +633,7 @@ impl Tool for DiscoverToolsTool {
         ) {
             Ok(query) => query,
             Err(err) => {
-                record_discovery_telemetry(
-                    &request_id,
-                    started_at,
-                    &endpoint,
-                    "unknown",
-                    Some(&category),
-                    None,
-                    "failure",
-                    Some(err.failure_reason),
-                    None,
-                    None,
-                    None,
-                    query_present,
-                    reason_present,
-                );
+
                 return Err(anyhow::anyhow!(err.message));
             }
         };
@@ -731,21 +645,7 @@ impl Tool for DiscoverToolsTool {
         ) {
             Ok(reason) => reason,
             Err(err) => {
-                record_discovery_telemetry(
-                    &request_id,
-                    started_at,
-                    &endpoint,
-                    "unknown",
-                    Some(&category),
-                    None,
-                    "failure",
-                    Some(err.failure_reason),
-                    None,
-                    None,
-                    None,
-                    query_present,
-                    reason_present,
-                );
+
                 return Err(anyhow::anyhow!(err.message));
             }
         };
@@ -773,41 +673,13 @@ impl Tool for DiscoverToolsTool {
             let fetched = match submit_suggestion(&discovery_request, &suggestion).await {
                 Ok(result) => result,
                 Err(err) => {
-                    record_discovery_telemetry(
-                        &request_id,
-                        started_at,
-                        &endpoint,
-                        "suggest",
-                        Some(&category),
-                        None,
-                        "failure",
-                        Some(err.failure_reason),
-                        err.http_status,
-                        err.response_bytes,
-                        None,
-                        query_present,
-                        reason_present,
-                    );
+
                     return Err(err.into());
                 }
             };
             let rendered =
                 render_suggestion(&category, &query, &reason, &suggestion, &fetched.listing)?;
-            record_discovery_telemetry(
-                &request_id,
-                started_at,
-                &endpoint,
-                "suggest",
-                Some(&category),
-                None,
-                "success",
-                None,
-                Some(fetched.http_status),
-                Some(fetched.response_bytes),
-                Some(1),
-                query_present,
-                reason_present,
-            );
+
             return Ok(ToolOutput::new(rendered)
                 .with_title("catalog suggestion".to_string())
                 .with_metadata(json!({
@@ -824,42 +696,14 @@ impl Tool for DiscoverToolsTool {
             let fetched = match fetch_listing(&discovery_request, Some(&tool_name)).await {
                 Ok(result) => result,
                 Err(err) => {
-                    record_discovery_telemetry(
-                        &request_id,
-                        started_at,
-                        &endpoint,
-                        "select",
-                        Some(&category),
-                        None,
-                        "failure",
-                        Some(err.failure_reason),
-                        err.http_status,
-                        err.response_bytes,
-                        None,
-                        query_present,
-                        reason_present,
-                    );
+
                     return Err(err.into());
                 }
             };
             let rendered = match render_selection(&category, &tool_name, &fetched.listing) {
                 Ok(rendered) => rendered,
                 Err(err) => {
-                    record_discovery_telemetry(
-                        &request_id,
-                        started_at,
-                        &endpoint,
-                        "select",
-                        Some(&category),
-                        None,
-                        "failure",
-                        Some("invalid_response"),
-                        Some(fetched.http_status),
-                        Some(fetched.response_bytes),
-                        None,
-                        query_present,
-                        reason_present,
-                    );
+
                     return Err(err);
                 }
             };
@@ -870,26 +714,12 @@ impl Tool for DiscoverToolsTool {
                     .map(std::slice::from_ref)
                     .unwrap_or(&[]),
             ));
-            let canonical_tool = fetched
+            let _canonical_tool = fetched
                 .listing
                 .get("tool")
                 .and_then(|tool| tool.get("name"))
                 .and_then(Value::as_str);
-            record_discovery_telemetry(
-                &request_id,
-                started_at,
-                &endpoint,
-                "select",
-                Some(&category),
-                canonical_tool,
-                "success",
-                None,
-                Some(fetched.http_status),
-                Some(fetched.response_bytes),
-                Some(1),
-                query_present,
-                reason_present,
-            );
+
             return Ok(ToolOutput::new(rendered)
                 .with_title(tool_name.to_string())
                 .with_metadata(json!({
@@ -903,46 +733,18 @@ impl Tool for DiscoverToolsTool {
         let fetched = match fetch_listing(&discovery_request, None).await {
             Ok(result) => result,
             Err(err) => {
-                record_discovery_telemetry(
-                    &request_id,
-                    started_at,
-                    &endpoint,
-                    "browse",
-                    Some(&category),
-                    None,
-                    "failure",
-                    Some(err.failure_reason),
-                    err.http_status,
-                    err.response_bytes,
-                    None,
-                    query_present,
-                    reason_present,
-                );
+
                 return Err(err.into());
             }
         };
         let rendered = match render_listing(&category, &fetched.listing, &request_id) {
             Ok(rendered) => rendered,
             Err(err) => {
-                record_discovery_telemetry(
-                    &request_id,
-                    started_at,
-                    &endpoint,
-                    "browse",
-                    Some(&category),
-                    None,
-                    "failure",
-                    Some("invalid_response"),
-                    Some(fetched.http_status),
-                    Some(fetched.response_bytes),
-                    None,
-                    query_present,
-                    reason_present,
-                );
+
                 return Err(err);
             }
         };
-        let result_count = fetched
+        let _result_count = fetched
             .listing
             .get("tools")
             .and_then(Value::as_array)
@@ -952,21 +754,7 @@ impl Tool for DiscoverToolsTool {
         // matching one of them is tagged with discovery provenance (and
         // metered coarsely; see jcode_base::sponsors::provenance).
         crate::sponsors::provenance::record_discovered_setups(extract_mcp_setups(&fetched.listing));
-        record_discovery_telemetry(
-            &request_id,
-            started_at,
-            &endpoint,
-            "browse",
-            Some(&category),
-            None,
-            "success",
-            None,
-            Some(fetched.http_status),
-            Some(fetched.response_bytes),
-            result_count,
-            query_present,
-            reason_present,
-        );
+
 
         Ok(ToolOutput::new(rendered)
             .with_title(category.to_string())

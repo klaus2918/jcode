@@ -609,7 +609,7 @@ impl Registry {
         let result = tool.execute(input.clone(), ctx.clone()).await;
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
-        crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);
+
         Self::fire_post_tool_hook(resolved_name, &ctx, &result, latency_ms);
 
         let mut output = match result {
