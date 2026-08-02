@@ -302,14 +302,7 @@ fn test_selfdev_prompt_uses_full_selfdev_instructions() {
     assert!(!prompt.contains("Self-Development Access"));
 }
 
-#[test]
-fn test_selfdev_prompt_uses_desktop_focus_for_desktop_working_dir() {
-    let desktop_dir = std::path::Path::new("/tmp/jcode/crates/jcode-desktop2/src");
-    let (prompt, _info) = build_system_prompt_full(None, &[], true, None, Some(desktop_dir));
-    assert!(prompt.contains("launched from the jcode-desktop2"));
-    assert!(prompt.contains("selfdev build target=desktop2"));
-    assert!(!prompt.contains("launched from the TUI/root jcode context"));
-}
+
 
 #[test]
 fn test_split_selfdev_prompt_defaults_to_tui_focus_for_repo_root() {

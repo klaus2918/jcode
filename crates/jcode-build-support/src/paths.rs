@@ -640,8 +640,8 @@ mod tests {
     }
 
 
-    /// `auto` must route a change to the binary that contains it. Before
-    /// desktop2 was added here, editing it built the TUI instead.
+    /// `auto` must route a change to the binary that contains it, so editing
+    /// the TUI builds the TUI binary.
     #[test]
     fn auto_routes_changed_paths_to_the_right_binary() {
         let cases: Vec<(Vec<&str>, SelfDevBuildTarget)> = vec![
