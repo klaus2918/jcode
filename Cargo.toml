@@ -212,6 +212,7 @@ extra-providers = [
     "dep:jcode-provider-antigravity-runtime",
     "dep:jcode-provider-copilot-runtime",
     "dep:jcode-provider-claude-cli-runtime",
+    "jcode-provider-doctor/extra-providers",
 ]
 jemalloc = [
     "dep:tikv-jemallocator",
