@@ -195,13 +195,12 @@ pub fn install_panic_hook() {
 }
 
 pub fn mark_current_session_crashed(message: String) {
-    if let Some(session_id) = get_current_session() {
-        if let Ok(mut session) = session::Session::load(&session_id)
-            && matches!(session.status, session::SessionStatus::Active)
-        {
-            session.mark_crashed(Some(message));
-            let _ = session.save();
-        }
+    if let Some(session_id) = get_current_session()
+        && let Ok(mut session) = session::Session::load(&session_id)
+        && matches!(session.status, session::SessionStatus::Active)
+    {
+        session.mark_crashed(Some(message));
+        let _ = session.save();
     }
 }
 

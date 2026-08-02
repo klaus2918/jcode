@@ -10,7 +10,7 @@ use super::args::{
     ModelCommand, ProviderCommand, RestartCommand, ServerCommand, SessionCommand,
 };
 use crate::{
-    agent, auth, build, provider, provider_catalog, server, session, setup_hints, startup_profile,
+    agent, auth, build, provider, provider_catalog, server, session, startup_profile,
     tui,
 };
 
@@ -365,22 +365,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Permissions) => {
             tui::permissions::run_permissions()?;
         }
-        Some(Command::SetupHotkey {
-            listen_macos_hotkey,
-            notify_cli_launch,
-            listen_windows_hotkey,
-            uninstall,
-        }) => {
-            setup_hints::run_setup_hotkey(
-                listen_macos_hotkey,
-                listen_windows_hotkey,
-                uninstall,
-                notify_cli_launch.as_deref(),
-            )?;
-        }
-        Some(Command::SetupLauncher) => {
-            setup_hints::run_setup_launcher()?;
-        }
         Some(Command::Browser { action }) => {
             commands::run_browser(&action).await?;
         }
@@ -515,9 +499,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             RestartCommand::Status => commands::run_restart_status_command()?,
             RestartCommand::Clear => commands::run_restart_clear_command()?,
         },
-        Some(Command::Menubar { once, json }) => {
-            commands::run_menubar_command(once, json)?;
-        }
         None => run_default_command(args).await?,
     }
 
@@ -803,40 +784,6 @@ async fn run_default_command(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    let startup_hints = if args.fresh_spawn {
-        None
-    } else {
-        // One-time: bake per-repo launch hotkeys from session history into config,
-        // then reinstall so the new chords take effect. Scanning session history
-        // can take a few hundred ms, so run it on a detached thread to keep it off
-        // the first-frame critical path. It is gated by an `imported` flag, so it
-        // does real work at most once and no-ops on every later launch.
-        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            std::thread::Builder::new()
-                .name("launch-hotkey-bake".to_string())
-                .spawn(|| {
-                    if crate::config::Config::bake_launch_hotkeys_once() {
-                        setup_hints::reinstall_launch_hotkeys_after_config_change();
-                    }
-                })
-                .ok();
-        }
-
-        // Prefer existing setup hints (alignment/welcome/terminal nudges); only
-        // surface the keybinding-conflict heads-up when nothing else is queued,
-        // so we never clobber an early-launch tip. The conflict hint is
-        // self-debouncing (shown once per distinct conflict set).
-        setup_hints::maybe_show_setup_hints()
-            .or_else(|| {
-                setup_hints::maybe_show_keymap_conflict_hint(&crate::config::config().keybindings)
-            })
-            .or_else(setup_hints::maybe_show_glyph_safe_notice)
-    };
-    startup_profile::mark("setup_hints");
-
-    // Best-effort: make sure the macOS menu bar session-count indicator is
-    // running so it shows up automatically for every macOS user.
-    commands::ensure_menubar_helper_running();
 
     if args.resume.is_none() {
         terminal::show_crash_resume_hint();
@@ -847,15 +794,6 @@ async fn run_default_command(args: Args) -> Result<()> {
     let in_jcode_repo = build::is_jcode_repo(&cwd);
     startup_profile::mark("is_jcode_repo");
     let already_in_selfdev = crate::cli::selfdev::client_selfdev_requested();
-
-    // Record where this interactive launch happened so the system-wide launch
-    // hotkeys can reopen jcode in the last project directory (Cmd+') and the
-    // last jcode repo for self-dev (Cmd+Shift+'). Best-effort; ignored unless a
-    // real TTY and not a fresh-spawn re-entry.
-    if !args.fresh_spawn && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        let repo_dir = build::get_repo_dir();
-        setup_hints::record_launch_dirs(&cwd, repo_dir.as_deref());
-    }
 
     if in_jcode_repo && !already_in_selfdev && !args.no_selfdev {
         output::stderr_info("📍 Detected jcode repository - enabling self-dev mode");
@@ -941,7 +879,6 @@ async fn run_default_command(args: Args) -> Result<()> {
     }
     tui_launch::run_tui_client(
         args.resume,
-        startup_hints,
         !server_running,
         args.fresh_spawn,
         args.remote_working_dir,

@@ -7,7 +7,7 @@ pub use jcode_config_types::{
     AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
     CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
     DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HooksConfig, KeybindingsConfig,
-    LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode,
+    LatexRenderingMode, MarkdownSpacingMode,
     NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
     NativeScrollbarConfig, NetworkConfig, NotificationsConfig, OverscrollStatusMode, PowerConfig,
     ProviderApiFormat, ProviderConfig, ReasoningDisplayMode, SafetyConfig,
@@ -533,9 +533,6 @@ pub struct Config {
     /// [`sponsors_is_default`]).
     #[serde(skip_serializing_if = "sponsors_is_default")]
     pub sponsors: SponsorsConfig,
-
-    /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
-    pub launch_hotkeys: LaunchHotkeysConfig,
 
     /// Network / proxy configuration for outbound provider requests.
     pub network: NetworkConfig,

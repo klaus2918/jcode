@@ -3468,9 +3468,6 @@ impl App {
         let trimmed = input.trim();
         let handled = super::commands_dispatch::dispatch_local_command(self, trimmed);
         if handled {
-            if trimmed.starts_with('/') {
-
-            }
             return;
         }
 

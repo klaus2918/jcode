@@ -191,10 +191,7 @@ impl App {
                             "Claude",
                             "Claude Code",
                         ),
-                    ])
-                    .map(|review| {
-                        review
-                    }),
+                    ]),
                 },
             },
             SimScreen {

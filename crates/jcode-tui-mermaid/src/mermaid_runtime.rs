@@ -428,11 +428,6 @@ pub fn uses_text_image_fallback() -> bool {
     protocol_uses_text_image_fallback(protocol_type())
 }
 
-/// Enable video-export mode: mermaid images produce hash-placeholder lines
-/// even without a real terminal image protocol.
-
-/// Check if video export mode is active.
-
 /// Look up a cached PNG for the given mermaid content hash.
 /// Returns (path, width, height) if a cached render exists on disk.
 pub fn get_cached_png(hash: u64) -> Option<(PathBuf, u32, u32)> {

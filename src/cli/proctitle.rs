@@ -34,22 +34,6 @@ pub(crate) fn initial_title(args: &Args) -> String {
         Some(Command::Cloud(_)) => "jcode cloud".to_string(),
         Some(Command::Pair { .. }) => "jcode pair".to_string(),
         Some(Command::Permissions) => "jcode permissions".to_string(),
-        Some(Command::SetupHotkey {
-            listen_macos_hotkey,
-            notify_cli_launch,
-            listen_windows_hotkey,
-            uninstall,
-        }) => {
-            if *listen_macos_hotkey || *listen_windows_hotkey {
-                "jcode hotkey listener".to_string()
-            } else if notify_cli_launch.is_some() {
-                "jcode shortcut reminder".to_string()
-            } else if *uninstall {
-                "jcode hotkey uninstall".to_string()
-            } else {
-                "jcode hotkey setup".to_string()
-            }
-        }
         Some(Command::Browser { .. }) => "jcode browser".to_string(),
         Some(Command::Replay { .. }) => "jcode replay".to_string(),
         Some(Command::Model(_)) => "jcode model".to_string(),
@@ -57,8 +41,6 @@ pub(crate) fn initial_title(args: &Args) -> String {
         Some(Command::ProviderDoctor { .. }) => "jcode provider-doctor".to_string(),
         Some(Command::AuthTest { .. }) => "jcode auth-test".to_string(),
         Some(Command::Restart { .. }) => "jcode restart".to_string(),
-        Some(Command::Menubar { .. }) => "jcode menubar".to_string(),
-        Some(Command::SetupLauncher) => "jcode setup-launcher".to_string(),
         None => {
             if let Some(resume) = args.resume.as_deref().filter(|resume| !resume.is_empty()) {
                 let prefix = if crate::cli::selfdev::client_selfdev_requested() {
