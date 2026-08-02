@@ -354,7 +354,7 @@ fn onboarding_golden_telemetry_settings_page() {
     use crate::external_auth::ExternalAuthReviewCandidate;
     use crate::tui::app::onboarding_flow::ImportReview;
 
-    let mut review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
+    let review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
         "OpenAI/Codex",
         "Codex auth.json",
     )])

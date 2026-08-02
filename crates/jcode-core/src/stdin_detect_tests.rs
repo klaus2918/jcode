@@ -1,5 +1,4 @@
 use super::*;
-use std::process::{Command, Stdio};
 
 #[test]
 fn test_own_process_not_reading_stdin() {

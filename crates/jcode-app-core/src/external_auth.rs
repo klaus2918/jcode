@@ -730,7 +730,7 @@ mod render_markdown_tests {
         // The fixture points at the legacy Codex action -> OpenAI provider.
         let candidate = ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json");
         assert_eq!(
-            candidate.import_provider_labels(),
+            super::import_provider_labels(&candidate),
             vec!["openai"]
         );
     }

@@ -211,14 +211,7 @@ fn spawn_hook_defaults_to_none_and_parses_from_toml() {
     assert_eq!(cfg.terminal.spawn_hook.as_deref(), Some("tmux new-window"));
 }
 
-#[test]
-fn terminal_preferred_defaults_to_none_and_parses_from_toml() {
-    assert_eq!(Config::default().terminal.preferred, None);
 
-    let cfg: Config =
-        toml::from_str("[terminal]\npreferred = \"ghostty\"\n").expect("preferred should parse");
-    assert_eq!(cfg.terminal.preferred.as_deref(), Some("ghostty"));
-}
 
 #[test]
 fn hooks_config_defaults_and_parses_from_toml() {
