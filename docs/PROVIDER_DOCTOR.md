@@ -9,23 +9,25 @@ tracks (`jcode provider-test-coverage`), but as an interactive command you can r
 yourself, with clear pass/fail output and a "what to try next" hint on the first
 failure.
 
-It works with **OpenAI-compatible providers** (cerebras, fpt, nvidia-nim,
-comtegra, deepseek, groq, openrouter, and other `openai-compatible` profiles).
+It works with **OpenAI-compatible providers** (openrouter, gemini-api, ollama,
+lmstudio, openai-compatible, and other `openai-compatible` profiles). Any
+user-defined `[providers.<name>]` config profile is diagnosable by id too
+(`jcode provider-doctor <name> --tier offline`).
 
 ## Quick start
 
 ```bash
 # Validate jcode's own wiring for a provider, no API key, no spend:
-jcode provider-doctor cerebras --tier offline
+jcode provider-doctor openrouter --tier offline
 
 # Validate the key + live model catalog (needs a key, negligible spend):
-jcode provider-doctor cerebras --tier catalog
+jcode provider-doctor openrouter --tier catalog
 
 # Full readiness, including real chat, streaming, and tool calls (spends balance):
-jcode provider-doctor cerebras --tier full
+jcode provider-doctor openrouter --tier full
 
 # Pin a specific model and emit JSON for scripting/CI:
-jcode provider-doctor cerebras --model gpt-oss-120b --tier full --json
+jcode provider-doctor openrouter --model openai/gpt-5.5 --tier full --json
 ```
 
 The model defaults to the provider's default model (or the first live catalog
