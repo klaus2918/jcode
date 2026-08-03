@@ -177,16 +177,16 @@ fn auth_provider_hint_maps_openai_compatible_login_providers() {
         Some("azure-openai")
     );
     assert_eq!(
-        auth_provider_hint_for_login_provider("cerebras"),
-        Some("cerebras")
+        auth_provider_hint_for_login_provider("gemini-api"),
+        Some("gemini-api")
     );
     assert_eq!(
-        auth_provider_hint_for_login_provider("Cerebras"),
-        Some("cerebras")
+        auth_provider_hint_for_login_provider("Gemini API"),
+        Some("gemini-api")
     );
     assert_eq!(
-        auth_provider_hint_for_login_provider("minimax"),
-        Some("minimax")
+        auth_provider_hint_for_login_provider("lmstudio"),
+        Some("lmstudio")
     );
     assert_eq!(
         auth_provider_hint_for_login_provider("not-a-provider"),
@@ -255,10 +255,8 @@ fn auth_provider_hint_resolves_every_emitted_login_completed_provider() {
         // OAuth logins emit lowercase descriptor ids.
         ("openai", Some("openai")),
         ("claude", Some("claude")),
-        ("gemini", Some("gemini")),
-        ("copilot", Some("copilot")),
-        ("antigravity", Some("antigravity")),
-        ("cursor", Some("cursor")),
+        // OpenAI-compatible logins carry their catalog namespace id.
+        ("gemini-api", Some("gemini-api")),
         // API-key paste logins emit descriptor display labels.
         ("Anthropic API", Some("anthropic-api")),
         ("OpenAI API", Some("openai-api")),
@@ -345,11 +343,11 @@ fn auth_changed_event_for_oauth_claude_login_is_not_marked_as_api_key_paste() {
 }
 
 #[test]
-fn auth_changed_event_for_cerebras_login_carries_runtime_and_catalog_identity() {
-    let auth = super::auth_changed_event_for_login_provider("Cerebras")
-        .expect("Cerebras login should produce typed auth event");
+fn auth_changed_event_for_gemini_api_login_carries_runtime_and_catalog_identity() {
+    let auth = super::auth_changed_event_for_login_provider("Gemini API")
+        .expect("Gemini API login should produce typed auth event");
 
-    assert_eq!(auth.provider.as_str(), "cerebras");
+    assert_eq!(auth.provider.as_str(), "gemini-api");
     assert_eq!(
         auth.credential_source,
         Some(crate::protocol::AuthCredentialSource::ApiKeyFile)
@@ -368,7 +366,7 @@ fn auth_changed_event_for_cerebras_login_carries_runtime_and_catalog_identity() 
         auth.expected_catalog_namespace
             .as_ref()
             .map(crate::protocol::CatalogNamespace::as_str),
-        Some("cerebras")
+        Some("gemini-api")
     );
 }
 

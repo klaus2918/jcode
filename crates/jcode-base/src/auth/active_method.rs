@@ -188,10 +188,4 @@ mod tests {
         assert!(resolved.has_both());
     }
 
-    #[test]
-    fn non_dual_providers_return_none() {
-        let auth = AuthStatus::default();
-        assert!(resolve_dual_credential_auth(ActiveProvider::Copilot, &auth, None).is_none());
-        assert!(resolve_dual_credential_auth(ActiveProvider::Gemini, &auth, None).is_none());
-    }
 }

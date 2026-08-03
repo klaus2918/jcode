@@ -31,11 +31,7 @@ fn test_prompt_history_skips_slash_shell_and_empty_inputs() {
 #[test]
 fn test_prompt_history_skips_pending_login_input() {
     let mut app = create_test_app();
-    app.pending_login = Some(PendingLogin::Gemini {
-        verifier: "v".to_string(),
-        expected_state: None,
-        redirect_uri: "http://localhost".to_string(),
-    });
+    app.pending_login = Some(PendingLogin::AzureEndpoint);
 
     app.record_prompt_history("sk-secret-value");
 

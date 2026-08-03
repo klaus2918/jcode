@@ -82,10 +82,10 @@ impl MultiProvider {
         }
     }
 
-    pub(super) fn new_with_auth_status(auth_status: auth::AuthStatus) -> Self {
+    pub(super) fn new_with_auth_status(_auth_status: auth::AuthStatus) -> Self {
         let provider_init_start = std::time::Instant::now();
         let cfg = crate::config::config();
-        let provider_state = ProviderState::from_parts(cfg, &auth_status);
+        let provider_state = ProviderState::from_parts(cfg);
         let mut default_named_provider_profile: Option<String> = None;
         if std::env::var_os("JCODE_PROVIDER_PROFILE_ACTIVE").is_none()
             && std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE").is_none()
@@ -115,35 +115,12 @@ impl MultiProvider {
         let has_claude_creds =
             auth::claude::load_credentials().is_ok() || anthropic::has_anthropic_api_key();
         let has_openai_creds = auth::codex::load_credentials().is_ok();
-        let has_copilot_api = provider_state.auth_status().copilot_has_api_token;
-        let has_antigravity_creds = auth::antigravity::load_tokens().is_ok();
-        let has_gemini_creds = auth::gemini::load_tokens().is_ok() || auth::gemini::has_api_key();
-        let has_cursor_creds = provider_state
-            .auth_status()
-            .assessment_for_provider(crate::provider_catalog::CURSOR_LOGIN_PROVIDER)
-            .is_available();
         let has_bedrock_creds = bedrock::BedrockProvider::has_credentials();
         let has_openrouter_creds = openrouter::has_credentials();
 
-        let use_claude_cli = std::env::var("JCODE_USE_CLAUDE_CLI")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if use_claude_cli {
-            crate::logging::warn(
-                "JCODE_USE_CLAUDE_CLI is deprecated and will be removed. Direct Anthropic API transport is the default.",
-            );
-        }
+        let claude = None;
 
-        let claude = if has_claude_creds && use_claude_cli {
-            crate::logging::info(
-                "Using deprecated Claude CLI provider (forced by JCODE_USE_CLAUDE_CLI=1)",
-            );
-            external::instantiate_expected_external_provider(external::CLAUDE_CLI_RUNTIME)
-        } else {
-            None
-        };
-
-        let anthropic = if has_claude_creds && !use_claude_cli {
+        let anthropic = if has_claude_creds {
             external::instantiate_expected_external_provider(external::ANTHROPIC_RUNTIME)
         } else {
             None
@@ -151,43 +128,6 @@ impl MultiProvider {
 
         let openai = if has_openai_creds {
             external::instantiate_expected_external_provider(external::OPENAI_RUNTIME)
-        } else {
-            None
-        };
-
-        let copilot_api = if has_copilot_api {
-            // The composition-root factory handles construction, tier-detection
-            // scheduling (eager vs non-interactive deferral), and init-done
-            // signaling; None means credentials were missing or invalid.
-            let copilot_init_start = std::time::Instant::now();
-            let provider =
-                external::instantiate_expected_external_provider(external::COPILOT_RUNTIME);
-            match &provider {
-                Some(_) => crate::logging::info(&format!(
-                    "Copilot API provider initialized (direct API) in {}ms",
-                    copilot_init_start.elapsed().as_millis()
-                )),
-                None => crate::logging::info("Failed to initialize Copilot API (no credentials)"),
-            }
-            provider
-        } else {
-            None
-        };
-
-        let antigravity_provider = if has_antigravity_creds {
-            external::instantiate_expected_external_provider(external::ANTIGRAVITY_RUNTIME)
-        } else {
-            None
-        };
-
-        let gemini_provider = if has_gemini_creds {
-            external::instantiate_expected_external_provider(external::GEMINI_RUNTIME)
-        } else {
-            None
-        };
-
-        let cursor_provider = if has_cursor_creds {
-            external::instantiate_expected_external_provider(external::CURSOR_RUNTIME)
         } else {
             None
         };
@@ -224,28 +164,13 @@ impl MultiProvider {
             None
         };
 
-        let copilot_premium_zero = matches!(
-            std::env::var("JCODE_COPILOT_PREMIUM").ok().as_deref(),
-            Some("0")
-        );
         let availability = ProviderAvailability {
             openai: openai.is_some(),
             claude: claude.is_some() || anthropic.is_some(),
-            copilot: copilot_api.is_some(),
-            antigravity: antigravity_provider.is_some(),
-            gemini: gemini_provider.is_some(),
-            cursor: cursor_provider.is_some(),
             bedrock: bedrock_provider.is_some(),
             openrouter: openrouter.is_some(),
-            copilot_premium_zero,
         };
         let mut active = Self::auto_default_provider(availability);
-
-        if copilot_premium_zero && matches!(active, ActiveProvider::Copilot) {
-            crate::logging::info(
-                "Copilot premium mode is Zero (free requests) - defaulting to Copilot provider",
-            );
-        }
 
         let initial_provider = Self::initial_provider_from_env();
         if let Some(initial) = initial_provider {
@@ -291,7 +216,7 @@ impl MultiProvider {
                 }
             } else {
                 crate::logging::warn(&format!(
-                    "Unknown default_provider '{}' in config (expected: claude|openai|copilot|antigravity|gemini|cursor|bedrock|openrouter or an OpenAI-compatible profile such as deepseek|comtegra|zai|openai-compatible)",
+                    "Unknown default_provider '{}' in config (expected: claude|openai|bedrock|openrouter or an OpenAI-compatible profile)",
                     pref
                 ));
             }
@@ -301,16 +226,11 @@ impl MultiProvider {
             claude: RwLock::new(claude),
             anthropic: RwLock::new(anthropic),
             openai: RwLock::new(openai),
-            copilot_api: RwLock::new(copilot_api),
-            antigravity: RwLock::new(antigravity_provider),
-            gemini: RwLock::new(gemini_provider),
-            cursor: RwLock::new(cursor_provider),
             bedrock: RwLock::new(bedrock_provider),
             openrouter: RwLock::new(openrouter),
             openai_compatible_profiles: RwLock::new(HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
             active: RwLock::new(active),
-            use_claude_cli,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider,
             routes_memo: Mutex::new(None),
@@ -334,7 +254,7 @@ impl MultiProvider {
         result.spawn_openai_catalog_refresh_if_needed();
         result.auto_select_active_multi_account();
         crate::logging::info(&format!(
-            "[TIMING] provider_init: claude={}, anthropic={}, openai={}, copilot={}, antigravity={}, gemini={}, cursor={}, bedrock={}, openrouter={}, total={}ms",
+            "[TIMING] provider_init: claude={}, anthropic={}, openai={}, bedrock={}, openrouter={}, total={}ms",
             result
                 .claude
                 .read()
@@ -347,26 +267,6 @@ impl MultiProvider {
                 .is_some(),
             result
                 .openai
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_some(),
-            result
-                .copilot_api
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_some(),
-            result
-                .antigravity
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_some(),
-            result
-                .gemini
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_some(),
-            result
-                .cursor
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_some(),

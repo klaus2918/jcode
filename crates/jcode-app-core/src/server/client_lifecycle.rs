@@ -40,7 +40,7 @@ use super::comm_sync::{
 };
 use super::provider_control::{
     handle_cycle_model, handle_notify_auth_changed, handle_refresh_models,
-    handle_set_compaction_mode, handle_set_model, handle_set_premium_mode,
+    handle_set_compaction_mode, handle_set_model,
     handle_set_reasoning_effort, handle_set_route, handle_set_service_tier, handle_set_transport,
     handle_switch_anthropic_account, handle_switch_openai_account,
     try_available_models_updated_event,
@@ -1072,6 +1072,10 @@ pub(super) async fn handle_client(
         }
 
         match request {
+            Request::SetPremiumMode { .. } => {
+                // Copilot premium mode was removed with the Copilot runtime;
+                // accept the wire message for compatibility and ignore it.
+            }
             Request::Message {
                 id,
                 content,
@@ -1697,10 +1701,6 @@ pub(super) async fn handle_client(
 
             Request::RefreshModels { id } => {
                 handle_refresh_models(id, &provider, &agent, &client_event_tx).await;
-            }
-
-            Request::SetPremiumMode { id, mode } => {
-                handle_set_premium_mode(id, mode, &agent, &client_event_tx).await;
             }
 
             Request::SetModel { id, model } => {

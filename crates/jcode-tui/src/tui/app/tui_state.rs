@@ -20,8 +20,6 @@ enum WidgetProviderKind {
     OpenCode,
     OpenRouter,
     CostBasedApiKey,
-    Copilot,
-    Gemini,
     Unknown,
 }
 
@@ -41,8 +39,6 @@ impl WidgetProviderKind {
             {
                 Self::CostBasedApiKey
             }
-            Some(provider) if provider == "copilot" => Self::Copilot,
-            Some(provider) if provider == "gemini" => Self::Gemini,
             Some(provider) if provider == "openai" => Self::OpenAI,
             Some(provider) if matches!(provider.as_str(), "anthropic" | "claude") => {
                 Self::Anthropic
@@ -336,16 +332,6 @@ impl App {
                 }
             }
             WidgetProviderKind::CostBasedApiKey => crate::tui::info_widget::AuthMethod::ApiKey,
-            WidgetProviderKind::Copilot => crate::tui::info_widget::AuthMethod::CopilotOAuth,
-            WidgetProviderKind::Gemini => {
-                // Per-frame: never block the render thread on a credential probe.
-                let auth_status = crate::auth::AuthStatus::check_fast_nonblocking();
-                if auth_status.gemini == crate::auth::AuthState::Available {
-                    crate::tui::info_widget::AuthMethod::GeminiOAuth
-                } else {
-                    crate::tui::info_widget::AuthMethod::Unknown
-                }
-            }
             WidgetProviderKind::Unknown => crate::tui::info_widget::AuthMethod::Unknown,
         }
     }
@@ -398,24 +384,6 @@ impl App {
         };
 
         match route.provider {
-            WidgetProviderKind::Copilot => Some(crate::tui::info_widget::UsageInfo {
-                provider: crate::tui::info_widget::UsageProvider::Copilot,
-                primary_limit_label: None,
-                five_hour: 0.0,
-                five_hour_resets_at: None,
-                secondary_limit_label: None,
-                seven_day: 0.0,
-                seven_day_resets_at: None,
-                spark: None,
-                spark_resets_at: None,
-                total_cost: 0.0,
-                input_tokens: display_input_tokens,
-                output_tokens: display_output_tokens,
-                cache_read_tokens: None,
-                cache_write_tokens: None,
-                output_tps,
-                available: display_input_tokens > 0 || display_output_tokens > 0,
-            }),
             WidgetProviderKind::Anthropic => {
                 match auth_method {
                     crate::tui::info_widget::AuthMethod::AnthropicApiKey => {
@@ -497,7 +465,6 @@ impl App {
                     available: openai_usage.has_limits(),
                 })
             }
-            WidgetProviderKind::Gemini => None,
             WidgetProviderKind::OpenRouter => {
                 if route.is_remote {
                     return Some(cost_based_usage());

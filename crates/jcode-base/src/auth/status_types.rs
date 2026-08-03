@@ -36,16 +36,6 @@ pub struct AuthStatus {
     pub azure_has_api_key: bool,
     /// Azure OpenAI is configured for Entra ID authentication
     pub azure_uses_entra: bool,
-    /// Copilot API available (GitHub OAuth token found)
-    pub copilot: AuthState,
-    /// Copilot has API token (from hosts.json/apps.json/GITHUB_TOKEN)
-    pub copilot_has_api_token: bool,
-    /// Antigravity OAuth configured
-    pub antigravity: AuthState,
-    /// Gemini CLI available
-    pub gemini: AuthState,
-    /// Cursor provider configured via Cursor Agent plus API key or CLI session
-    pub cursor: AuthState,
     /// Google/Gmail OAuth configured
     pub google: AuthState,
     /// Google Gmail has send capability (Full tier)

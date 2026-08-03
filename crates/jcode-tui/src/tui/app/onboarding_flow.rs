@@ -34,7 +34,6 @@ pub(crate) enum ExternalCli {
     ClaudeCode,
     Pi,
     OpenCode,
-    Cursor,
 }
 
 impl ExternalCli {
@@ -44,7 +43,6 @@ impl ExternalCli {
             ExternalCli::ClaudeCode => "Claude Code",
             ExternalCli::Pi => "Pi",
             ExternalCli::OpenCode => "OpenCode",
-            ExternalCli::Cursor => "Cursor",
         }
     }
 }
@@ -488,16 +486,6 @@ pub(crate) fn detect_external_cli_oauths() -> Vec<ExternalCli> {
         )
     {
         found.push(ExternalCli::OpenCode);
-    }
-    // Cursor agent stores its credentials in a vscdb/keychain rather than a
-    // plain JSON file, so the reliable "can we resume?" signal is the presence
-    // of agent transcripts under ~/.cursor/projects. Fall back to the optional
-    // auth.json when transcripts have not been written yet.
-    if external_transcripts_present(&external_home_path(".cursor/projects"), "jsonl")
-        || external_oauth_present(&external_home_path(".cursor/auth.json"))
-        || external_oauth_present(&external_home_path(".config/cursor/auth.json"))
-    {
-        found.push(ExternalCli::Cursor);
     }
     found
 }

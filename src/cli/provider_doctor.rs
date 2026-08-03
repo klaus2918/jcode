@@ -5,8 +5,6 @@ use std::io::IsTerminal;
 use anyhow::{Context, Result, anyhow};
 
 use crate::live_tests::LiveVerificationStageStatus;
-#[cfg(feature = "extra-providers")]
-use jcode_provider_doctor::run_antigravity_native_e2e;
 use jcode_provider_doctor::{
     DoctorReport, DoctorTier, NativeProviderKind, native_doctor_supports_provider,
     run_claude_native_e2e, run_generic_native_e2e, run_provider_e2e,
@@ -24,24 +22,12 @@ pub async fn run_provider_doctor_command(
 
     // Native-runtime providers cannot be driven by the OpenAI-compatible doctor;
     // route them to their native drivers, which exercise the production runtime.
-    // Claude and Antigravity keep bespoke drivers (unusual credential/catalog
-    // stories); everything else flows through the generic native driver.
+    // Claude keeps a bespoke driver (unusual credential/catalog story);
+    // everything else flows through the generic native driver.
     if native_doctor_supports_provider(provider) {
         let normalized = crate::auth::lifecycle::normalized_auth_provider_id(Some(provider));
         let report = match normalized {
             Some("claude") => run_claude_native_e2e(provider, model, tier).await?,
-            Some("antigravity") => {
-                #[cfg(feature = "extra-providers")]
-                {
-                    run_antigravity_native_e2e(provider, model, tier).await?
-                }
-                #[cfg(not(feature = "extra-providers"))]
-                {
-                    anyhow::bail!(
-                        "antigravity runtime is not built; enable the `extra-providers` feature"
-                    )
-                }
-            }
             Some(other) => {
                 let kind = NativeProviderKind::from_normalized(other)
                     .ok_or_else(|| anyhow!("`{provider}` has no native provider-doctor driver"))?;

@@ -22,34 +22,6 @@ impl MultiProvider {
             .clone()
     }
 
-    pub(super) fn antigravity_provider(&self) -> Option<Arc<dyn Provider>> {
-        self.antigravity
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    pub(super) fn gemini_provider(&self) -> Option<Arc<dyn Provider>> {
-        self.gemini
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    pub(super) fn copilot_provider(&self) -> Option<Arc<dyn Provider>> {
-        self.copilot_api
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    pub(super) fn cursor_provider(&self) -> Option<Arc<dyn Provider>> {
-        self.cursor
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
     pub(super) fn bedrock_provider(&self) -> Option<Arc<bedrock::BedrockProvider>> {
         self.bedrock
             .read()
@@ -77,10 +49,6 @@ impl MultiProvider {
         match provider {
             ActiveProvider::Claude => self.has_claude_runtime(),
             ActiveProvider::OpenAI => self.openai_provider().is_some(),
-            ActiveProvider::Copilot => self.copilot_provider().is_some(),
-            ActiveProvider::Antigravity => self.antigravity_provider().is_some(),
-            ActiveProvider::Gemini => self.gemini_provider().is_some(),
-            ActiveProvider::Cursor => self.cursor_provider().is_some(),
             ActiveProvider::Bedrock => self.bedrock_provider().is_some(),
             // The OpenRouter slot executes through the *active* runtime: a
             // direct OpenAI-compatible profile when one is active, else real

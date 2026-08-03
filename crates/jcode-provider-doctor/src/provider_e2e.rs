@@ -26,11 +26,6 @@ use crate::live_provider_probes::{
     run_live_native_provider_tool_smoke, run_live_openai_compatible_smoke,
     run_live_openai_compatible_stream_smoke, run_live_openai_compatible_tool_smoke,
 };
-#[cfg(feature = "extra-providers")]
-use crate::live_provider_probes::{
-    run_live_antigravity_native_reasoning_smoke, run_live_antigravity_native_smoke,
-    run_live_antigravity_native_stream_smoke, run_live_antigravity_native_tool_smoke,
-};
 use jcode_base::auth::lifecycle::{
     AuthActivationRequest, activate_auth_change, validate_catalog_invariants,
 };
@@ -546,7 +541,7 @@ pub async fn run_provider_e2e(
 /// The native-runtime providers this doctor can drive directly (i.e. providers
 /// whose live path is not OpenAI-compatible and so cannot be exercised by
 /// [`run_provider_e2e`]). Today this is the Claude OAuth/subscription provider,
-/// the Antigravity (Google OAuth Cloud Code) provider, and the generic
+/// and the generic
 /// native-runtime providers (OpenAI, Gemini, Cursor, Copilot, Bedrock).
 ///
 /// The predicate itself lives in `jcode_base::auth::doctor` so base-internal
@@ -936,375 +931,22 @@ async fn run_native_claude_api_checks(
     );
 }
 
-/// The wiring contract for the native Antigravity (Google OAuth Cloud Code)
-/// provider.
-///
-/// `antigravity` activates the `Antigravity` runtime and routes through the
-/// `antigravity:` model-switch prefix; its live-catalog routes carry the
-/// `https` api_method (parsed as [`ModelRouteApiMethod::AntigravityHttps`]) and
-/// the `Antigravity` provider label.
-#[cfg(feature = "extra-providers")]
-fn native_antigravity_wiring_contract() -> WiringContract {
-    WiringContract {
-        api_method: "https".to_string(),
-        route_provider: "Antigravity".to_string(),
-        expected_runtime: "antigravity",
-        expected_namespace: None,
-        switch_prefix: "antigravity:".to_string(),
-    }
-}
-
-/// Credential descriptor for the native Antigravity doctor. Antigravity uses
-/// Google OAuth tokens minted by `jcode login --provider antigravity`; the
-/// tokens rotate and are never persisted here, so we record only the source
-/// (and the resolved Google account email when available) without a secret.
-#[cfg(feature = "extra-providers")]
-fn native_antigravity_auth(account: &str) -> LiveVerificationAuth {
-    let source = if account.trim().is_empty() {
-        "Antigravity Google OAuth via auth.json".to_string()
-    } else {
-        format!("Antigravity Google OAuth ({account}) via auth.json")
-    };
-    LiveVerificationAuth::non_secret(source, None::<String>)
-}
-
-/// Pick the cheapest sensible Antigravity model from a catalog for a smoke run.
-///
-/// Prefers a Gemini Flash tier (cheapest, and the backend's native path that
-/// accepts every schema construct jcode emits), then any Gemini model, then any
-/// available catalog model. Returns `None` when the catalog is empty, letting
-/// the caller fall back to the runtime default.
-#[cfg(feature = "extra-providers")]
-fn cheapest_antigravity_model(catalog_models: &[String]) -> Option<String> {
-    let is_alias = |m: &&String| m.trim().is_empty() || m.trim() == "default";
-    if let Some(flash) = catalog_models.iter().filter(|m| !is_alias(m)).find(|m| {
-        let lower = m.to_ascii_lowercase();
-        lower.starts_with("gemini") && lower.contains("flash")
-    }) {
-        return Some(flash.clone());
-    }
-    if let Some(gemini) = catalog_models
-        .iter()
-        .filter(|m| !is_alias(m))
-        .find(|m| m.to_ascii_lowercase().starts_with("gemini"))
-    {
-        return Some(gemini.clone());
-    }
-    catalog_models.iter().find(|m| !is_alias(m)).cloned()
-}
-
-/// Run the strict provider/model diagnostic for the **native Antigravity**
-/// provider.
-///
-/// The native-runtime counterpart to [`run_provider_e2e`] for Antigravity:
-/// instead of driving an OpenAI-compatible HTTP shim, it exercises the
-/// production [`AntigravityProvider`] runtime end to end (Google OAuth token
-/// load/refresh, project resolution, the live `fetchAvailableModels` catalog,
-/// request shaping, the per-model schema normalization, the Gemini->StreamEvent
-/// translation, and Gemini-3 thought-signature tool round-trips). It records the
-#[cfg(feature = "extra-providers")]
-/// same strict checkpoints so the coverage ledger can promote `antigravity` to
-/// READY exactly like a doctor-drivable provider.
-pub async fn run_antigravity_native_e2e(
-    provider_id: &str,
-    requested_model: Option<&str>,
-    tier: DoctorTier,
-) -> anyhow::Result<DoctorReport> {
-    use jcode_base::provider::Provider;
-    use jcode_provider_antigravity_runtime::AntigravityProvider;
-
-    // The antigravity login provider has a single fixed id; accept any alias the
-    // caller passed (e.g. "antigravity") and normalize to the canonical id.
-    let _ = jcode_base::auth::lifecycle::normalized_auth_provider_id(Some(provider_id));
-    let provider_label = jcode_base::auth::lifecycle::provider_display_label(Some("antigravity"))
-        .unwrap_or_else(|| "Antigravity".to_string());
-    let provider_id = "antigravity".to_string();
-    let mut checks: Vec<DoctorCheck> = Vec::new();
-
-    let runtime = AntigravityProvider::new();
-
-    // --- Stage 1: credential resolution (Google OAuth tokens) ---
-    let mut account = String::new();
-    if tier.requires_api_key() {
-        match runtime.resolve_account_for_doctor().await {
-            Ok(resolved) => {
-                account = resolved;
-                let detail = if account.trim().is_empty() {
-                    "Resolved Antigravity Google OAuth credential".to_string()
-                } else {
-                    format!("Resolved Antigravity Google OAuth credential ({account})")
-                };
-                checks.push(DoctorCheck::passed(
-                    checkpoints::AUTH_CREDENTIAL_LOADED,
-                    label_for(checkpoints::AUTH_CREDENTIAL_LOADED),
-                    detail,
-                ));
-            }
-            Err(error) => {
-                checks.push(DoctorCheck::failed(
-                    checkpoints::AUTH_CREDENTIAL_LOADED,
-                    label_for(checkpoints::AUTH_CREDENTIAL_LOADED),
-                    format!(
-                        "could not resolve an Antigravity credential: {error}. \
-                         Run `jcode login --provider antigravity` to sign in."
-                    ),
-                ));
-                return Ok(finish_report(
-                    provider_id,
-                    provider_label,
-                    requested_model.unwrap_or("").to_string(),
-                    tier,
-                    checks,
-                    DoctorSpend::default(),
-                    native_antigravity_auth(&account),
-                ));
-            }
-        }
-    } else {
-        checks.push(DoctorCheck::skipped(
-            checkpoints::AUTH_CREDENTIAL_LOADED,
-            label_for(checkpoints::AUTH_CREDENTIAL_LOADED),
-            "offline tier: no credential required".to_string(),
-        ));
-    }
-
-    // --- Stage 2: live model catalog (or synthetic for offline) ---
-    let catalog_models: Vec<String> = if tier.requires_api_key() {
-        match runtime.fetch_live_model_ids_for_doctor().await {
-            Ok(models) if !models.is_empty() => {
-                checks.push(DoctorCheck::passed(
-                    checkpoints::MODEL_CATALOG_LIVE_ENDPOINT,
-                    label_for(checkpoints::MODEL_CATALOG_LIVE_ENDPOINT),
-                    format!("{} live model(s) returned", models.len()),
-                ));
-                models
-            }
-            Ok(_) => {
-                checks.push(DoctorCheck::failed(
-                    checkpoints::MODEL_CATALOG_LIVE_ENDPOINT,
-                    label_for(checkpoints::MODEL_CATALOG_LIVE_ENDPOINT),
-                    "live Antigravity catalog returned no available models".to_string(),
-                ));
-                return Ok(finish_report(
-                    provider_id,
-                    provider_label,
-                    requested_model.unwrap_or("").to_string(),
-                    tier,
-                    checks,
-                    DoctorSpend::default(),
-                    native_antigravity_auth(&account),
-                ));
-            }
-            Err(error) => {
-                checks.push(DoctorCheck::failed(
-                    checkpoints::MODEL_CATALOG_LIVE_ENDPOINT,
-                    label_for(checkpoints::MODEL_CATALOG_LIVE_ENDPOINT),
-                    format_error_chain(&error),
-                ));
-                return Ok(finish_report(
-                    provider_id,
-                    provider_label,
-                    requested_model.unwrap_or("").to_string(),
-                    tier,
-                    checks,
-                    DoctorSpend::default(),
-                    native_antigravity_auth(&account),
-                ));
-            }
-        }
-    } else {
-        checks.push(DoctorCheck::skipped(
-            checkpoints::MODEL_CATALOG_LIVE_ENDPOINT,
-            label_for(checkpoints::MODEL_CATALOG_LIVE_ENDPOINT),
-            "offline tier: using known Antigravity model ids (no network)".to_string(),
-        ));
-        runtime
-            .available_models()
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-    };
-
-    // Pick the model under test. Without an explicit request, prefer the
-    // cheapest Gemini Flash tier (cheapest + native path) so the live smoke run
-    // spends as little quota as possible.
-    let default_model = runtime.model();
-    let selected = match requested_model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(model) => {
-            if tier.requires_api_key() && !catalog_models.iter().any(|m| m == model) {
-                checks.push(DoctorCheck::failed(
-                    checkpoints::MODEL_CATALOG_LIVE_ENDPOINT,
-                    label_for(checkpoints::MODEL_CATALOG_LIVE_ENDPOINT),
-                    format!(
-                        "requested model `{model}` is not in the live catalog ({} model(s): {})",
-                        catalog_models.len(),
-                        truncate_list(&catalog_models)
-                    ),
-                ));
-                return Ok(finish_report(
-                    provider_id,
-                    provider_label,
-                    model.to_string(),
-                    tier,
-                    checks,
-                    DoctorSpend::default(),
-                    native_antigravity_auth(&account),
-                ));
-            }
-            model.to_string()
-        }
-        None => cheapest_antigravity_model(&catalog_models)
-            .or_else(|| {
-                catalog_models
-                    .iter()
-                    .find(|m| **m == default_model)
-                    .cloned()
-            })
-            .or_else(|| catalog_models.first().cloned())
-            .unwrap_or(default_model),
-    };
-
-    // --- Stage 3: auth-lifecycle wiring (catalog reload, picker, fallback, switch) ---
-    run_wiring_checks_for_contract(
-        &provider_id,
-        &native_antigravity_wiring_contract(),
-        &selected,
-        &catalog_models,
-        &mut checks,
-    );
-
-    // --- Stage 4: API-dependent checkpoints (live native runtime) ---
-    let mut spend = DoctorSpend::default();
-    if tier == DoctorTier::Full {
-        run_native_antigravity_api_checks(&selected, &mut checks, &mut spend).await;
-    } else {
-        for checkpoint in API_DEPENDENT_CHECKPOINTS {
-            checks.push(DoctorCheck::skipped(
-                checkpoint,
-                label_for(checkpoint),
-                format!(
-                    "{} tier: requires --tier full (spends quota)",
-                    tier.as_str()
-                ),
-            ));
-        }
-    }
-
-    Ok(finish_report(
-        provider_id,
-        provider_label,
-        selected,
-        tier,
-        checks,
-        spend,
-        native_antigravity_auth(&account),
-    ))
-}
-
-#[cfg(feature = "extra-providers")]
-/// Drive the three live native-Antigravity probes and fold their results into
-/// the six API-dependent checkpoints, mirroring [`run_native_claude_api_checks`].
-async fn run_native_antigravity_api_checks(
-    selected: &str,
-    checks: &mut Vec<DoctorCheck>,
-    spend: &mut DoctorSpend,
-) {
-    // Non-streaming completion.
-    match run_live_antigravity_native_smoke(selected).await {
-        Ok(stage) => {
-            spend.accumulate(stage.evidence.get("usage"), stage.evidence.get("cost"));
-            checks.push(DoctorCheck::passed(
-                checkpoints::NON_STREAMING_CHAT_COMPLETION,
-                label_for(checkpoints::NON_STREAMING_CHAT_COMPLETION),
-                "received expected completion".to_string(),
-            ));
-        }
-        Err(error) => checks.push(DoctorCheck::failed(
-            checkpoints::NON_STREAMING_CHAT_COMPLETION,
-            label_for(checkpoints::NON_STREAMING_CHAT_COMPLETION),
-            format_error_chain(&error),
-        )),
-    }
-
-    // Streaming completion.
-    match run_live_antigravity_native_stream_smoke(selected).await {
-        Ok(stage) => {
-            spend.accumulate(stage.evidence.get("usage"), stage.evidence.get("cost"));
-            checks.push(DoctorCheck::passed(
-                checkpoints::STREAMING_CHAT_COMPLETION,
-                label_for(checkpoints::STREAMING_CHAT_COMPLETION),
-                "received expected streamed completion".to_string(),
-            ));
-        }
-        Err(error) => checks.push(DoctorCheck::failed(
-            checkpoints::STREAMING_CHAT_COMPLETION,
-            label_for(checkpoints::STREAMING_CHAT_COMPLETION),
-            format_error_chain(&error),
-        )),
-    }
-
-    // Tool call + derived execution/result/smoke checkpoints (one round-trip).
-    match run_live_antigravity_native_tool_smoke(selected).await {
-        Ok(stage) => {
-            spend.accumulate(stage.evidence.get("usage"), stage.evidence.get("cost"));
-            let detail = tool_stage_detail(&stage);
-            for checkpoint in [
-                checkpoints::TOOL_CALL_PARSE,
-                checkpoints::TOOL_EXECUTION_LOOP,
-                checkpoints::TOOL_RESULT_FOLLOWUP,
-                checkpoints::REAL_JCODE_TOOL_SMOKE,
-            ] {
-                checks.push(DoctorCheck::passed(
-                    checkpoint,
-                    label_for(checkpoint),
-                    detail.clone(),
-                ));
-            }
-        }
-        Err(error) => {
-            for checkpoint in [
-                checkpoints::TOOL_CALL_PARSE,
-                checkpoints::TOOL_EXECUTION_LOOP,
-                checkpoints::TOOL_RESULT_FOLLOWUP,
-                checkpoints::REAL_JCODE_TOOL_SMOKE,
-            ] {
-                checks.push(DoctorCheck::failed(
-                    checkpoint,
-                    label_for(checkpoint),
-                    format_error_chain(&error),
-                ));
-            }
-        }
-    }
-
-    // Reasoning capability (observe-only; never gates readiness).
-    push_reasoning_check(
-        run_live_antigravity_native_reasoning_smoke(selected).await,
-        checks,
-        spend,
-    );
-}
-
 // === Generic native-runtime doctor =========================================
 //
-// Claude and Antigravity each have a bespoke `run_*_native_e2e` driver above
-// because their credential/catalog stories are unusual (OAuth-vs-API-key mode
-// pinning for Claude; Google project resolution + thought-signature replay for
-// Antigravity). The remaining native-runtime providers (OpenAI OAuth, Gemini
-// Code Assist, Cursor, GitHub Copilot, AWS Bedrock) share the same shape:
+// Claude has a bespoke `run_*_native_e2e` driver above because its
+// credential/catalog story is unusual (OAuth-vs-API-key mode pinning). The
+// remaining native-runtime providers (OpenAI OAuth, AWS Bedrock) share the
+// same shape:
 // resolve a credential, fetch the live catalog through the production runtime,
 // then run the shared wiring + API probes. `run_generic_native_e2e` drives all
 // of them from a single [`NativeProviderSpec`] so adding a provider is a small,
 // declarative change rather than a copy of the ~200-line driver.
 
 /// The native-runtime providers driven by the generic doctor (everything except
-/// Claude and Antigravity, which keep their bespoke drivers).
+/// Claude, which keeps its bespoke driver).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeProviderKind {
     OpenAi,
-    Gemini,
-    Cursor,
-    Copilot,
     Bedrock,
     Jcode,
     Azure,
@@ -1315,9 +957,6 @@ impl NativeProviderKind {
     pub fn from_normalized(provider_id: &str) -> Option<Self> {
         match provider_id {
             "openai" => Some(Self::OpenAi),
-            "gemini" => Some(Self::Gemini),
-            "cursor" => Some(Self::Cursor),
-            "copilot" => Some(Self::Copilot),
             "bedrock" => Some(Self::Bedrock),
             "jcode" => Some(Self::Jcode),
             "azure-openai" => Some(Self::Azure),
@@ -1340,48 +979,6 @@ impl NativeProviderKind {
                 auth_source: "OpenAI ChatGPT OAuth / API key via auth.json",
                 auth_env_key: None,
                 login_hint: "jcode login --provider openai",
-            },
-            Self::Gemini => NativeProviderSpec {
-                provider_id: "gemini",
-                label: "Google Gemini",
-                contract: WiringContract {
-                    api_method: "code-assist-oauth".to_string(),
-                    route_provider: "Gemini".to_string(),
-                    expected_runtime: "gemini",
-                    expected_namespace: None,
-                    switch_prefix: "gemini:".to_string(),
-                },
-                auth_source: "Gemini Code Assist Google OAuth via gemini_oauth.json",
-                auth_env_key: None,
-                login_hint: "jcode login --provider gemini",
-            },
-            Self::Cursor => NativeProviderSpec {
-                provider_id: "cursor",
-                label: "Cursor",
-                contract: WiringContract {
-                    api_method: "cursor".to_string(),
-                    route_provider: "Cursor".to_string(),
-                    expected_runtime: "cursor",
-                    expected_namespace: None,
-                    switch_prefix: "cursor:".to_string(),
-                },
-                auth_source: "Cursor API key / CLI session via auth.json",
-                auth_env_key: Some("CURSOR_API_KEY"),
-                login_hint: "jcode login --provider cursor",
-            },
-            Self::Copilot => NativeProviderSpec {
-                provider_id: "copilot",
-                label: "GitHub Copilot",
-                contract: WiringContract {
-                    api_method: "copilot".to_string(),
-                    route_provider: "Copilot".to_string(),
-                    expected_runtime: "copilot",
-                    expected_namespace: None,
-                    switch_prefix: "copilot:".to_string(),
-                },
-                auth_source: "GitHub Copilot device-flow token via hosts.json",
-                auth_env_key: None,
-                login_hint: "jcode login --provider copilot",
             },
             Self::Bedrock => NativeProviderSpec {
                 provider_id: "bedrock",
@@ -1459,46 +1056,6 @@ impl NativeProviderKind {
                     credentials,
                 ))
             }
-            Self::Gemini => {
-                std::sync::Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
-            }
-            Self::Cursor => {
-                #[cfg(feature = "extra-providers")]
-                {
-                    return Ok(std::sync::Arc::new(
-                        jcode_provider_cursor_runtime::CursorCliProvider::new(),
-                    ));
-                }
-                #[cfg(not(feature = "extra-providers"))]
-                anyhow::bail!("cursor runtime is not built; enable the `extra-providers` feature");
-            }
-            Self::Copilot => {
-                #[cfg(feature = "extra-providers")]
-                {
-                    // `new()` requires a loadable GitHub token; fall back to an empty
-                    // token so the offline tier can still construct the runtime for
-                    // its static catalog. Live tiers resolve the real credential
-                    // separately and fail with a clear message if it is missing.
-                    //
-                    // Disable the startup prefetch grace window: the runtime's
-                    // `complete` blocks on `wait_for_init`, which is only released by
-                    // `detect_tier_and_set_default` (run from `prefetch_models`). With
-                    // the default grace window the doctor's immediate prefetch returns
-                    // early without marking init done, so the live probes would hang.
-                    jcode_base::env::set_var("JCODE_COPILOT_PREFETCH_STARTUP_GRACE_MS", "0");
-                    let runtime = match jcode_provider_copilot_runtime::CopilotApiProvider::new() {
-                        Ok(runtime) => runtime,
-                        Err(_) => {
-                            jcode_provider_copilot_runtime::CopilotApiProvider::new_with_token(
-                                String::new(),
-                            )
-                        }
-                    };
-                    return Ok(std::sync::Arc::new(runtime));
-                }
-                #[cfg(not(feature = "extra-providers"))]
-                anyhow::bail!("copilot runtime is not built; enable the `extra-providers` feature");
-            }
             Self::Bedrock => {
                 std::sync::Arc::new(jcode_base::provider::bedrock::BedrockProvider::new())
             }
@@ -1536,31 +1093,6 @@ impl NativeProviderKind {
                     anyhow::bail!("resolved an empty OpenAI access token");
                 }
                 Ok("OpenAI credential resolved".to_string())
-            }
-            Self::Gemini => {
-                let tokens = jcode_base::auth::gemini::load_or_refresh_tokens()
-                    .await
-                    .context("load Gemini OAuth tokens")?;
-                if tokens.access_token.trim().is_empty() {
-                    anyhow::bail!("resolved an empty Gemini access token");
-                }
-                Ok("Gemini Code Assist OAuth credential resolved".to_string())
-            }
-            Self::Cursor => {
-                let key = jcode_base::auth::cursor::load_api_key()
-                    .context("load Cursor credential (run `jcode login --provider cursor`)")?;
-                if key.trim().is_empty() {
-                    anyhow::bail!("resolved an empty Cursor credential");
-                }
-                Ok("Cursor credential resolved".to_string())
-            }
-            Self::Copilot => {
-                let token = jcode_base::auth::copilot::load_github_token()
-                    .context("load GitHub Copilot token (run `jcode login --provider copilot`)")?;
-                if token.trim().is_empty() {
-                    anyhow::bail!("resolved an empty GitHub Copilot token");
-                }
-                Ok("GitHub Copilot token resolved".to_string())
             }
             Self::Bedrock => {
                 if !jcode_base::provider::bedrock::BedrockProvider::has_credentials() {
@@ -1606,9 +1138,6 @@ impl NativeProviderKind {
         // Prefer cheaper "mini"/"flash"/"haiku"/"fast" tiers when present.
         let cheap_markers: &[&str] = match self {
             Self::OpenAi => &["mini", "nano"],
-            Self::Gemini => &["flash"],
-            Self::Cursor => &["composer", "fast", "mini"],
-            Self::Copilot => &["mini", "haiku", "flash", "fast"],
             Self::Bedrock => &["haiku", "micro", "lite", "mini", "flash"],
             Self::Jcode => &["mini", "flash", "haiku", "lite", "nano"],
             Self::Azure => &["mini", "nano", "flash", "haiku"],
@@ -2449,9 +1978,6 @@ mod tests {
     fn native_provider_kind_maps_every_generic_id() {
         for (id, expected) in [
             ("openai", NativeProviderKind::OpenAi),
-            ("gemini", NativeProviderKind::Gemini),
-            ("cursor", NativeProviderKind::Cursor),
-            ("copilot", NativeProviderKind::Copilot),
             ("bedrock", NativeProviderKind::Bedrock),
             ("jcode", NativeProviderKind::Jcode),
             ("azure-openai", NativeProviderKind::Azure),
@@ -2470,9 +1996,6 @@ mod tests {
         // contract's api_method-derived routes will satisfy, and a stable id.
         for kind in [
             NativeProviderKind::OpenAi,
-            NativeProviderKind::Gemini,
-            NativeProviderKind::Cursor,
-            NativeProviderKind::Copilot,
             NativeProviderKind::Bedrock,
             NativeProviderKind::Jcode,
             NativeProviderKind::Azure,
@@ -2554,10 +2077,9 @@ mod tests {
     }
 
     #[test]
-    fn native_doctor_supports_claude_and_antigravity() {
+    fn native_doctor_supports_claude() {
         assert!(native_doctor_supports_provider("claude"));
         assert!(native_doctor_supports_provider("anthropic"));
-        assert!(native_doctor_supports_provider("antigravity"));
         // OpenAI-compatible profiles are driven by the generic doctor, not the
         // native path.
         assert!(!native_doctor_supports_provider("openrouter"));
@@ -2575,9 +2097,6 @@ mod tests {
     fn native_provider_roster_matches_base_predicate() {
         for kind in [
             NativeProviderKind::OpenAi,
-            NativeProviderKind::Gemini,
-            NativeProviderKind::Cursor,
-            NativeProviderKind::Copilot,
             NativeProviderKind::Bedrock,
             NativeProviderKind::Jcode,
             NativeProviderKind::Azure,
@@ -2588,23 +2107,10 @@ mod tests {
                 "base predicate rejects generic native driver id {id:?}"
             );
         }
-        for id in ["claude", "antigravity"] {
-            assert!(
-                native_doctor_supports_provider(id),
-                "base predicate rejects bespoke native driver id {id:?}"
-            );
-        }
-    }
-
-    #[cfg(feature = "extra-providers")]
-    #[test]
-    fn native_antigravity_contract_routes_via_https_prefix() {
-        let contract = native_antigravity_wiring_contract();
-        assert_eq!(contract.api_method, "https");
-        assert_eq!(contract.route_provider, "Antigravity");
-        assert_eq!(contract.expected_runtime, "antigravity");
-        assert!(contract.expected_namespace.is_none());
-        assert_eq!(contract.switch_prefix, "antigravity:");
+        assert!(
+            native_doctor_supports_provider("claude"),
+            "base predicate rejects bespoke native driver id claude"
+        );
     }
 
     #[test]
@@ -2621,54 +2127,6 @@ mod tests {
         assert_eq!(contract.expected_runtime, "jcode");
         assert!(contract.expected_namespace.is_none());
         assert!(contract.switch_prefix.is_empty());
-    }
-
-    #[cfg(feature = "extra-providers")]
-    #[test]
-    fn cheapest_antigravity_model_prefers_gemini_flash() {
-        let catalog = vec![
-            "claude-opus-4-6-thinking".to_string(),
-            "gemini-3.1-pro-high".to_string(),
-            "gemini-3-flash".to_string(),
-            "gpt-oss-120b-medium".to_string(),
-        ];
-        assert_eq!(
-            cheapest_antigravity_model(&catalog).as_deref(),
-            Some("gemini-3-flash")
-        );
-    }
-
-    #[cfg(feature = "extra-providers")]
-    #[test]
-    fn cheapest_antigravity_model_falls_back_to_any_gemini_then_any_model() {
-        // No flash tier: any Gemini wins.
-        let gemini_only = vec![
-            "claude-sonnet-4-6".to_string(),
-            "gemini-3.1-pro-low".to_string(),
-        ];
-        assert_eq!(
-            cheapest_antigravity_model(&gemini_only).as_deref(),
-            Some("gemini-3.1-pro-low")
-        );
-        // No Gemini at all: first non-alias model wins.
-        let no_gemini = vec!["default".to_string(), "claude-sonnet-4-6".to_string()];
-        assert_eq!(
-            cheapest_antigravity_model(&no_gemini).as_deref(),
-            Some("claude-sonnet-4-6")
-        );
-        // Only the alias: nothing usable.
-        let alias_only = vec!["default".to_string()];
-        assert!(cheapest_antigravity_model(&alias_only).is_none());
-    }
-
-    #[cfg(feature = "extra-providers")]
-    #[test]
-    fn native_antigravity_auth_is_secret_free() {
-        let with_account = native_antigravity_auth("user@example.com");
-        // The source mentions the account but never carries a secret fingerprint.
-        assert!(with_account.source.contains("user@example.com"));
-        let anonymous = native_antigravity_auth("");
-        assert!(anonymous.source.contains("Antigravity Google OAuth"));
     }
 
     #[test]

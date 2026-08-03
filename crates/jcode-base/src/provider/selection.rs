@@ -94,10 +94,6 @@ impl MultiProvider {
             LoginProviderTarget::OpenRouter => Some("openrouter"),
             LoginProviderTarget::Bedrock => Some("bedrock"),
             LoginProviderTarget::OpenAiCompatible(profile) => Some(profile.id),
-            LoginProviderTarget::Cursor => Some("cursor"),
-            LoginProviderTarget::Copilot => Some("copilot"),
-            LoginProviderTarget::Gemini => Some("gemini"),
-            LoginProviderTarget::Antigravity => Some("antigravity"),
             LoginProviderTarget::AutoImport
             | LoginProviderTarget::Jcode
             | LoginProviderTarget::Azure

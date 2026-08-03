@@ -50,11 +50,6 @@ members = [
     "crates/jcode-provider-openrouter",
     "crates/jcode-provider-openai",
     "crates/jcode-provider-gemini",
-    "crates/jcode-provider-gemini-runtime",
-    "crates/jcode-provider-cursor-runtime",
-    "crates/jcode-provider-antigravity-runtime",
-    "crates/jcode-provider-copilot-runtime",
-    "crates/jcode-provider-claude-cli-runtime",
     "crates/jcode-provider-openrouter-runtime",
     "crates/jcode-provider-anthropic-runtime",
     "crates/jcode-provider-openai-runtime",
@@ -90,11 +85,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "jcode"
 path = "src/main.rs"
-
-[[bin]]
-name = "test_api"
-path = "src/bin/test_api.rs"
-required-features = ["extra-providers"]
 
 [[bin]]
 name = "jcode-harness"
@@ -181,14 +171,6 @@ jcode-tui = { path = "crates/jcode-tui", default-features = false }
 # `jcode provider-doctor` / provider diagnostics; sits downstream of jcode-base
 # so doctor edits do not rebuild the base -> app-core -> tui spine.
 jcode-provider-doctor = { path = "crates/jcode-provider-doctor" }
-# Gemini provider runtime; sits downstream of jcode-base so gemini edits do
-# not rebuild the base -> app-core -> tui spine. Registered with the external
-# provider registry at startup (src/cli/startup.rs).
-jcode-provider-gemini-runtime = { path = "crates/jcode-provider-gemini-runtime", optional = true }
-jcode-provider-cursor-runtime = { path = "crates/jcode-provider-cursor-runtime", optional = true }
-jcode-provider-antigravity-runtime = { path = "crates/jcode-provider-antigravity-runtime", optional = true }
-jcode-provider-copilot-runtime = { path = "crates/jcode-provider-copilot-runtime", optional = true }
-jcode-provider-claude-cli-runtime = { path = "crates/jcode-provider-claude-cli-runtime", optional = true }
 jcode-provider-openrouter-runtime = { path = "crates/jcode-provider-openrouter-runtime" }
 jcode-provider-anthropic-runtime = { path = "crates/jcode-provider-anthropic-runtime" }
 jcode-provider-openai-runtime = { path = "crates/jcode-provider-openai-runtime" }
@@ -204,16 +186,6 @@ tempfile = "3"
 # to skip optional default feature stacks.
 default = ["pdf", "embeddings", "bedrock"]
 dev-bins = ["jcode-tui/dev-bins"]
-# Niche provider runtimes (copilot / cursor / antigravity / claude-cli) are
-# excluded from default builds. Enable to restore them.
-extra-providers = [
-    "dep:jcode-provider-gemini-runtime",
-    "dep:jcode-provider-cursor-runtime",
-    "dep:jcode-provider-antigravity-runtime",
-    "dep:jcode-provider-copilot-runtime",
-    "dep:jcode-provider-claude-cli-runtime",
-    "jcode-provider-doctor/extra-providers",
-]
 jemalloc = [
     "dep:tikv-jemallocator",
     "tikv-jemallocator/stats",

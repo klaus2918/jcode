@@ -1,4 +1,4 @@
-use super::{EventStream, ModelRoute, MultiProvider, NativeToolResultSender, Provider, copilot};
+use super::{EventStream, ModelRoute, MultiProvider, NativeToolResultSender, Provider};
 use crate::message::{Message, ToolDefinition};
 use crate::provider::models::ensure_model_allowed_for_subscription;
 use anyhow::Result;
@@ -219,14 +219,6 @@ impl Provider for JcodeProvider {
 
     async fn invalidate_credentials(&self) {
         self.inner.invalidate_credentials().await;
-    }
-
-    fn set_premium_mode(&self, mode: copilot::PremiumMode) {
-        self.inner.set_premium_mode(mode);
-    }
-
-    fn premium_mode(&self) -> copilot::PremiumMode {
-        self.inner.premium_mode()
     }
 
     fn supports_compaction(&self) -> bool {

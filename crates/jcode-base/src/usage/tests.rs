@@ -20,13 +20,6 @@ fn test_usage_percent_format() {
 }
 
 #[test]
-fn test_humanize_key() {
-    assert_eq!(humanize_key("five_hour"), "Five Hour");
-    assert_eq!(humanize_key("seven_day_opus"), "Seven Day Opus");
-    assert_eq!(humanize_key("plan"), "Plan");
-}
-
-#[test]
 fn test_get_sync_without_runtime_does_not_panic() {
     let result = std::panic::catch_unwind(get_sync);
     assert!(

@@ -285,49 +285,24 @@ const ALL_BEDROCK_MODELS: &[&str] = &[
     "amazon.nova-micro",
 ];
 
-/// Curated flagship-first order for Gemini (Code Assist OAuth + Gemini API).
-/// `pro` is Gemini's flagship tier and `flash`/`lite` are the cheaper tiers, so
-/// (unlike Claude/OpenAI) `pro` must NOT be treated as a non-flagship marker for
-/// this family. Listed newest-and-strongest first.
-const ALL_GEMINI_MODELS: &[&str] = &[
-    "gemini-3.1-pro",
-    "gemini-3-pro",
-    "gemini-2.5-pro",
-    "gemini-1.5-pro",
-    "gemini-3-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-];
-
 /// Flagship-first preference tiers used only to break ties when falling back to
 /// an arbitrary matching route after a login. Each inner slice is one curated
 /// family ordered best-first; earlier families outrank later ones. Returns an
 /// empty slice for providers without a curated order (local OpenAI-compatible,
 /// raw OpenRouter, ...), which preserves live-catalog order.
 ///
-/// Copilot and Cursor proxy Claude/OpenAI models under their bare canonical ids
-/// (`copilot:claude-opus-4-8`), so they share the same "catalog lists the cheap
-/// model first" hazard as a direct login and get the combined Claude+OpenAI
-/// order. The Claude/OpenAI subscription default bias mirrors jcode's global
-/// default model. Bedrock/Azure/Gemini/Antigravity are native hosted catalogs
-/// whose route lists are often ordered oldest-first, so they get an explicit
-/// curated order too.
+/// The Claude/OpenAI subscription default bias mirrors jcode's global default
+/// model. Bedrock/Azure are native hosted catalogs whose route lists are often
+/// ordered oldest-first, so they get an explicit curated order too.
 fn provider_preferred_model_orders(
     activation: &AuthActivationResult,
 ) -> &'static [&'static [&'static str]] {
     match activation.provider_id.as_deref() {
         Some("claude") | Some("claude-api") => &[crate::provider::ALL_CLAUDE_MODELS],
         Some("openai") | Some("openai-api") => &[crate::provider::ALL_OPENAI_MODELS],
-        Some("copilot") | Some("cursor") => &[
-            crate::provider::ALL_CLAUDE_MODELS,
-            crate::provider::ALL_OPENAI_MODELS,
-        ],
         Some("bedrock") => &[ALL_BEDROCK_MODELS],
         // Azure hosts the OpenAI family.
         Some("azure-openai") => &[crate::provider::ALL_OPENAI_MODELS],
-        // Gemini (Code Assist OAuth) and Antigravity both serve Gemini models.
-        Some("gemini") | Some("antigravity") => &[ALL_GEMINI_MODELS],
         _ => &[],
     }
 }
@@ -476,19 +451,12 @@ fn frontier_families(activation: &AuthActivationResult) -> &'static [FrontierFam
         prefix: "gpt",
         flagship_token: None,
     };
-    const GEMINI: FrontierFamily = FrontierFamily {
-        prefix: "gemini",
-        flagship_token: Some("pro"),
-    };
     match activation.provider_id.as_deref() {
         Some("claude") | Some("claude-api") => &[CLAUDE, FABLE],
         Some("openai") | Some("openai-api") | Some("azure-openai") => &[GPT],
-        // Copilot/Cursor proxy both families under canonical ids.
-        Some("copilot") | Some("cursor") => &[CLAUDE, FABLE, GPT],
         // Bedrock hosts Claude under `anthropic.claude-opus-...` (prefix stripped
         // by normalize), so the Claude family applies.
         Some("bedrock") => &[CLAUDE],
-        Some("gemini") | Some("antigravity") => &[GEMINI],
         _ => &[],
     }
 }
@@ -757,15 +725,6 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
                 crate::provider::ModelRouteApiMethod::OpenAIApiKey
             );
         }
-        "gemini" => {
-            // Gemini's Code Assist OAuth routes carry the `code-assist-oauth`
-            // api_method (not the bare provider id), so match on the parsed kind
-            // like the other native credential routes above.
-            return matches!(
-                api_method,
-                crate::provider::ModelRouteApiMethod::CodeAssistOAuth
-            );
-        }
         "jcode" => {
             // Jcode subscription routes deliberately keep their managed public
             // identity even though the runtime reuses OpenRouter transport code.
@@ -870,10 +829,6 @@ fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
         "openrouter" => Some("openrouter"),
         "jcode" | "subscription" | "jcode-subscription" => Some("jcode"),
         "bedrock" | "aws-bedrock" | "aws_bedrock" => Some("bedrock"),
-        "cursor" => Some("cursor"),
-        "copilot" => Some("copilot"),
-        "gemini" => Some("gemini"),
-        "antigravity" => Some("antigravity"),
         _ => None,
     }
 }
@@ -941,16 +896,6 @@ fn api_key_env_bindings_for_provider(provider_id: &str) -> Vec<(String, String)>
                 crate::provider::bedrock::ENV_FILE.to_string(),
             ),
         ],
-        "cursor" => vec![("CURSOR_API_KEY".to_string(), "cursor.env".to_string())],
-        "gemini" => super::gemini::GEMINI_API_KEY_ENV_VARS
-            .iter()
-            .map(|env_key| {
-                (
-                    env_key.to_string(),
-                    super::gemini::GEMINI_API_KEY_ENV_FILE.to_string(),
-                )
-            })
-            .collect(),
         "azure-openai" => vec![
             (
                 super::azure::API_KEY_ENV.to_string(),
@@ -1122,10 +1067,6 @@ fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
         "openrouter" => (RuntimeProviderId::OpenRouter, ActiveProvider::OpenRouter),
         "jcode" => (RuntimeProviderId::Jcode, ActiveProvider::OpenRouter),
         "bedrock" => (RuntimeProviderId::Bedrock, ActiveProvider::Bedrock),
-        "cursor" => (RuntimeProviderId::Cursor, ActiveProvider::Cursor),
-        "copilot" => (RuntimeProviderId::Copilot, ActiveProvider::Copilot),
-        "gemini" => (RuntimeProviderId::Gemini, ActiveProvider::Gemini),
-        "antigravity" => (RuntimeProviderId::Antigravity, ActiveProvider::Antigravity),
         _ => return None,
     };
     Some(ProviderActivation::initial(runtime_id, active))
@@ -1152,10 +1093,6 @@ pub fn model_switch_request_for_provider_id(
         Some("openrouter") => format!("openrouter:{}", model),
         Some("jcode") => model.to_string(),
         Some("bedrock") => format!("bedrock:{}", model),
-        Some("cursor") => format!("cursor:{}", model),
-        Some("copilot") => format!("copilot:{}", model),
-        Some("gemini") => format!("gemini:{}", model),
-        Some("antigravity") => format!("antigravity:{}", model),
         _ => model.to_string(),
     }
 }
@@ -1364,10 +1301,6 @@ mod tests {
             ("openrouter", "openrouter", "OpenRouter"),
             ("subscription", "jcode", "Jcode Subscription"),
             ("bedrock", "bedrock", "AWS Bedrock"),
-            ("cursor", "cursor", "Cursor"),
-            ("copilot", "copilot", "GitHub Copilot"),
-            ("gemini", "gemini", "Google Gemini"),
-            ("antigravity", "antigravity", "Antigravity"),
         ] {
             assert_eq!(normalized_auth_provider_id(Some(hint)), Some(normalized));
             assert_eq!(provider_display_label(Some(hint)).as_deref(), Some(label));
@@ -1417,10 +1350,6 @@ mod tests {
             ("openrouter", "openrouter", "openrouter"),
             ("jcode", "jcode", "openrouter"),
             ("bedrock", "bedrock", "bedrock"),
-            ("cursor", "cursor", "cursor"),
-            ("copilot", "copilot", "copilot"),
-            ("gemini", "gemini", "gemini"),
-            ("antigravity", "antigravity", "antigravity"),
         ] {
             crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
             crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
@@ -1476,18 +1405,6 @@ mod tests {
                 }
                 crate::provider_catalog::LoginProviderTarget::Bedrock => {
                     Some(("bedrock", "bedrock", "bedrock", "bedrock"))
-                }
-                crate::provider_catalog::LoginProviderTarget::Cursor => {
-                    Some(("cursor", "cursor", "cursor", "cursor"))
-                }
-                crate::provider_catalog::LoginProviderTarget::Copilot => {
-                    Some(("copilot", "copilot", "copilot", "copilot"))
-                }
-                crate::provider_catalog::LoginProviderTarget::Gemini => {
-                    Some(("gemini", "gemini", "gemini", "gemini"))
-                }
-                crate::provider_catalog::LoginProviderTarget::Antigravity => {
-                    Some(("antigravity", "antigravity", "antigravity", "antigravity"))
                 }
                 _ => None,
             }) else {
@@ -1563,10 +1480,6 @@ mod tests {
             "openrouter",
             "jcode",
             "bedrock",
-            "cursor",
-            "copilot",
-            "gemini",
-            "antigravity",
         ] {
             assert!(
                 covered.contains(&expected),
@@ -1607,10 +1520,6 @@ mod tests {
             ("jcode", "shared-model"),
             ("azure-openai", "openrouter:shared-model"),
             ("bedrock", "bedrock:shared-model"),
-            ("cursor", "cursor:shared-model"),
-            ("copilot", "copilot:shared-model"),
-            ("gemini", "gemini:shared-model"),
-            ("antigravity", "antigravity:shared-model"),
             ("gemini-api", "gemini-api:shared-model"),
         ] {
             assert_eq!(
@@ -2166,7 +2075,7 @@ mod tests {
     }
 
     #[test]
-    fn post_auth_frontier_promotion_covers_bedrock_and_gemini() {
+    fn post_auth_frontier_promotion_covers_bedrock() {
         // Bedrock: a newer Opus 5 (vendor-prefixed + dated) auto-promotes over the
         // curated Opus 4 baseline, and never falls back to the year-old 3.5.
         let activation = activation_for_provider_id("bedrock");
@@ -2194,40 +2103,6 @@ mod tests {
             provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
             Some("anthropic.claude-opus-5-20260101-v1:0"),
             "a newer Bedrock Opus must auto-promote over the curated Opus 4"
-        );
-
-        // Gemini: a newer pro auto-promotes; a newer flash never displaces it.
-        let activation = activation_for_provider_id("gemini");
-        let routes = vec![
-            route(
-                "gemini-2.5-flash",
-                "Google Gemini",
-                "code-assist-oauth",
-                true,
-            ),
-            route(
-                "gemini-3-pro-preview",
-                "Google Gemini",
-                "code-assist-oauth",
-                true,
-            ),
-            route(
-                "gemini-4-pro-preview",
-                "Google Gemini",
-                "code-assist-oauth",
-                true,
-            ),
-            route(
-                "gemini-9-flash-preview",
-                "Google Gemini",
-                "code-assist-oauth",
-                true,
-            ),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("gemini-4-pro-preview"),
-            "the newest Gemini *pro* must win; a higher-numbered flash must not"
         );
     }
 
@@ -2341,12 +2216,8 @@ mod tests {
         "claude-api",
         "openai",
         "openai-api",
-        "copilot",
-        "cursor",
         "bedrock",
         "azure-openai",
-        "gemini",
-        "antigravity",
     ];
 
     fn activation_for_provider_id(provider_id: &str) -> AuthActivationResult {
@@ -2437,22 +2308,6 @@ mod tests {
                 "gpt-5.5",
             ),
             (
-                // Copilot proxies Claude under canonical ids: Opus must beat Haiku.
-                "copilot",
-                "copilot",
-                "Copilot",
-                &["claude-haiku-4-5", "gpt-5.5", "claude-opus-4-8"],
-                "claude-opus-4-8",
-            ),
-            (
-                // Cursor likewise: an all-OpenAI catalog still picks the flagship.
-                "cursor",
-                "cursor",
-                "Cursor",
-                &["gpt-5-nano", "gpt-5.1", "gpt-5.5"],
-                "gpt-5.5",
-            ),
-            (
                 // Bedrock lists year-old Claude first; the curated order must
                 // still pick Opus 4 over claude-3-5-sonnet. Bedrock ids carry the
                 // vendor prefix + version tag, normalized away before ranking.
@@ -2474,23 +2329,6 @@ mod tests {
                 "Azure OpenAI",
                 &["gpt-5-mini", "gpt-5.1", "gpt-5.5"],
                 "gpt-5.5",
-            ),
-            (
-                // Gemini's flagship tier is `pro`; a flash-first catalog must
-                // still pick the strongest pro model.
-                "gemini",
-                "code-assist-oauth",
-                "Google Gemini",
-                &["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-pro-preview"],
-                "gemini-3-pro-preview",
-            ),
-            (
-                // Antigravity also serves Gemini models (https transport).
-                "antigravity",
-                "https",
-                "Antigravity",
-                &["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-pro-preview"],
-                "gemini-3-pro-preview",
             ),
         ];
 
@@ -2521,22 +2359,6 @@ mod tests {
                 models[0]
             );
         }
-    }
-
-    /// Copilot proxies both families; the cross-family tie-break must prefer the
-    /// Claude flagship over the OpenAI flagship to mirror jcode's default model.
-    #[test]
-    fn post_auth_model_selection_copilot_prefers_claude_family_over_openai() {
-        let activation = activation_for_provider_id("copilot");
-        let routes = vec![
-            route("gpt-5.5", "Copilot", "copilot", true),
-            route("claude-opus-4-8", "Copilot", "copilot", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("claude-opus-4-8"),
-            "copilot tie-break should prefer the Claude flagship family first"
-        );
     }
 
     #[test]

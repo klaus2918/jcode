@@ -1737,9 +1737,6 @@ fn provider_has_credential(provider_id: &str) -> bool {
         "openai" | "openai-api" => &["OPENAI_API_KEY"],
         "openrouter" => &["OPENROUTER_API_KEY"],
         "gemini" | "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        // Antigravity authenticates only via cached Google OAuth tokens, not an
-        // env var; report a credential when those tokens are present on disk.
-        "antigravity" => return crate::auth::antigravity::has_cached_auth(),
         _ => &[],
     };
     env_candidates.iter().any(|key| {

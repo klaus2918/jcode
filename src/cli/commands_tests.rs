@@ -135,30 +135,24 @@ fn configured_auth_test_targets_only_include_configured_supported_providers() {
             has_api_key: false,
         },
         openai: AuthState::NotConfigured,
-        gemini: AuthState::Available,
         google: AuthState::Expired,
-        copilot: AuthState::Available,
-        cursor: AuthState::NotConfigured,
         ..AuthStatus::default()
     };
 
     let targets = configured_auth_test_targets(&status);
 
     assert!(targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Claude)));
-    assert!(targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Copilot)));
-    assert!(targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Gemini)));
 
     assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Openai)));
     assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Google)));
-    assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Cursor)));
 }
 
 #[test]
 fn explicit_supported_provider_maps_to_single_auth_target() {
-    let targets = resolve_auth_test_targets("gemini", false).expect("resolve target");
+    let targets = resolve_auth_test_targets("openai", false).expect("resolve target");
     assert_eq!(
         targets,
-        vec![ResolvedAuthTestTarget::Detailed(AuthTestTarget::Gemini)]
+        vec![ResolvedAuthTestTarget::Detailed(AuthTestTarget::Openai)]
     );
 }
 
@@ -738,8 +732,7 @@ fn list_cli_providers_includes_auto_and_openai() {
             && provider.display_name == "OpenAI"
             && provider.auth_kind.as_deref() == Some("OAuth")
     }));
-    assert!(providers.iter().any(|provider| provider.id == "gemini"));
-    assert!(providers.iter().any(|provider| provider.id == "copilot"));
+    assert!(providers.iter().any(|provider| provider.id == "bedrock"));
 }
 
 #[test]

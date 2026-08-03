@@ -1,7 +1,4 @@
-use super::{
-    App, antigravity_input_requires_state_validation, save_tui_openai_compatible_api_base,
-    save_tui_openai_compatible_key,
-};
+use super::{App, save_tui_openai_compatible_api_base, save_tui_openai_compatible_key};
 
 fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
     let _env_guard = crate::storage::lock_test_env();
@@ -33,22 +30,6 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
         }
     }
     result
-}
-
-#[test]
-fn antigravity_auto_callback_code_skips_manual_callback_parser() {
-    assert!(!antigravity_input_requires_state_validation(
-        "raw_authorization_code",
-        Some("expected_state")
-    ));
-}
-
-#[test]
-fn antigravity_manual_callback_url_keeps_state_validation() {
-    assert!(antigravity_input_requires_state_validation(
-        "http://127.0.0.1:51121/oauth-callback?code=abc&state=expected_state",
-        Some("expected_state")
-    ));
 }
 
 #[test]

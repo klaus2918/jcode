@@ -27,20 +27,9 @@ tokio = { version = "1", features = ["time"] }
 # (auth, provider runtimes, provider_catalog, live_tests). Feature unification
 # in the root binary re-enables embeddings/bedrock there.
 jcode-base = { path = "../jcode-base", default-features = false }
-jcode-provider-gemini-runtime = { path = "../jcode-provider-gemini-runtime" }
 jcode-provider-anthropic-runtime = { path = "../jcode-provider-anthropic-runtime" }
 jcode-provider-openai-runtime = { path = "../jcode-provider-openai-runtime" }
 jcode-provider-openrouter-runtime = { path = "../jcode-provider-openrouter-runtime" }
-jcode-provider-cursor-runtime = { path = "../jcode-provider-cursor-runtime", optional = true }
-jcode-provider-antigravity-runtime = { path = "../jcode-provider-antigravity-runtime", optional = true }
-jcode-provider-copilot-runtime = { path = "../jcode-provider-copilot-runtime", optional = true }
-
-[features]
-extra-providers = [
-    "dep:jcode-provider-cursor-runtime",
-    "dep:jcode-provider-antigravity-runtime",
-    "dep:jcode-provider-copilot-runtime",
-]
 
 [dev-dependencies]
 # The auth-lifecycle driver tests run inside jcode-base's auth test sandbox.

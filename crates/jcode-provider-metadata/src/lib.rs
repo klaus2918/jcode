@@ -33,10 +33,6 @@ pub enum LoginProviderTarget {
     Bedrock,
     Azure,
     OpenAiCompatible(OpenAiCompatibleProfile),
-    Cursor,
-    Copilot,
-    Gemini,
-    Antigravity,
     Google,
 }
 
@@ -49,10 +45,6 @@ pub enum LoginProviderAuthStateKey {
     Azure,
     Bedrock,
     OpenRouterLike,
-    Copilot,
-    Gemini,
-    Antigravity,
-    Cursor,
     Google,
 }
 
