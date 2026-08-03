@@ -325,13 +325,6 @@ pub(crate) enum Command {
     /// Review and respond to pending ambient permission requests
     Permissions,
 
-    /// Browser automation setup and status
-    Browser {
-        /// Action (setup, status)
-        #[arg(default_value = "setup")]
-        action: String,
-    },
-
     /// Replay a saved session in the TUI
     Replay {
         /// Session ID, name, or path to session JSON file

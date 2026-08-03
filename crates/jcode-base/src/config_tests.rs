@@ -474,7 +474,7 @@ fn tool_config_minimal_profile_allows_core_coding_tools() {
     assert!(allowed.contains("write"));
     assert!(allowed.contains("apply_patch"));
     assert!(allowed.contains("agentgrep"));
-    assert!(!allowed.contains("browser"));
+    assert!(!allowed.contains("gmail"));
     assert!(!allowed.contains("swarm"));
 }
 
@@ -484,9 +484,9 @@ fn tool_config_explicit_enabled_and_disabled_lists_compose() {
         enabled: vec![
             "shell".to_string(),
             "read_file".to_string(),
-            "browser".to_string(),
+            "gmail".to_string(),
         ],
-        disabled: vec!["browser".to_string()],
+        disabled: vec!["gmail".to_string()],
         ..ToolConfig::default()
     };
     let selection = cfg.selection();
@@ -498,8 +498,8 @@ fn tool_config_explicit_enabled_and_disabled_lists_compose() {
     assert!(allowed.contains("read"));
     assert!(!allowed.contains("shell"));
     assert!(!allowed.contains("read_file"));
-    assert!(!allowed.contains("browser"));
-    assert!(selection.disabled_tools.contains("browser"));
+    assert!(!allowed.contains("gmail"));
+    assert!(selection.disabled_tools.contains("gmail"));
 }
 
 #[test]
@@ -518,15 +518,15 @@ fn tool_config_none_profile_disables_all_tools() {
 #[test]
 fn tool_config_disabled_only_keeps_full_profile_with_deny_list() {
     let cfg = ToolConfig {
-        disabled: vec!["browser".to_string(), "swarm".to_string()],
+        disabled: vec!["gmail".to_string(), "swarm".to_string()],
         ..ToolConfig::default()
     };
     let selection = cfg.selection();
 
     assert!(selection.allowed_tools.is_none());
-    assert!(selection.disabled_tools.contains("browser"));
+    assert!(selection.disabled_tools.contains("gmail"));
     assert!(selection.disabled_tools.contains("swarm"));
-    assert!(!selection.disabled_tools.contains("gmail"));
+    assert!(!selection.disabled_tools.contains("bash"));
 }
 
 #[test]

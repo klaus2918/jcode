@@ -4,7 +4,6 @@ mod apply_patch;
 mod bash;
 mod batch;
 mod bg;
-mod browser;
 mod communicate;
 #[cfg(target_os = "macos")]
 mod computer;
@@ -186,7 +185,6 @@ impl Registry {
             );
             Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
-            Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
             #[cfg(target_os = "macos")]
             Self::insert_tool_timed(
@@ -608,7 +606,6 @@ impl Registry {
         let started_at = std::time::Instant::now();
         let result = tool.execute(input.clone(), ctx.clone()).await;
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-
 
         Self::fire_post_tool_hook(resolved_name, &ctx, &result, latency_ms);
 

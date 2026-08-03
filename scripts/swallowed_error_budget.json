@@ -396,11 +396,6 @@
       "let_underscore": 0,
       "unwrap_or_default": 1
     },
-    "crates/jcode-app-core/src/tool/browser.rs": {
-      "dot_ok": 0,
-      "let_underscore": 1,
-      "unwrap_or_default": 3
-    },
     "crates/jcode-app-core/src/tool/communicate.rs": {
       "dot_ok": 0,
       "let_underscore": 4,
@@ -650,11 +645,6 @@
       "dot_ok": 14,
       "let_underscore": 17,
       "unwrap_or_default": 9
-    },
-    "crates/jcode-base/src/browser.rs": {
-      "dot_ok": 5,
-      "let_underscore": 6,
-      "unwrap_or_default": 2
     },
     "crates/jcode-base/src/bus.rs": {
       "dot_ok": 0,
@@ -1335,11 +1325,6 @@
       "dot_ok": 2,
       "let_underscore": 0,
       "unwrap_or_default": 0
-    },
-    "crates/jcode-provider-openai-runtime/src/chatgpt_web.rs": {
-      "dot_ok": 8,
-      "let_underscore": 5,
-      "unwrap_or_default": 8
     },
     "crates/jcode-provider-openai-runtime/src/lib.rs": {
       "dot_ok": 3,

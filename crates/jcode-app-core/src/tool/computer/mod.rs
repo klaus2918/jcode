@@ -1,7 +1,7 @@
 //! Native macOS "computer use" tool.
 //!
-//! The desktop analog of the `browser` tool: a single `action`-dispatched tool
-//! that lets the agent see the screen and control the macOS GUI.
+//! A single `action`-dispatched tool that lets the agent see the screen and
+//! control the macOS GUI.
 //!
 //! ## Mechanisms and visibility
 //!

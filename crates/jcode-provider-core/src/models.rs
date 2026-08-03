@@ -27,7 +27,6 @@ pub const ALL_CLAUDE_MODELS: &[&str] = &[
 
 /// Available OpenAI models used by model lists and provider routing.
 /// The list is curated best-first; position 0 is the quality-first default.
-pub const CHATGPT_WEB_MODEL: &str = "gpt-5.6-pro[web]";
 
 /// GPT Pro reasoning models. These are exposed only on the OpenAI platform
 /// API (`api.openai.com` with an `OPENAI_API_KEY`); the ChatGPT/Codex OAuth
@@ -53,10 +52,6 @@ pub fn is_openai_api_only_pro_model(model: &str) -> bool {
 
 pub const ALL_OPENAI_MODELS: &[&str] = &[
     DEFAULT_OPENAI_MODEL,
-    // ChatGPT web-only route. The `[web]` suffix is intentionally part of the
-    // jcode model id so it can never be mistaken for an API/Codex model with
-    // the same upstream slug.
-    CHATGPT_WEB_MODEL,
     "gpt-5.5-pro",
     "gpt-5.5",
     "gpt-5.4",
@@ -804,7 +799,6 @@ mod tests {
         // Non-pro and near-miss ids do not.
         assert!(!is_openai_api_only_pro_model("gpt-5.5"));
         assert!(!is_openai_api_only_pro_model("gpt-5.6-sol"));
-        assert!(!is_openai_api_only_pro_model(CHATGPT_WEB_MODEL));
         assert!(!is_openai_api_only_pro_model("gemini-2.5-pro"));
         // Every listed pro model classifies as pro.
         for pro in OPENAI_API_ONLY_PRO_MODELS {

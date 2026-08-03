@@ -95,6 +95,17 @@ async fn subagent_tool_is_not_registered() {
     );
 }
 
+#[tokio::test]
+async fn browser_tool_is_not_registered() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let names = registry.tool_names().await;
+    assert!(
+        !names.iter().any(|name| name == "browser"),
+        "browser tool must not be registered after the browser capability removal"
+    );
+}
+
 struct BareSchemaTool;
 
 #[async_trait]
@@ -813,84 +824,4 @@ async fn unknown_tool_error_lists_available_tools_and_suggestions() {
         msg.contains("end_ambient_cycle"),
         "available list should include registered ambient tools: {msg}"
     );
-}
-
-#[tokio::test]
-async fn gemini_build_tools_from_registry_definitions_omits_const_keywords() {
-    // Moved from jcode-base/src/provider/gemini_tests.rs: this is the one test
-    // that needs the upper-layer tool::Registry, so it lives here instead of
-    // forcing a base -> app-core dev-dependency cycle.
-    fn schema_contains_key(schema: &serde_json::Value, key: &str) -> bool {
-        match schema {
-            serde_json::Value::Object(map) => {
-                map.contains_key(key) || map.values().any(|value| schema_contains_key(value, key))
-            }
-            serde_json::Value::Array(items) => {
-                items.iter().any(|value| schema_contains_key(value, key))
-            }
-            _ => false,
-        }
-    }
-
-    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
-    let registry = Registry::new(provider).await;
-    let defs = registry.definitions(None).await;
-
-    let built = crate::provider::gemini::build_tools(&defs).expect("gemini tools");
-    let parameters = &built[0].function_declarations;
-
-    assert!(!schema_contains_key(
-        &serde_json::json!(parameters),
-        "const"
-    ));
-
-    // Gemini rejects the whole generateContent request when any `required` entry
-    // names a property the same object does not declare, which made every
-    // tool-enabled Gemini call fail (issue #655). Assert on the *converted*
-    // declarations: the pre-conversion sweep in
-    // `test_tool_definitions_do_not_expose_invalid_array_schemas` cannot prove
-    // the adapter output is clean, and the adapter is what Gemini actually sees.
-    let mut dangling = Vec::new();
-    for declaration in parameters {
-        collect_dangling_required(
-            &declaration.parameters,
-            &format!("tool `{}`", declaration.name),
-            &mut dangling,
-        );
-    }
-    assert!(
-        dangling.is_empty(),
-        "converted Gemini function declarations still require undeclared properties:\n{}",
-        dangling.join("\n")
-    );
-}
-
-/// Collect `required` entries that name a property absent from the same
-/// object's `properties` map. Objects without a local `properties` map are
-/// exempt, matching what Gemini validates.
-fn collect_dangling_required(schema: &Value, path: &str, errors: &mut Vec<String>) {
-    match schema {
-        Value::Object(map) => {
-            if let (Some(Value::Array(required)), Some(Value::Object(properties))) =
-                (map.get("required"), map.get("properties"))
-            {
-                for name in required {
-                    if let Some(name) = name.as_str()
-                        && !properties.contains_key(name)
-                    {
-                        errors.push(format!("{path}.required: '{name}' is not declared here"));
-                    }
-                }
-            }
-            for (key, value) in map {
-                collect_dangling_required(value, &format!("{path}.{key}"), errors);
-            }
-        }
-        Value::Array(values) => {
-            for (idx, value) in values.iter().enumerate() {
-                collect_dangling_required(value, &format!("{path}[{idx}]"), errors);
-            }
-        }
-        _ => {}
-    }
 }

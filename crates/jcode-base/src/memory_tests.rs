@@ -637,11 +637,11 @@ fn retrieval_candidates_include_local_skills() {
                 .collect()
         });
         let project_dir = home.join("project-with-skill");
-        fs::create_dir_all(project_dir.join(".jcode/skills/firefox-browser"))
+        fs::create_dir_all(project_dir.join(".jcode/skills/webapp-testing"))
             .expect("create skills dir");
         fs::write(
-                project_dir.join(".jcode/skills/firefox-browser/SKILL.md"),
-                "---\nname: firefox-browser\ndescription: Control Firefox browser sessions\nallowed-tools: bash, read, write\n---\n\nUse this skill to open sites and click buttons.",
+                project_dir.join(".jcode/skills/webapp-testing/SKILL.md"),
+                "---\nname: webapp-testing\ndescription: Test local web applications with Playwright\nallowed-tools: bash, read, write\n---\n\nUse this skill to verify web apps in a browser.",
             )
             .expect("write skill");
 
@@ -660,7 +660,7 @@ fn retrieval_candidates_include_local_skills() {
         assert!(
             candidates
                 .iter()
-                .any(|entry| entry.id == "skill:firefox-browser")
+                .any(|entry| entry.id == "skill:webapp-testing")
         );
         assert!(candidates.iter().any(|entry| {
             matches!(

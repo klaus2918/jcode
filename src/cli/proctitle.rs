@@ -33,7 +33,6 @@ pub(crate) fn initial_title(args: &Args) -> String {
         },
         Some(Command::Pair { .. }) => "jcode pair".to_string(),
         Some(Command::Permissions) => "jcode permissions".to_string(),
-        Some(Command::Browser { .. }) => "jcode browser".to_string(),
         Some(Command::Replay { .. }) => "jcode replay".to_string(),
         Some(Command::Model(_)) => "jcode model".to_string(),
         Some(Command::ProviderTestCoverage { .. }) => "jcode provider-test-coverage".to_string(),
