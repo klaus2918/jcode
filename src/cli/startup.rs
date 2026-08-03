@@ -435,6 +435,5 @@ mod tests {
             assert_eq!(provider.name(), expected_name);
             assert!(!provider.model().is_empty());
         }
-
     }
 }
