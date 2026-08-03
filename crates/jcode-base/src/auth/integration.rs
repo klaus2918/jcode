@@ -63,10 +63,6 @@ pub fn runtime_id_for_login_provider(
         LoginProviderTarget::Bedrock => Some(RuntimeProviderId::Bedrock),
         LoginProviderTarget::Azure => Some(RuntimeProviderId::AzureOpenAi),
         LoginProviderTarget::OpenAiCompatible(_) => Some(RuntimeProviderId::OpenAiCompatible),
-        LoginProviderTarget::Cursor => Some(RuntimeProviderId::Cursor),
-        LoginProviderTarget::Copilot => Some(RuntimeProviderId::Copilot),
-        LoginProviderTarget::Gemini => Some(RuntimeProviderId::Gemini),
-        LoginProviderTarget::Antigravity => Some(RuntimeProviderId::Antigravity),
         // Google/Gmail auth is for tool access, not model-runtime routing.
         LoginProviderTarget::Google => None,
     }

@@ -78,16 +78,11 @@ fn test_on_auth_changed_hot_initializes_openai_and_marks_routes_available() {
             claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
-            copilot_api: RwLock::new(None),
-            antigravity: RwLock::new(None),
-            gemini: RwLock::new(None),
-            cursor: RwLock::new(None),
             bedrock: RwLock::new(None),
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
             active: RwLock::new(ActiveProvider::OpenAI),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::OpenAI),
             routes_memo: std::sync::Mutex::new(None),
@@ -146,16 +141,11 @@ fn test_on_auth_changed_refreshes_existing_openai_provider_credentials() {
             claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(Some(Arc::clone(&existing) as Arc<dyn Provider>)),
-            copilot_api: RwLock::new(None),
-            antigravity: RwLock::new(None),
-            gemini: RwLock::new(None),
-            cursor: RwLock::new(None),
             bedrock: RwLock::new(None),
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
             active: RwLock::new(ActiveProvider::OpenAI),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::OpenAI),
             routes_memo: std::sync::Mutex::new(None),
@@ -184,16 +174,11 @@ fn test_on_auth_changed_hot_initializes_anthropic_and_marks_routes_available() {
             claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
-            copilot_api: RwLock::new(None),
-            antigravity: RwLock::new(None),
-            gemini: RwLock::new(None),
-            cursor: RwLock::new(None),
             bedrock: RwLock::new(None),
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Claude),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::Claude),
             routes_memo: std::sync::Mutex::new(None),
@@ -230,16 +215,11 @@ fn test_on_auth_changed_hot_initializes_anthropic_from_api_key_and_marks_routes_
             claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
-            copilot_api: RwLock::new(None),
-            antigravity: RwLock::new(None),
-            gemini: RwLock::new(None),
-            cursor: RwLock::new(None),
             bedrock: RwLock::new(None),
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Claude),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::Claude),
             routes_memo: std::sync::Mutex::new(None),
@@ -295,16 +275,11 @@ fn test_anthropic_model_routes_keep_plain_4_6_available_without_extra_usage() {
             claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
-            copilot_api: RwLock::new(None),
-            antigravity: RwLock::new(None),
-            gemini: RwLock::new(None),
-            cursor: RwLock::new(None),
             bedrock: RwLock::new(None),
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
             active: RwLock::new(ActiveProvider::Claude),
-            use_claude_cli: false,
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: Some(ActiveProvider::Claude),
             routes_memo: std::sync::Mutex::new(None),
@@ -361,16 +336,11 @@ fn test_on_auth_changed_hot_initializes_openrouter_and_marks_routes_available() 
                     claude: RwLock::new(None),
                     anthropic: RwLock::new(None),
                     openai: RwLock::new(None),
-                    copilot_api: RwLock::new(None),
-                    antigravity: RwLock::new(None),
-                    gemini: RwLock::new(None),
-                    cursor: RwLock::new(None),
                     bedrock: RwLock::new(None),
                     openrouter: RwLock::new(None),
                     openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
                     active_openai_compatible_profile: RwLock::new(None),
                     active: RwLock::new(ActiveProvider::OpenRouter),
-                    use_claude_cli: false,
                     startup_notices: RwLock::new(Vec::new()),
                     initial_provider: Some(ActiveProvider::OpenRouter),
                     routes_memo: std::sync::Mutex::new(None),
@@ -389,195 +359,6 @@ fn test_on_auth_changed_hot_initializes_openrouter_and_marks_routes_available() 
             })
         })
     });
-}
-
-#[test]
-fn test_on_auth_changed_hot_initializes_copilot_and_marks_routes_available() {
-    with_clean_provider_test_env(|| {
-        with_env_var("GITHUB_TOKEN", "gho_test_token", || {
-            crate::auth::AuthStatus::invalidate_cache();
-            let runtime = enter_test_runtime();
-            let _enter = runtime.enter();
-
-            // The concrete Copilot runtime lives downstream; register the
-            // shared test stub through the composition-root registry.
-            external::register_external_provider(external::COPILOT_RUNTIME, || {
-                test_copilot_runtime()
-            });
-
-            let provider = MultiProvider {
-                claude: RwLock::new(None),
-                anthropic: RwLock::new(None),
-                openai: RwLock::new(None),
-                copilot_api: RwLock::new(None),
-                antigravity: RwLock::new(None),
-                gemini: RwLock::new(None),
-                cursor: RwLock::new(None),
-                bedrock: RwLock::new(None),
-                openrouter: RwLock::new(None),
-                openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
-                active_openai_compatible_profile: RwLock::new(None),
-                active: RwLock::new(ActiveProvider::Copilot),
-                use_claude_cli: false,
-                startup_notices: RwLock::new(Vec::new()),
-                initial_provider: Some(ActiveProvider::Copilot),
-                routes_memo: std::sync::Mutex::new(None),
-                post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            };
-
-            provider.on_auth_changed();
-
-            assert!(provider.copilot_api.read().unwrap().is_some());
-            assert!(provider.model_routes().iter().any(|route| {
-                route.provider == "Copilot" && route.api_method == "copilot" && route.available
-            }));
-        })
-    });
-}
-
-#[test]
-fn test_startup_initializes_antigravity_when_cached_tokens_are_expired() {
-    with_clean_provider_test_env(|| {
-        let runtime = enter_test_runtime();
-        let _enter = runtime.enter();
-
-        // The concrete Antigravity runtime lives downstream; register the
-        // shared test stub through the composition-root registry.
-        external::register_external_provider(external::ANTIGRAVITY_RUNTIME, || {
-            test_antigravity_runtime()
-        });
-
-        crate::auth::antigravity::save_tokens(&crate::auth::antigravity::AntigravityTokens {
-            access_token: "expired-access-token".to_string(),
-            refresh_token: "refresh-token".to_string(),
-            expires_at: 1,
-            email: None,
-            project_id: None,
-        })
-        .expect("save expired antigravity auth");
-
-        let auth_status = crate::auth::AuthStatus::check_fast();
-        let provider = MultiProvider::from_auth_status(auth_status);
-
-        assert!(provider.antigravity_provider().is_some());
-        assert!(provider.model_routes().iter().any(|route| {
-            route.provider == "Antigravity" && route.api_method == "https" && route.available
-        }));
-    });
-}
-
-#[test]
-fn test_on_auth_changed_hot_initializes_antigravity_when_tokens_exist_but_are_expired() {
-    with_clean_provider_test_env(|| {
-        let runtime = enter_test_runtime();
-        let _enter = runtime.enter();
-
-        // The concrete Antigravity runtime lives downstream; register the
-        // shared test stub through the composition-root registry.
-        external::register_external_provider(external::ANTIGRAVITY_RUNTIME, || {
-            test_antigravity_runtime()
-        });
-
-        crate::auth::antigravity::save_tokens(&crate::auth::antigravity::AntigravityTokens {
-            access_token: "expired-access-token".to_string(),
-            refresh_token: "refresh-token".to_string(),
-            expires_at: 1,
-            email: None,
-            project_id: None,
-        })
-        .expect("save expired antigravity auth");
-
-        let provider = MultiProvider {
-            claude: RwLock::new(None),
-            anthropic: RwLock::new(None),
-            openai: RwLock::new(None),
-            copilot_api: RwLock::new(None),
-            antigravity: RwLock::new(None),
-            gemini: RwLock::new(None),
-            cursor: RwLock::new(None),
-            bedrock: RwLock::new(None),
-            openrouter: RwLock::new(None),
-            openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
-            active_openai_compatible_profile: RwLock::new(None),
-            active: RwLock::new(ActiveProvider::Antigravity),
-            use_claude_cli: false,
-            startup_notices: RwLock::new(Vec::new()),
-            initial_provider: Some(ActiveProvider::Antigravity),
-            routes_memo: std::sync::Mutex::new(None),
-            post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        };
-
-        provider.on_auth_changed();
-
-        assert!(provider.antigravity_provider().is_some());
-        assert!(provider.model_routes().iter().any(|route| {
-            route.provider == "Antigravity" && route.api_method == "https" && route.available
-        }));
-    });
-}
-
-#[test]
-fn test_multi_provider_antigravity_routes_do_not_include_legacy_duplicate_entries() {
-    let provider = MultiProvider {
-        claude: RwLock::new(None),
-        anthropic: RwLock::new(None),
-        openai: RwLock::new(None),
-        copilot_api: RwLock::new(None),
-        antigravity: RwLock::new(Some(test_antigravity_runtime())),
-        gemini: RwLock::new(None),
-        cursor: RwLock::new(None),
-        bedrock: RwLock::new(None),
-        openrouter: RwLock::new(None),
-        openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
-        active_openai_compatible_profile: RwLock::new(None),
-        active: RwLock::new(ActiveProvider::Antigravity),
-        use_claude_cli: false,
-        startup_notices: RwLock::new(Vec::new()),
-        initial_provider: Some(ActiveProvider::Antigravity),
-        routes_memo: std::sync::Mutex::new(None),
-        post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    };
-
-    let routes = provider.model_routes();
-    assert!(routes.iter().any(|route| {
-        route.provider == "Antigravity" && route.api_method == "https" && route.available
-    }));
-    assert!(
-        !routes
-            .iter()
-            .any(|route| { route.provider == "Antigravity" && route.api_method == "antigravity" }),
-        "legacy duplicate antigravity routes should not be emitted: {:?}",
-        routes
-    );
-}
-
-#[test]
-fn test_summarize_model_catalog_refresh_ignores_display_only_age_suffix_changes() {
-    let summary = summarize_model_catalog_refresh(
-        vec!["anthropic/claude-sonnet-4".to_string()],
-        vec!["anthropic/claude-sonnet-4".to_string()],
-        vec![ModelRoute { capability: None,
-            model: "anthropic/claude-sonnet-4".to_string(),
-            provider: "Fireworks".to_string(),
-            api_method: "openrouter".to_string(),
-            available: true,
-            detail: "fast, 5m ago".to_string(),
-            cheapness: None,
-        }],
-        vec![ModelRoute { capability: None,
-            model: "anthropic/claude-sonnet-4".to_string(),
-            provider: "Fireworks".to_string(),
-            api_method: "openrouter".to_string(),
-            available: true,
-            detail: "fast, 6m ago".to_string(),
-            cheapness: None,
-        }],
-    );
-
-    assert_eq!(
-        summary.routes_changed, 0,
-        "age-only detail churn should be ignored"
-    );
 }
 
 #[test]
@@ -604,125 +385,4 @@ fn test_summarize_model_catalog_refresh_still_counts_meaningful_detail_changes()
     );
 
     assert_eq!(summary.routes_changed, 1);
-}
-
-#[test]
-fn test_on_auth_changed_hot_initializes_gemini_and_marks_routes_available() {
-    with_clean_provider_test_env(|| {
-        let runtime = enter_test_runtime();
-        let _enter = runtime.enter();
-
-        // The concrete Gemini runtime lives downstream in
-        // jcode-provider-gemini-runtime, so base tests register a stub through
-        // the same composition-root registry the binary uses. This also
-        // exercises the external-provider hot-init path end to end.
-        struct StubGeminiRuntime;
-        #[async_trait::async_trait]
-        impl Provider for StubGeminiRuntime {
-            async fn complete(
-                &self,
-                _messages: &[Message],
-                _tools: &[ToolDefinition],
-                _system: &str,
-                _resume_session_id: Option<&str>,
-            ) -> anyhow::Result<EventStream> {
-                anyhow::bail!("stub gemini runtime does not stream")
-            }
-            fn name(&self) -> &'static str {
-                "gemini"
-            }
-            fn model(&self) -> String {
-                "gemini-2.5-pro".to_string()
-            }
-            fn available_models_display(&self) -> Vec<String> {
-                vec!["gemini-2.5-pro".to_string()]
-            }
-            fn fork(&self) -> std::sync::Arc<dyn Provider> {
-                std::sync::Arc::new(StubGeminiRuntime)
-            }
-        }
-        external::register_external_provider(external::GEMINI_RUNTIME, || {
-            std::sync::Arc::new(StubGeminiRuntime)
-        });
-
-        crate::auth::gemini::save_tokens(&crate::auth::gemini::GeminiTokens {
-            access_token: "test-access-token".to_string(),
-            refresh_token: "test-refresh-token".to_string(),
-            expires_at: i64::MAX,
-            email: None,
-        })
-        .expect("save test Gemini auth");
-
-        let provider = MultiProvider {
-            claude: RwLock::new(None),
-            anthropic: RwLock::new(None),
-            openai: RwLock::new(None),
-            copilot_api: RwLock::new(None),
-            antigravity: RwLock::new(None),
-            gemini: RwLock::new(None),
-            cursor: RwLock::new(None),
-            bedrock: RwLock::new(None),
-            openrouter: RwLock::new(None),
-            openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
-            active_openai_compatible_profile: RwLock::new(None),
-            active: RwLock::new(ActiveProvider::Gemini),
-            use_claude_cli: false,
-            startup_notices: RwLock::new(Vec::new()),
-            initial_provider: Some(ActiveProvider::Gemini),
-            routes_memo: std::sync::Mutex::new(None),
-            post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        };
-
-        provider.on_auth_changed();
-
-        assert!(provider.gemini_provider().is_some());
-        assert!(provider.model_routes().iter().any(|route| {
-            route.provider == "Gemini" && route.api_method == "code-assist-oauth" && route.available
-        }));
-    });
-}
-
-#[test]
-fn test_on_auth_changed_hot_initializes_cursor_and_marks_routes_available() {
-    with_clean_provider_test_env(|| {
-        with_env_var("CURSOR_API_KEY", "cursor-test-key", || {
-            crate::auth::AuthStatus::invalidate_cache();
-            let runtime = enter_test_runtime();
-            let _enter = runtime.enter();
-
-            // The concrete Cursor runtime lives downstream in
-            // jcode-provider-cursor-runtime; register the shared test stub
-            // through the same composition-root registry the binary uses.
-            external::register_external_provider(external::CURSOR_RUNTIME, || {
-                test_cursor_runtime()
-            });
-
-            let provider = MultiProvider {
-                claude: RwLock::new(None),
-                anthropic: RwLock::new(None),
-                openai: RwLock::new(None),
-                copilot_api: RwLock::new(None),
-                antigravity: RwLock::new(None),
-                gemini: RwLock::new(None),
-                cursor: RwLock::new(None),
-                bedrock: RwLock::new(None),
-                openrouter: RwLock::new(None),
-                openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
-                active_openai_compatible_profile: RwLock::new(None),
-                active: RwLock::new(ActiveProvider::Cursor),
-                use_claude_cli: false,
-                startup_notices: RwLock::new(Vec::new()),
-                initial_provider: Some(ActiveProvider::Cursor),
-                routes_memo: std::sync::Mutex::new(None),
-                post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            };
-
-            provider.on_auth_changed();
-
-            assert!(provider.cursor.read().unwrap().is_some());
-            assert!(provider.model_routes().iter().any(|route| {
-                route.provider == "Cursor" && route.api_method == "cursor" && route.available
-            }));
-        })
-    });
 }

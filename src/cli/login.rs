@@ -84,26 +84,11 @@ enum PendingScriptableLogin {
         state: String,
         redirect_uri: String,
     },
-    Gemini {
-        verifier: String,
-        redirect_uri: String,
-    },
-    Antigravity {
-        verifier: String,
-        state: String,
-        redirect_uri: String,
-    },
     Google {
         verifier: String,
         state: String,
         redirect_uri: String,
         tier: auth::google::GmailAccessTier,
-    },
-    Copilot {
-        device_code: String,
-        user_code: String,
-        verification_uri: String,
-        interval: u64,
     },
 }
 
@@ -118,10 +103,7 @@ impl PendingScriptableLogin {
         match self {
             Self::Claude { .. } => "claude",
             Self::Openai { .. } => "openai",
-            Self::Gemini { .. } => "gemini",
-            Self::Antigravity { .. } => "antigravity",
             Self::Google { .. } => "google",
-            Self::Copilot { .. } => "copilot",
         }
     }
 
@@ -311,16 +293,6 @@ pub async fn run_login_provider(
                 login_openai_compatible_flow(&profile, &options)
                     .map(|_| LoginFlowOutcome::Completed)
             }
-            LoginProviderTarget::Cursor => login_cursor_flow().map(|_| LoginFlowOutcome::Completed),
-            LoginProviderTarget::Copilot => {
-                login_copilot_flow(options.no_browser).map(|_| LoginFlowOutcome::Completed)
-            }
-            LoginProviderTarget::Gemini => login_gemini_flow(options.no_browser)
-                .await
-                .map(|_| LoginFlowOutcome::Completed),
-            LoginProviderTarget::Antigravity => login_antigravity_flow(options.no_browser)
-                .await
-                .map(|_| LoginFlowOutcome::Completed),
             LoginProviderTarget::Google => {
                 login_google_flow(options.no_browser, options.google_access_tier)
                     .await
@@ -938,180 +910,6 @@ fn save_named_env_vars(env_file: &str, vars: &[(&str, String)]) -> Result<()> {
     for (key, value) in vars {
         crate::env::set_var(key, value);
     }
-
-    Ok(())
-}
-
-fn login_cursor_flow() -> Result<()> {
-    eprintln!("Starting Cursor API key setup...");
-
-    eprintln!("Get your API key from: https://cursor.com/settings");
-    eprintln!("(Dashboard > Integrations > User API Keys)\n");
-    eprint!("Paste your Cursor API key: ");
-    io::stdout().flush()?;
-
-    let key = read_secret_line()?;
-    if key.is_empty() {
-        anyhow::bail!("No API key provided.");
-    }
-
-    save_named_api_key("cursor.env", "CURSOR_API_KEY", &key)?;
-    crate::auth::AuthStatus::invalidate_cache();
-    eprintln!("\nSuccessfully saved Cursor API key!");
-    eprintln!(
-        "Stored at {}",
-        crate::storage::app_config_dir()?
-            .join("cursor.env")
-            .display()
-    );
-    eprintln!("jcode will use the native Cursor HTTPS transport.");
-
-    Ok(())
-}
-
-fn login_copilot_flow(no_browser: bool) -> Result<()> {
-    eprintln!("Starting GitHub Copilot login...");
-
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(login_copilot_device_flow(no_browser))
-    })
-}
-
-async fn login_copilot_device_flow(no_browser: bool) -> Result<()> {
-    let client = crate::provider::shared_http_client();
-
-    let device_resp = crate::auth::copilot::initiate_device_flow(&client).await?;
-
-    eprintln!();
-    eprintln!("  Open this URL in your browser:");
-    eprintln!("    {}", device_resp.verification_uri);
-    eprintln!();
-    if let Some(qr) = crate::login_qr::indented_section(
-        &device_resp.verification_uri,
-        "  Or scan this QR on another device to open the verification page:",
-        "    ",
-    ) {
-        eprintln!("{qr}");
-        eprintln!();
-    }
-    eprintln!("  Enter code: {}", device_resp.user_code);
-    eprintln!();
-    eprintln!("  Waiting for authorization...");
-
-    maybe_open_browser(&device_resp.verification_uri, no_browser);
-
-    let token = crate::auth::copilot::poll_for_access_token(
-        &client,
-        &device_resp.device_code,
-        device_resp.interval,
-    )
-    .await?;
-
-    let username = crate::auth::copilot::fetch_github_username(&client, &token)
-        .await
-        .unwrap_or_else(|_| "unknown".to_string());
-
-    crate::auth::copilot::save_github_token(&token, &username)?;
-
-    eprintln!("  ✓ Authenticated as {} via GitHub Copilot", username);
-
-    Ok(())
-}
-
-async fn login_antigravity_flow(no_browser: bool) -> Result<()> {
-    eprintln!("Starting native Antigravity login...");
-    eprintln!(
-        "jcode will authenticate directly with Google Antigravity; the Antigravity desktop app is not required."
-    );
-    eprintln!(
-        "If browser launch fails, or you pass `--no-browser`, jcode will prompt for the callback URL instead."
-    );
-    eprintln!(
-        "If the browser later shows a loopback/callback error page, copy the full URL from the address bar and re-run with `--no-browser`."
-    );
-    eprintln!();
-
-    let tokens = crate::auth::antigravity::login(no_browser).await?;
-
-    eprintln!("Successfully logged in to Antigravity!");
-    eprintln!(
-        "Tokens saved to {}",
-        crate::auth::antigravity::tokens_path()?.display()
-    );
-    if let Some(email) = tokens.email.as_deref() {
-        eprintln!("Google account: {}", email);
-    }
-    if let Some(project_id) = tokens.project_id.as_deref() {
-        eprintln!("Resolved Antigravity project: {}", project_id);
-    }
-
-    Ok(())
-}
-
-async fn login_gemini_flow(no_browser: bool) -> Result<()> {
-    // Offer the auth-method choice only on an interactive terminal so scripted
-    // / piped invocations preserve the historical OAuth-only behavior.
-    if io::stdin().is_terminal() {
-        eprintln!("Gemini login. Choose an authentication method:");
-        eprintln!("  [1] Google account OAuth (free Code Assist tier, default)");
-        eprintln!(
-            "  [2] Gemini Developer API key (Google AI Studio, generativelanguage.googleapis.com)"
-        );
-        eprintln!();
-        let choice = read_line_trimmed("Enter 1-2 [1]: ")?;
-        if choice == "2" {
-            return login_gemini_api_key_flow();
-        }
-    }
-
-    eprintln!("Starting native Gemini login...");
-    eprintln!(
-        "If your student/education plan is attached to your Google account, use that account in the browser flow."
-    );
-    eprintln!(
-        "If browser launch fails, or you pass `--no-browser`, jcode will prompt for the manual authorization code."
-    );
-    eprintln!(
-        "Note: school / Workspace Google accounts may also require GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION for Code Assist entitlement checks."
-    );
-    eprintln!();
-
-    let tokens = crate::auth::gemini::login(no_browser).await?;
-
-    eprintln!("Successfully logged in to Gemini!");
-    eprintln!(
-        "Tokens saved to {}",
-        crate::auth::gemini::tokens_path()?.display()
-    );
-    if let Some(email) = tokens.email.as_deref() {
-        eprintln!("Google account: {}", email);
-    }
-
-    Ok(())
-}
-
-fn login_gemini_api_key_flow() -> Result<()> {
-    eprintln!("Setting up Gemini Developer API key...");
-    eprintln!("Get your API key from: https://aistudio.google.com/apikey\n");
-    eprint!("Paste your Gemini API key: ");
-    io::stdout().flush()?;
-
-    let key = read_secret_line()?;
-    if key.is_empty() {
-        anyhow::bail!("No API key provided.");
-    }
-
-    crate::auth::gemini::save_api_key(&key)?;
-    eprintln!("\nSuccessfully saved Gemini Developer API key!");
-    eprintln!(
-        "Stored at {}",
-        crate::storage::app_config_dir()?
-            .join(crate::auth::gemini::GEMINI_API_KEY_ENV_FILE)
-            .display()
-    );
-    eprintln!(
-        "Provider: gemini (official Gemini Developer API, generativelanguage.googleapis.com)"
-    );
 
     Ok(())
 }

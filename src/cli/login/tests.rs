@@ -51,35 +51,6 @@ fn load_pending_login_removes_expired_record() {
 }
 
 #[test]
-fn load_pending_login_accepts_legacy_format() {
-    let _guard = crate::storage::lock_test_env();
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    let prev_home = std::env::var_os("JCODE_HOME");
-    crate::env::set_var("JCODE_HOME", temp.path());
-
-    let path = pending_login_path("gemini").expect("pending path");
-    let legacy = PendingScriptableLogin::Gemini {
-        verifier: "verifier".to_string(),
-        redirect_uri: auth::gemini::GEMINI_MANUAL_REDIRECT_URI.to_string(),
-    };
-    crate::storage::write_json_secret(&path, &legacy).expect("write legacy pending login");
-
-    let loaded = load_pending_login(&path, "gemini").expect("load legacy pending login");
-    match loaded {
-        PendingScriptableLogin::Gemini {
-            verifier,
-            redirect_uri,
-        } => {
-            assert_eq!(verifier, "verifier");
-            assert_eq!(redirect_uri, auth::gemini::GEMINI_MANUAL_REDIRECT_URI);
-        }
-        other => panic!("unexpected login variant: {:?}", other),
-    }
-
-    set_or_clear_env("JCODE_HOME", prev_home);
-}
-
-#[test]
 fn uses_scriptable_flow_detects_dash_input_without_consuming_stdin() {
     let options = LoginOptions {
         callback_url: Some("-".to_string()),

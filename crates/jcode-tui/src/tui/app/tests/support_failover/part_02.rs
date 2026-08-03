@@ -531,43 +531,6 @@ fn create_fast_test_app() -> App {
     app
 }
 
-fn create_gemini_test_app() -> App {
-    struct GeminiMockProvider;
-
-    #[async_trait::async_trait]
-    impl Provider for GeminiMockProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[crate::message::ToolDefinition],
-            _system: &str,
-            _resume_session_id: Option<&str>,
-        ) -> Result<crate::provider::EventStream> {
-            unimplemented!("Mock provider")
-        }
-
-        fn name(&self) -> &str {
-            "gemini"
-        }
-
-        fn model(&self) -> String {
-            "gemini-2.5-pro".to_string()
-        }
-
-        fn fork(&self) -> Arc<dyn Provider> {
-            Arc::new(GeminiMockProvider)
-        }
-    }
-
-    let provider: Arc<dyn Provider> = Arc::new(GeminiMockProvider);
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
-    let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
-    app.diff_mode = crate::config::DiffDisplayMode::Inline;
-    app
-}
-
 /// Provider exposing the same model via both a (broken) API key and a working
 /// OAuth login, plus a `set_route_selection` that records the applied route.
 /// Mirrors the user's case: Claude OAuth works but the API key is broken.

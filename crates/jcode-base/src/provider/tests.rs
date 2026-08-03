@@ -211,16 +211,11 @@ fn test_multi_provider_with_openai() -> MultiProvider {
         claude: RwLock::new(None),
         anthropic: RwLock::new(None),
         openai: RwLock::new(Some(test_openai_runtime() as Arc<dyn Provider>)),
-        copilot_api: RwLock::new(None),
-        antigravity: RwLock::new(None),
-        gemini: RwLock::new(None),
-        cursor: RwLock::new(None),
         bedrock: RwLock::new(None),
         openrouter: RwLock::new(None),
         openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
         active_openai_compatible_profile: RwLock::new(None),
         active: RwLock::new(ActiveProvider::OpenAI),
-        use_claude_cli: false,
         startup_notices: RwLock::new(Vec::new()),
         initial_provider: None,
         routes_memo: std::sync::Mutex::new(None),
@@ -852,28 +847,6 @@ impl StubExternalRuntime {
         }
     }
 
-    fn cursor() -> Self {
-        Self::new("cursor", "Cursor", "cursor", cursor::AVAILABLE_MODELS)
-    }
-
-    fn antigravity() -> Self {
-        Self::new(
-            "antigravity",
-            "Antigravity",
-            "https",
-            antigravity::AVAILABLE_MODELS,
-        )
-    }
-
-    fn copilot() -> Self {
-        Self::new(
-            "copilot",
-            "GitHub Copilot",
-            "copilot",
-            copilot::FALLBACK_MODELS,
-        )
-    }
-
     fn anthropic() -> Self {
         Self::new(
             "anthropic",
@@ -976,18 +949,6 @@ impl Provider for StubExternalRuntime {
     }
 }
 
-fn test_cursor_runtime() -> Arc<dyn Provider> {
-    Arc::new(StubExternalRuntime::cursor())
-}
-
-fn test_antigravity_runtime() -> Arc<dyn Provider> {
-    Arc::new(StubExternalRuntime::antigravity())
-}
-
-fn test_copilot_runtime() -> Arc<dyn Provider> {
-    Arc::new(StubExternalRuntime::copilot())
-}
-
 fn test_anthropic_runtime() -> Arc<StubExternalRuntime> {
     Arc::new(StubExternalRuntime::anthropic())
 }
@@ -1006,9 +967,6 @@ fn register_test_external_runtimes() {
     external::register_external_provider(external::OPENAI_RUNTIME, || {
         test_openai_runtime() as Arc<dyn Provider>
     });
-    external::register_external_provider(external::CURSOR_RUNTIME, test_cursor_runtime);
-    external::register_external_provider(external::ANTIGRAVITY_RUNTIME, test_antigravity_runtime);
-    external::register_external_provider(external::COPILOT_RUNTIME, test_copilot_runtime);
     // OpenRouter tests exercise the real runtime (profile-scoped catalogs,
     // transport identities), so register the real factory like the binary's
     // composition root does. The dev-dependency cycle is test-only.
@@ -1055,28 +1013,6 @@ fn register_test_external_runtimes() {
 /// the registry, mirroring production construction.
 fn test_openrouter_runtime() -> anyhow::Result<Arc<dyn Provider>> {
     external::instantiate_openrouter_runtime(external::OpenRouterRuntimeSpec::Default)
-}
-
-fn test_multi_provider_with_cursor() -> MultiProvider {
-    MultiProvider {
-        claude: RwLock::new(None),
-        anthropic: RwLock::new(None),
-        openai: RwLock::new(None),
-        copilot_api: RwLock::new(None),
-        antigravity: RwLock::new(None),
-        gemini: RwLock::new(None),
-        cursor: RwLock::new(Some(test_cursor_runtime())),
-        bedrock: RwLock::new(None),
-        openrouter: RwLock::new(None),
-        openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
-        active_openai_compatible_profile: RwLock::new(None),
-        active: RwLock::new(ActiveProvider::Cursor),
-        use_claude_cli: false,
-        startup_notices: RwLock::new(Vec::new()),
-        initial_provider: None,
-        routes_memo: std::sync::Mutex::new(None),
-        post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    }
 }
 
 #[test]

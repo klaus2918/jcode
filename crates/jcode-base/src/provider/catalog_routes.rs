@@ -5,10 +5,10 @@ use super::registry::ProviderRegistry;
 use super::{
     ALL_OPENAI_MODELS, AccountModelAvailabilityState, CHATGPT_WEB_MODEL, ModelRoute, MultiProvider,
     Provider, anthropic_api_key_route_availability, anthropic_oauth_route_availability, bedrock,
-    build_anthropic_oauth_route, build_chatgpt_web_route, build_copilot_route,
+    build_anthropic_oauth_route, build_chatgpt_web_route,
     build_openai_api_key_route, build_openai_oauth_route, build_openrouter_auto_route,
     build_openrouter_endpoint_route, build_openrouter_fallback_provider_route,
-    configured_standard_openrouter_profile_routes, copilot, dedupe_model_routes,
+    configured_standard_openrouter_profile_routes, dedupe_model_routes,
     direct_openai_compatible_profile_routes, format_account_model_availability_detail,
     is_listable_model_name, known_anthropic_model_ids, known_openai_model_ids,
     model_availability_for_account, openrouter, openrouter_catalog_model_id, provider_for_model,
@@ -123,18 +123,6 @@ pub fn simplified_model_routes_for_picker(
                         continue;
                     }
                     Some("openai") => unreachable!("OpenAI models are handled above"),
-                    Some("gemini") => (
-                        "Gemini".to_string(),
-                        "code-assist-oauth".to_string(),
-                        auth.gemini != AuthState::NotConfigured,
-                        String::new(),
-                    ),
-                    Some("cursor") => (
-                        "Cursor".to_string(),
-                        "cursor".to_string(),
-                        auth.cursor != AuthState::NotConfigured,
-                        String::new(),
-                    ),
                     Some("openrouter") => (
                         "auto".to_string(),
                         "openrouter".to_string(),
@@ -253,10 +241,6 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
     append_openai_routes(provider, &mut routes, &openai_auth);
     let added_direct_openai_compatible_routes =
         append_openai_compatible_profile_routes(provider, &mut routes);
-    append_copilot_routes(provider, &mut routes);
-    append_gemini_routes(provider, &mut routes);
-    append_antigravity_routes(provider, &mut routes);
-    append_cursor_routes(provider, &mut routes);
     append_bedrock_routes(provider, &mut routes);
 
     let has_openrouter = provider.openrouter_provider().is_some();
@@ -580,66 +564,6 @@ fn named_provider_profile_routes(
         });
     }
     routes
-}
-
-/// GitHub Copilot models, or a placeholder when credentials exist but the
-/// provider is not initialized.
-fn append_copilot_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) {
-    if let Some(copilot) = provider.copilot_provider() {
-        let copilot_models = copilot.available_models_display();
-        let detail = copilot.model_catalog_detail();
-        let copilot_models_empty = copilot_models.is_empty();
-        for model in copilot_models {
-            routes.push(build_copilot_route(&model, true, detail.clone()));
-        }
-        if copilot_models_empty && copilot::has_credentials() {
-            routes.push(build_copilot_route("copilot models", false, detail));
-        }
-    } else if copilot::has_credentials() {
-        routes.push(build_copilot_route(
-            "copilot models",
-            false,
-            "not initialized yet",
-        ));
-    }
-}
-
-fn append_gemini_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) {
-    if let Some(gemini) = provider.gemini_provider() {
-        for model in gemini.available_models_display() {
-            routes.push(ModelRoute {
-                capability: route_capability(&model),
-                model,
-                provider: "Gemini".to_string(),
-                api_method: "code-assist-oauth".to_string(),
-                available: true,
-                detail: String::new(),
-                cheapness: None,
-            });
-        }
-    }
-}
-
-fn append_antigravity_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) {
-    if let Some(antigravity) = provider.antigravity_provider() {
-        routes.extend(antigravity.model_routes());
-    }
-}
-
-fn append_cursor_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) {
-    if let Some(cursor) = provider.cursor_provider() {
-        for model in cursor.available_models_display() {
-            routes.push(ModelRoute {
-                capability: route_capability(&model),
-                model,
-                provider: "Cursor".to_string(),
-                api_method: "cursor".to_string(),
-                available: true,
-                detail: String::new(),
-                cheapness: None,
-            });
-        }
-    }
 }
 
 /// AWS Bedrock models and inference profiles, including the
@@ -1066,28 +990,6 @@ pub fn remote_model_routes_fallback(
             added_any = true;
         }
 
-        if !added_any && remote_model_should_offer_copilot_route(model) && !model.contains("[1m]") {
-            routes.push(build_copilot_route(
-                model,
-                auth.copilot == AuthState::Available || remote_model_is_server_copilot_only(model),
-                String::new(),
-            ));
-            added_any = true;
-        }
-
-        if super::gemini::is_gemini_model_id(model) {
-            routes.push(ModelRoute {
-                capability: route_capability(model),
-                model: model.clone(),
-                provider: "Gemini".to_string(),
-                api_method: "code-assist-oauth".to_string(),
-                available: auth.gemini == AuthState::Available,
-                detail: String::new(),
-                cheapness: None,
-            });
-            added_any = true;
-        }
-
         if !added_any {
             routes.push(ModelRoute {
                 capability: route_capability(model),
@@ -1181,12 +1083,6 @@ pub fn remote_current_openai_compatible_route_for_model(
     })
 }
 
-pub fn remote_model_should_offer_copilot_route(model: &str) -> bool {
-    remote_openai_compatible_route_for_model(model).is_none()
-        && (remote_model_is_server_copilot_only(model)
-            || super::copilot::is_known_display_model(model))
-}
-
 pub fn remote_openai_compatible_route_for_model(model: &str) -> Option<ModelRoute> {
     for profile in crate::provider_catalog::openai_compatible_profiles()
         .iter()
@@ -1257,16 +1153,6 @@ fn remote_openai_compatible_profile_models(
     }
 
     models
-}
-
-pub fn remote_model_is_server_copilot_only(model: &str) -> bool {
-    !model.is_empty()
-        && !model.contains('/')
-        && remote_openai_compatible_route_for_model(model).is_none()
-        && !matches!(
-            provider_for_model(model),
-            Some("claude" | "openai" | "gemini" | "cursor")
-        )
 }
 
 #[cfg(test)]

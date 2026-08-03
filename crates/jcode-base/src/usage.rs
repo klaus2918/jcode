@@ -19,7 +19,7 @@ use provider_fetch::*;
 
 use anyhow::{Context, Result};
 pub use display::{format_reset_time, format_usage_bar};
-use display::{format_token_count, humanize_key, provider_usage_cache_is_fresh};
+use display::provider_usage_cache_is_fresh;
 use openai_helpers::{parse_openai_usage_payload, usage_percent_to_ratio};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -293,46 +293,6 @@ fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<Provider
         total += 1;
     }
 
-    if auth::copilot::has_copilot_credentials() {
-        tasks.spawn(async {
-            fetch_copilot_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "copilot");
-                report
-            })
-        });
-        total += 1;
-    }
-
-    if auth::antigravity::has_cached_auth() {
-        tasks.spawn(async {
-            fetch_antigravity_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "antigravity");
-                report
-            })
-        });
-        total += 1;
-    }
-
-    if auth::gemini::has_api_key() {
-        tasks.spawn(async {
-            fetch_gemini_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "gemini");
-                report
-            })
-        });
-        total += 1;
-    }
-
-    if auth::cursor::has_cursor_api_key() {
-        tasks.spawn(async {
-            fetch_cursor_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "cursor");
-                report
-            })
-        });
-        total += 1;
-    }
-
     total += enqueue_activity_sweeper_task(tasks);
 
     total
@@ -349,10 +309,6 @@ fn activity_source_has_dedicated_report(source_key: &str) -> bool {
     }
     match source_key {
         "openrouter" => openrouter_api_key().is_some(),
-        "copilot" => auth::copilot::has_copilot_credentials(),
-        "antigravity" => auth::antigravity::has_cached_auth(),
-        "gemini" => auth::gemini::has_api_key(),
-        "cursor" => auth::cursor::has_cursor_api_key(),
         _ => {
             // Direct OpenAI-compatible profiles are reported by the API-key
             // module whenever their key is configured.

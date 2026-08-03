@@ -2922,7 +2922,6 @@ pub(crate) fn load_external_cli_sessions_grouped(
         ExternalCli::ClaudeCode => load_external_claude_code_sessions(scan_limit),
         ExternalCli::Pi => load_external_pi_sessions(scan_limit),
         ExternalCli::OpenCode => load_external_opencode_sessions(scan_limit),
-        ExternalCli::Cursor => load_external_cursor_sessions(scan_limit),
     };
     (Vec::new(), sessions)
 }

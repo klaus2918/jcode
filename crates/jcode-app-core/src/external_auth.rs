@@ -66,9 +66,6 @@ enum ExternalAuthReviewAction {
     /// Claude Code's native credentials (macOS Keychain item or
     /// `CLAUDE_CODE_OAUTH_TOKEN` env var), which have no stable on-disk path.
     ClaudeCodeNative,
-    GeminiCli,
-    Copilot(auth::copilot::ExternalCopilotAuthSource),
-    Cursor(auth::cursor::ExternalCursorAuthSource),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,7 +111,6 @@ pub struct ExternalAuthAutoImportOutcome {
     pub imported_providers: Vec<&'static str>,
 }
 
-
 /// Coarse provider labels for the providers a candidate activates on a
 /// successful import, so the auto-import flow can report which providers
 /// became available.
@@ -123,9 +119,6 @@ pub fn import_provider_labels(candidate: &ExternalAuthReviewCandidate) -> Vec<&'
         ExternalAuthReviewAction::CodexLegacy => vec!["openai"],
         ExternalAuthReviewAction::ClaudeCode => vec!["claude"],
         ExternalAuthReviewAction::ClaudeCodeNative => vec!["claude"],
-        ExternalAuthReviewAction::GeminiCli => vec!["gemini"],
-        ExternalAuthReviewAction::Copilot(_) => vec!["copilot"],
-        ExternalAuthReviewAction::Cursor(_) => vec!["cursor"],
         ExternalAuthReviewAction::SharedExternal(source) => {
             auth::external::source_provider_labels(*source)
         }
@@ -137,18 +130,11 @@ impl ExternalAuthAutoImportOutcome {
     /// by the remaining supported providers. The precise OAuth/API-key variant
     /// is resolved from `AuthStatus` by the caller when possible.
     pub fn preferred_activation_provider(&self) -> Option<&'static str> {
-        const ORDER: &[&str] = &[
-            "claude",
-            "openai",
-            "copilot",
-            "gemini",
-            "cursor",
-            "antigravity",
-            "openrouter",
-        ];
-        ORDER.iter().copied().find(|provider| {
-            self.imported_providers.contains(provider)
-        })
+        const ORDER: &[&str] = &["claude", "openai", "openrouter"];
+        ORDER
+            .iter()
+            .copied()
+            .find(|provider| self.imported_providers.contains(provider))
     }
 
     pub fn render_markdown(&self) -> String {
@@ -254,39 +240,6 @@ pub fn pending_external_auth_review_candidates() -> Result<Vec<ExternalAuthRevie
         });
     }
 
-    if auth::gemini::has_unconsented_cli_auth() {
-        candidates.push(ExternalAuthReviewCandidate {
-            provider_summary: "Gemini".to_string(),
-            source_name: "Gemini CLI".to_string(),
-            path: auth::gemini::gemini_cli_oauth_path()?,
-            action: ExternalAuthReviewAction::GeminiCli,
-        });
-    }
-
-    if let Some(source) = auth::copilot::has_unconsented_external_auth()
-        && !matches!(
-            source,
-            auth::copilot::ExternalCopilotAuthSource::OpenCodeAuth
-                | auth::copilot::ExternalCopilotAuthSource::PiAuth
-        )
-    {
-        candidates.push(ExternalAuthReviewCandidate {
-            provider_summary: "GitHub Copilot".to_string(),
-            source_name: source.display_name().to_string(),
-            path: source.path(),
-            action: ExternalAuthReviewAction::Copilot(source),
-        });
-    }
-
-    if let Some(source) = auth::cursor::has_unconsented_external_auth() {
-        candidates.push(ExternalAuthReviewCandidate {
-            provider_summary: "Cursor".to_string(),
-            source_name: source.display_name().to_string(),
-            path: source.path()?,
-            action: ExternalAuthReviewAction::Cursor(source),
-        });
-    }
-
     Ok(candidates)
 }
 
@@ -381,13 +334,6 @@ fn approve_external_auth_review_candidate(candidate: &ExternalAuthReviewCandidat
                 ));
             }
         }
-        ExternalAuthReviewAction::GeminiCli => auth::gemini::trust_cli_auth_for_future_use()?,
-        ExternalAuthReviewAction::Copilot(source) => {
-            auth::copilot::trust_external_auth_source(source)?
-        }
-        ExternalAuthReviewAction::Cursor(source) => {
-            auth::cursor::trust_external_auth_source(source)?
-        }
     }
     Ok(())
 }
@@ -415,24 +361,6 @@ fn revoke_external_auth_review_candidate(candidate: &ExternalAuthReviewCandidate
         ExternalAuthReviewAction::ClaudeCodeNative => {
             crate::config::Config::revoke_external_auth_source(
                 auth::claude::CLAUDE_CODE_NATIVE_AUTH_SOURCE_ID,
-            )?
-        }
-        ExternalAuthReviewAction::GeminiCli => {
-            crate::config::Config::revoke_external_auth_source_for_path(
-                auth::gemini::GEMINI_CLI_AUTH_SOURCE_ID,
-                &candidate.path,
-            )?
-        }
-        ExternalAuthReviewAction::Copilot(source) => {
-            crate::config::Config::revoke_external_auth_source_for_path(
-                source.source_id(),
-                &candidate.path,
-            )?
-        }
-        ExternalAuthReviewAction::Cursor(source) => {
-            crate::config::Config::revoke_external_auth_source_for_path(
-                source.source_id(),
-                &candidate.path,
             )?
         }
     }
@@ -487,42 +415,6 @@ async fn validate_openai_import() -> Result<String> {
     ))
 }
 
-async fn validate_gemini_import() -> Result<String> {
-    let tokens = auth::gemini::load_tokens()?;
-    Ok(format!(
-        "Loaded Gemini credentials.{}",
-        token_freshness_note(tokens.expires_at)
-    ))
-}
-
-async fn validate_antigravity_import() -> Result<String> {
-    let tokens = auth::antigravity::load_tokens()?;
-    Ok(format!(
-        "Loaded Antigravity credentials.{}",
-        token_freshness_note(tokens.expires_at)
-    ))
-}
-
-async fn validate_copilot_import() -> Result<String> {
-    // Presence check only: confirm a GitHub token is readable. The
-    // GitHub->Copilot exchange happens lazily at request time.
-    let _github_token = auth::copilot::load_github_token()?;
-    Ok("Loaded GitHub Copilot credentials.".to_string())
-}
-
-async fn validate_cursor_import() -> Result<String> {
-    let has_api_key = auth::cursor::has_cursor_api_key();
-    let has_vscdb = auth::cursor::has_cursor_vscdb_token();
-    if has_api_key || has_vscdb {
-        Ok(format!(
-            "Cursor native source loaded (api_key={}, vscdb_token={}).",
-            has_api_key, has_vscdb
-        ))
-    } else {
-        anyhow::bail!("Cursor source did not expose a usable auth token.")
-    }
-}
-
 fn validate_openrouter_like_import() -> Result<String> {
     for (env_key, env_file) in crate::provider_catalog::openrouter_like_api_key_sources() {
         if crate::provider_catalog::load_api_key_from_env_or_config(&env_key, &env_file).is_some() {
@@ -540,9 +432,6 @@ async fn validate_shared_external_import(
         let result = match label {
             "OpenAI/Codex" => validate_openai_import().await,
             "Claude" => validate_claude_import().await,
-            "Gemini" => validate_gemini_import().await,
-            "Antigravity" => validate_antigravity_import().await,
-            "GitHub Copilot" => validate_copilot_import().await,
             "OpenRouter/API-key providers" => validate_openrouter_like_import(),
             _ => continue,
         };
@@ -564,9 +453,6 @@ async fn validate_external_auth_review_candidate(
         ExternalAuthReviewAction::CodexLegacy => validate_openai_import().await,
         ExternalAuthReviewAction::ClaudeCode => validate_claude_import().await,
         ExternalAuthReviewAction::ClaudeCodeNative => validate_claude_import().await,
-        ExternalAuthReviewAction::GeminiCli => validate_gemini_import().await,
-        ExternalAuthReviewAction::Copilot(_) => validate_copilot_import().await,
-        ExternalAuthReviewAction::Cursor(_) => validate_cursor_import().await,
     }
 }
 
@@ -729,9 +615,6 @@ mod render_markdown_tests {
         use super::ExternalAuthReviewCandidate;
         // The fixture points at the legacy Codex action -> OpenAI provider.
         let candidate = ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json");
-        assert_eq!(
-            super::import_provider_labels(&candidate),
-            vec!["openai"]
-        );
+        assert_eq!(super::import_provider_labels(&candidate), vec!["openai"]);
     }
 }

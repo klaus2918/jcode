@@ -186,18 +186,6 @@ fn build_openai_route(
     }
 }
 
-pub fn build_copilot_route(model: &str, available: bool, detail: impl Into<String>) -> ModelRoute {
-    ModelRoute {
-        capability: capability_for(model, "copilot"),
-        model: model.to_string(),
-        provider: "Copilot".to_string(),
-        api_method: "copilot".to_string(),
-        available,
-        detail: detail.into(),
-        cheapness: cheapness_for_route(model, "Copilot", "copilot"),
-    }
-}
-
 pub fn build_openrouter_auto_route(
     model: &str,
     available: bool,

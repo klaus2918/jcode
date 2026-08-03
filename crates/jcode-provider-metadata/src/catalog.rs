@@ -267,45 +267,6 @@ pub const OPENAI_COMPAT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderD
     order: LoginProviderSurfaceOrder::new(Some(10), Some(9), None, None, Some(9)),
 };
 
-pub const CURSOR_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "cursor",
-    display_name: "Cursor",
-    auth_kind: LoginProviderAuthKind::Hybrid,
-    auth_state_key: LoginProviderAuthStateKey::Cursor,
-    auth_status_method: "API key / CLI",
-    aliases: &[],
-    menu_detail: "browser login or API key",
-    recommended: false,
-    target: LoginProviderTarget::Cursor,
-    order: LoginProviderSurfaceOrder::new(Some(11), Some(12), None, Some(9), Some(12)),
-};
-
-pub const COPILOT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "copilot",
-    display_name: "GitHub Copilot",
-    auth_kind: LoginProviderAuthKind::DeviceCode,
-    auth_state_key: LoginProviderAuthStateKey::Copilot,
-    auth_status_method: "device code",
-    aliases: &[],
-    menu_detail: "GitHub device flow",
-    recommended: false,
-    target: LoginProviderTarget::Copilot,
-    order: LoginProviderSurfaceOrder::new(Some(3), Some(10), Some(3), Some(10), Some(10)),
-};
-
-pub const GEMINI_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "gemini",
-    display_name: "Google Gemini",
-    auth_kind: LoginProviderAuthKind::OAuth,
-    auth_state_key: LoginProviderAuthStateKey::Gemini,
-    auth_status_method: "OAuth",
-    aliases: &[],
-    menu_detail: "Google Gemini Code Assist OAuth login",
-    recommended: false,
-    target: LoginProviderTarget::Gemini,
-    order: LoginProviderSurfaceOrder::new(Some(13), Some(11), Some(4), Some(11), Some(13)),
-};
-
 pub const GEMINI_API_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "gemini-api",
     display_name: "Gemini API",
@@ -324,19 +285,6 @@ pub const GEMINI_API_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDesc
     order: LoginProviderSurfaceOrder::new(Some(38), Some(38), Some(38), Some(38), Some(38)),
 };
 
-pub const ANTIGRAVITY_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "antigravity",
-    display_name: "Antigravity",
-    auth_kind: LoginProviderAuthKind::OAuth,
-    auth_state_key: LoginProviderAuthStateKey::Antigravity,
-    auth_status_method: "OAuth",
-    aliases: &[],
-    menu_detail: "Google Antigravity OAuth login",
-    recommended: false,
-    target: LoginProviderTarget::Antigravity,
-    order: LoginProviderSurfaceOrder::new(Some(12), Some(12), None, Some(12), Some(12)),
-};
-
 pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "google",
     display_name: "Google/Gmail",
@@ -350,7 +298,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 18] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 14] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ANTHROPIC_API_LOGIN_PROVIDER,
@@ -363,10 +311,6 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 18] = [
     LMSTUDIO_LOGIN_PROVIDER,
     OLLAMA_LOGIN_PROVIDER,
     OPENAI_COMPAT_LOGIN_PROVIDER,
-    CURSOR_LOGIN_PROVIDER,
-    COPILOT_LOGIN_PROVIDER,
-    GEMINI_LOGIN_PROVIDER,
     GEMINI_API_LOGIN_PROVIDER,
-    ANTIGRAVITY_LOGIN_PROVIDER,
     GOOGLE_LOGIN_PROVIDER,
 ];

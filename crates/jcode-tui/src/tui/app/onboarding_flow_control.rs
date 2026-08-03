@@ -1080,22 +1080,8 @@ impl App {
         let model_label = self.onboarding_default_model_label();
         let provider_key = crate::session::derive_session_provider_key(provider.name());
         let session_id = self.session.id.clone();
-        // Whether to also run a definitive live Copilot auth check. Copilot is
-        // unusual: a local GitHub token can exist while the account is banned or
-        // not entitled, so the presence-only probe used by the readiness summary
-        // would otherwise show a banned account as "Ready to use". We skip it
-        // when Copilot is the default provider (the model ping already covers
-        // it) or when no Copilot credentials are present locally.
-        let verify_copilot = provider_key.as_deref() != Some("copilot")
-            && crate::auth::copilot::has_copilot_credentials_fast();
         self.set_status_notice(format!("Checking {model_label}..."));
         tokio::spawn(async move {
-            // Run the definitive Copilot auth check first so its validation
-            // record is persisted (and the auth cache invalidated) before the
-            // readiness summary reads `check_fast()` below.
-            if verify_copilot {
-                let _ = crate::auth::copilot::verify_copilot_credentials_live_default().await;
-            }
             let (ok, detail) = match Self::onboarding_run_model_validation(provider).await {
                 Ok(()) => (true, None),
                 Err(err) => (false, Some(Self::onboarding_trim_validation_error(&err))),
@@ -1270,9 +1256,6 @@ impl App {
         let states = [
             ("claude", status.anthropic.state),
             ("openai", status.openai),
-            ("gemini", status.gemini),
-            ("copilot", status.copilot),
-            ("cursor", status.cursor),
             ("openrouter", status.openrouter),
         ];
         for (id, state) in states {
@@ -1287,7 +1270,6 @@ impl App {
             let id = match cli {
                 ExternalCli::Codex => Some("openai"),
                 ExternalCli::ClaudeCode => Some("claude"),
-                ExternalCli::Cursor => Some("cursor"),
                 ExternalCli::Pi | ExternalCli::OpenCode => None,
             };
             if id.is_some() {
@@ -1307,15 +1289,11 @@ impl App {
         use crate::auth::AuthState;
         let status = crate::auth::AuthStatus::check_fast();
         // (display name, provider-key, state)
-        let providers: [(&str, &str, AuthState); 8] = [
+        let providers: [(&str, &str, AuthState); 4] = [
             ("Anthropic (Claude)", "anthropic", status.anthropic.state),
             ("OpenAI", "openai", status.openai),
             ("Jcode subscription", "jcode", status.jcode),
-            ("Gemini", "gemini", status.gemini),
-            ("GitHub Copilot", "copilot", status.copilot),
-            ("Cursor", "cursor", status.cursor),
             ("OpenRouter", "openrouter", status.openrouter),
-            ("Antigravity", "antigravity", status.antigravity),
         ];
         // Normalize the default provider's key so aliases like "claude" map to
         // the canonical "anthropic" bucket we list below.

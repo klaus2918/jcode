@@ -2859,12 +2859,7 @@ dependencies = [
  "hex",
  "jcode-build-meta",
  "jcode-provider-anthropic-runtime",
- "jcode-provider-antigravity-runtime",
- "jcode-provider-claude-cli-runtime",
- "jcode-provider-copilot-runtime",
- "jcode-provider-cursor-runtime",
  "jcode-provider-doctor",
- "jcode-provider-gemini-runtime",
  "jcode-provider-openai-runtime",
  "jcode-provider-openrouter-runtime",
  "jcode-selfdev-types",
@@ -3286,26 +3281,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jcode-provider-antigravity-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "jcode-base",
- "jcode-message-types",
- "jcode-provider-antigravity",
- "jcode-provider-core",
- "jcode-provider-gemini",
- "reqwest 0.12.28",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "uuid",
-]
-
-[[package]]
 name = "jcode-provider-bedrock"
 version = "0.1.0"
 dependencies = [
@@ -3335,49 +3310,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "jcode-provider-claude-cli-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "jcode-base",
- "jcode-message-types",
- "jcode-provider-core",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "jcode-provider-copilot"
 version = "0.1.0"
 dependencies = [
  "jcode-message-types",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "jcode-provider-copilot-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "dirs",
- "futures",
- "jcode-base",
- "jcode-message-types",
- "jcode-provider-copilot",
- "jcode-provider-core",
- "reqwest 0.12.28",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "uuid",
 ]
 
 [[package]]
@@ -3399,31 +3337,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jcode-provider-cursor-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "chrono",
- "flate2",
- "h2",
- "http 1.4.0",
- "jcode-base",
- "jcode-message-types",
- "jcode-provider-core",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "uuid",
- "webpki-roots",
-]
-
-[[package]]
 name = "jcode-provider-doctor"
 version = "0.1.0"
 dependencies = [
@@ -3431,10 +3344,6 @@ dependencies = [
  "futures",
  "jcode-base",
  "jcode-provider-anthropic-runtime",
- "jcode-provider-antigravity-runtime",
- "jcode-provider-copilot-runtime",
- "jcode-provider-cursor-runtime",
- "jcode-provider-gemini-runtime",
  "jcode-provider-metadata",
  "jcode-provider-openai-runtime",
  "jcode-provider-openrouter-runtime",
@@ -3464,26 +3373,6 @@ dependencies = [
  "jcode-message-types",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "jcode-provider-gemini-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "jcode-base",
- "jcode-message-types",
- "jcode-provider-core",
- "jcode-provider-gemini",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "uuid",
 ]
 
 [[package]]

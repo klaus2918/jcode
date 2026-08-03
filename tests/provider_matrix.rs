@@ -395,14 +395,6 @@ fn seed_non_compatible_auto_auth(provider: LoginProviderDescriptor) -> bool {
             jcode::env::set_var("OPENROUTER_API_KEY", "sk-test-openrouter-key");
             true
         }
-        LoginProviderTarget::Copilot => {
-            jcode::env::set_var("COPILOT_GITHUB_TOKEN", "gho_test-copilot-token");
-            true
-        }
-        LoginProviderTarget::Cursor => {
-            jcode::env::set_var("CURSOR_API_KEY", "sk-test-cursor-key");
-            true
-        }
         _ => false,
     }
 }

@@ -124,26 +124,6 @@ pub async fn run() -> Result<()> {
 /// registration in this one function so the composition-root wiring stays
 /// discoverable as more providers move out of the base crate.
 pub fn register_external_provider_runtimes() {
-    #[cfg(feature = "extra-providers")]
-    crate::provider::external::register_external_provider(
-        crate::provider::external::GEMINI_RUNTIME,
-        || std::sync::Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new()),
-    );
-    #[cfg(feature = "extra-providers")]
-    crate::provider::external::register_external_provider(
-        crate::provider::external::CURSOR_RUNTIME,
-        || std::sync::Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new()),
-    );
-    #[cfg(feature = "extra-providers")]
-    crate::provider::external::register_external_provider(
-        crate::provider::external::ANTIGRAVITY_RUNTIME,
-        || std::sync::Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new()),
-    );
-    #[cfg(feature = "extra-providers")]
-    crate::provider::external::register_external_provider(
-        crate::provider::external::CLAUDE_CLI_RUNTIME,
-        || std::sync::Arc::new(jcode_provider_claude_cli_runtime::ClaudeProvider::new()),
-    );
     crate::provider::external::register_external_provider(
         crate::provider::external::ANTHROPIC_RUNTIME,
         || std::sync::Arc::new(jcode_provider_anthropic_runtime::AnthropicProvider::new()),
@@ -199,29 +179,6 @@ pub fn register_external_provider_runtimes() {
                 Err(_) => jcode_provider_openai_runtime::OpenAIProvider::new_browser_only(),
             };
             Some(std::sync::Arc::new(provider) as std::sync::Arc<dyn crate::provider::Provider>)
-        },
-    );
-    // Copilot's constructor is fallible (needs a GitHub token) and the runtime
-    // wants tier detection scheduled right after construction, eagerly for
-    // interactive sessions and deferred for non-interactive ones. That policy
-    // lives here in the composition root so base stays provider-agnostic.
-    #[cfg(feature = "extra-providers")]
-    crate::provider::external::register_external_provider_fallible(
-        crate::provider::external::COPILOT_RUNTIME,
-        || {
-            let provider = std::sync::Arc::new(
-                jcode_provider_copilot_runtime::CopilotApiProvider::new().ok()?,
-            );
-            let eager_tier_detection = std::env::var("JCODE_NON_INTERACTIVE").is_err();
-            if eager_tier_detection && tokio::runtime::Handle::try_current().is_ok() {
-                let p_clone = std::sync::Arc::clone(&provider);
-                tokio::spawn(async move {
-                    p_clone.detect_tier_and_set_default().await;
-                });
-            } else {
-                provider.complete_init_without_tier_detection();
-            }
-            Some(provider as std::sync::Arc<dyn crate::provider::Provider>)
         },
     );
 }
@@ -466,13 +423,8 @@ mod tests {
     fn external_provider_runtimes_register_and_instantiate() {
         register_external_provider_runtimes();
         for (key, expected_name) in [
-            #[cfg(feature = "extra-providers")]
-            (crate::provider::external::GEMINI_RUNTIME, "gemini"),
-            (crate::provider::external::CURSOR_RUNTIME, "cursor"),
-            (
-                crate::provider::external::ANTIGRAVITY_RUNTIME,
-                "antigravity",
-            ),
+            (crate::provider::external::ANTHROPIC_RUNTIME, "anthropic"),
+            (crate::provider::external::OPENAI_RUNTIME, "openai"),
         ] {
             assert!(
                 crate::provider::external::external_provider_registered(key),
@@ -484,11 +436,5 @@ mod tests {
             assert!(!provider.model().is_empty());
         }
 
-        // Copilot's factory is fallible (requires a GitHub token), so only
-        // assert registration; instantiation legitimately returns None when no
-        // Copilot credentials exist on the machine running the tests.
-        assert!(crate::provider::external::external_provider_registered(
-            crate::provider::external::COPILOT_RUNTIME
-        ));
     }
 }

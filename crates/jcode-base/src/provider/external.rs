@@ -18,21 +18,6 @@ use super::Provider;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
-/// Registry key for the Gemini provider runtime.
-pub const GEMINI_RUNTIME: &str = "gemini";
-
-/// Registry key for the Cursor provider runtime.
-pub const CURSOR_RUNTIME: &str = "cursor";
-
-/// Registry key for the Antigravity provider runtime.
-pub const ANTIGRAVITY_RUNTIME: &str = "antigravity";
-
-/// Registry key for the GitHub Copilot provider runtime.
-pub const COPILOT_RUNTIME: &str = "copilot";
-
-/// Registry key for the deprecated Claude CLI provider runtime.
-pub const CLAUDE_CLI_RUNTIME: &str = "claude-cli";
-
 /// Registry key for the direct Anthropic API provider runtime.
 pub const ANTHROPIC_RUNTIME: &str = "anthropic";
 

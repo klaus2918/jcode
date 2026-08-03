@@ -203,39 +203,6 @@ fn test_same_provider_account_candidates_include_other_openai_accounts() {
 }
 
 #[test]
-fn test_normalize_copilot_model_name_claude() {
-    assert_eq!(
-        normalize_copilot_model_name("claude-opus-4.6"),
-        Some("claude-opus-4-6")
-    );
-    assert_eq!(
-        normalize_copilot_model_name("claude-sonnet-4.6"),
-        Some("claude-sonnet-4-6")
-    );
-    assert_eq!(
-        normalize_copilot_model_name("claude-sonnet-4.5"),
-        Some("claude-sonnet-4-5")
-    );
-    assert_eq!(
-        normalize_copilot_model_name("claude-haiku-4.5"),
-        Some("claude-haiku-4-5")
-    );
-}
-
-#[test]
-fn test_normalize_copilot_model_name_already_canonical() {
-    assert_eq!(normalize_copilot_model_name("claude-opus-4-6"), None);
-    assert_eq!(normalize_copilot_model_name("claude-sonnet-4-6"), None);
-    assert_eq!(normalize_copilot_model_name("gpt-5.3-codex"), None);
-}
-
-#[test]
-fn test_normalize_copilot_model_name_unknown() {
-    assert_eq!(normalize_copilot_model_name("gemini-3-pro-preview"), None);
-    assert_eq!(normalize_copilot_model_name("grok-code-fast-1"), None);
-}
-
-#[test]
 fn test_provider_for_model_copilot_dot_notation() {
     assert_eq!(provider_for_model("claude-opus-4.6"), Some("claude"));
     assert_eq!(provider_for_model("claude-sonnet-4.6"), Some("claude"));

@@ -1,15 +1,11 @@
 pub mod account_store;
 pub mod active_method;
-pub mod antigravity;
 pub mod azure;
 pub mod claude;
 pub mod codex;
 mod commands;
-pub mod copilot;
-pub mod cursor;
 pub mod doctor;
 pub mod external;
-pub mod gemini;
 pub mod google;
 pub(crate) mod google_oauth;
 pub mod integration;
@@ -183,10 +179,6 @@ fn log_auth_status_snapshot(event: &str, status: &AuthStatus) {
             ("azure_api_auth", bool_label(status.azure_has_api_key)),
             ("azure_entra", bool_label(status.azure_uses_entra)),
             ("bedrock", auth_state_label(status.bedrock)),
-            ("copilot", auth_state_label(status.copilot)),
-            ("antigravity", auth_state_label(status.antigravity)),
-            ("gemini", auth_state_label(status.gemini)),
-            ("cursor", auth_state_label(status.cursor)),
             ("google", auth_state_label(status.google)),
         ],
     );
@@ -214,9 +206,6 @@ fn available_provider_base_readiness(provider: LoginProviderDescriptor) -> AuthR
     match provider.target {
         crate::provider_catalog::LoginProviderTarget::Claude
         | crate::provider_catalog::LoginProviderTarget::OpenAi
-        | crate::provider_catalog::LoginProviderTarget::Copilot
-        | crate::provider_catalog::LoginProviderTarget::Gemini
-        | crate::provider_catalog::LoginProviderTarget::Antigravity
         | crate::provider_catalog::LoginProviderTarget::Google => AuthReadinessLevel::Authenticated,
         _ => AuthReadinessLevel::CredentialPresent,
     }
@@ -228,18 +217,6 @@ fn model_smoke_readiness_for_provider(provider: LoginProviderDescriptor) -> Auth
         // resource, auth, and selected deployment all work together.
         crate::provider_catalog::LoginProviderTarget::Azure => AuthReadinessLevel::DeploymentValid,
         _ => AuthReadinessLevel::RequestValid,
-    }
-}
-
-fn copilot_auth_state_from_credentials() -> (AuthState, bool) {
-    if !copilot::has_copilot_credentials_fast() {
-        return (AuthState::NotConfigured, false);
-    }
-
-    if copilot::validation_failure_blocks_auto_use() {
-        (AuthState::Expired, false)
-    } else {
-        (AuthState::Available, true)
     }
 }
 
@@ -375,10 +352,6 @@ impl AuthStatus {
             || self.openrouter == AuthState::Available
             || self.azure == AuthState::Available
             || self.bedrock == AuthState::Available
-            || self.copilot == AuthState::Available
-            || self.antigravity == AuthState::Available
-            || self.gemini == AuthState::Available
-            || self.cursor == AuthState::Available
     }
 
     /// Emit a structured, non-secret snapshot of which providers currently have
@@ -409,11 +382,6 @@ impl AuthStatus {
                 ("azure_api", self.azure_has_api_key.to_string()),
                 ("azure_entra", self.azure_uses_entra.to_string()),
                 ("bedrock", self.bedrock.label().to_string()),
-                ("copilot", self.copilot.label().to_string()),
-                ("copilot_cred", self.copilot_has_api_token.to_string()),
-                ("antigravity", self.antigravity.label().to_string()),
-                ("gemini", self.gemini.label().to_string()),
-                ("cursor", self.cursor.label().to_string()),
             ],
         );
     }
@@ -422,9 +390,6 @@ impl AuthStatus {
         crate::auth::codex::has_unconsented_legacy_credentials()
             || crate::auth::claude::has_unconsented_external_auth().is_some()
             || crate::auth::external::has_any_unconsented_external_auth()
-            || crate::auth::gemini::has_unconsented_cli_auth()
-            || crate::auth::copilot::has_unconsented_external_auth().is_some()
-            || crate::auth::cursor::has_unconsented_external_auth().is_some()
     }
 
     pub fn state_for_key(&self, key: LoginProviderAuthStateKey) -> AuthState {
@@ -442,10 +407,6 @@ impl AuthStatus {
             LoginProviderAuthStateKey::Azure => self.azure,
             LoginProviderAuthStateKey::Bedrock => self.bedrock,
             LoginProviderAuthStateKey::OpenRouterLike => self.openrouter,
-            LoginProviderAuthStateKey::Copilot => self.copilot,
-            LoginProviderAuthStateKey::Antigravity => self.antigravity,
-            LoginProviderAuthStateKey::Gemini => self.gemini,
-            LoginProviderAuthStateKey::Cursor => self.cursor,
             LoginProviderAuthStateKey::Google => self.google,
         }
     }
@@ -874,7 +835,6 @@ impl AuthStatus {
     /// Invalidate all auth-derived state after credentials actually change.
     pub fn invalidate_cache() {
         Self::invalidate_cached_status();
-        crate::auth::copilot::invalidate_github_token_cache();
         crate::provider::pricing::invalidate_auth_pricing_memos();
         crate::memory_rerank::clear_failure_backoff();
         crate::logging::auth_event("auth_status_cache_invalidated", "all", &[]);
@@ -908,7 +868,7 @@ impl AuthStatus {
     }
 }
 
-fn build_auth_status_uncached(mode: AuthProbeMode) -> (AuthStatus, Vec<(&'static str, u128)>) {
+fn build_auth_status_uncached(_mode: AuthProbeMode) -> (AuthStatus, Vec<(&'static str, u128)>) {
     let mut status = AuthStatus::default();
     let mut timings = Vec::new();
 
@@ -924,26 +884,6 @@ fn build_auth_status_uncached(mode: AuthProbeMode) -> (AuthStatus, Vec<(&'static
         probe_bedrock_status(&mut status)
     });
     record_auth_probe_step(&mut timings, "openai", || probe_openai_status(&mut status));
-    record_auth_probe_step(&mut timings, "copilot", || {
-        probe_copilot_status(&mut status)
-    });
-    record_auth_probe_step(&mut timings, "antigravity", || {
-        status.antigravity =
-            token_state(antigravity::load_tokens().map(|tokens| tokens.is_expired()))
-    });
-    record_auth_probe_step(&mut timings, "gemini", || {
-        // An official Gemini Developer API key is a static credential with no
-        // expiry handshake, so treat its presence as immediately Available and
-        // fall back to OAuth token state otherwise.
-        status.gemini = if gemini::has_api_key() {
-            AuthState::Available
-        } else {
-            token_state(gemini::load_tokens().map(|tokens| tokens.is_expired()))
-        }
-    });
-    record_auth_probe_step(&mut timings, "cursor", || {
-        probe_cursor_status(&mut status, mode)
-    });
     record_auth_probe_step(&mut timings, "google", || probe_google_status(&mut status));
 
     (status, timings)
@@ -957,19 +897,6 @@ fn record_auth_probe_step(
     let step_start = Instant::now();
     probe();
     timings.push((name, step_start.elapsed().as_millis()));
-}
-
-fn token_state(result: anyhow::Result<bool>) -> AuthState {
-    match result {
-        Ok(is_expired) => {
-            if is_expired {
-                AuthState::Expired
-            } else {
-                AuthState::Available
-            }
-        }
-        Err(_) => AuthState::NotConfigured,
-    }
 }
 
 fn probe_jcode_status(status: &mut AuthStatus) {
@@ -1054,43 +981,6 @@ fn probe_openai_status(status: &mut AuthStatus) {
     }
 }
 
-fn probe_copilot_status(status: &mut AuthStatus) {
-    // If auth-test recently proved that the local Copilot OAuth token cannot
-    // be exchanged, keep it visible as expired for diagnostics but do not let
-    // startup/default-provider selection treat it as a usable API token.
-    let (copilot_state, copilot_has_api_token) = copilot_auth_state_from_credentials();
-    status.copilot = copilot_state;
-    status.copilot_has_api_token = copilot_has_api_token;
-}
-
-fn probe_cursor_status(status: &mut AuthStatus, mode: AuthProbeMode) {
-    match mode {
-        AuthProbeMode::Full => {
-            let cursor_has_api_key = cursor::has_cursor_api_key();
-            let cursor_has_native_auth = cursor::has_cursor_native_auth();
-            let cursor_has_cli_auth =
-                !cursor_has_native_auth && cursor::has_authenticated_cli_session();
-            status.cursor = if cursor_has_native_auth || cursor_has_cli_auth {
-                AuthState::Available
-            } else if cursor_has_api_key {
-                AuthState::Expired
-            } else {
-                AuthState::NotConfigured
-            };
-        }
-        AuthProbeMode::Fast => {
-            // Avoid the vscdb/sqlite and CLI probes in fast UI paths.
-            let cursor_has_api_key = cursor::has_cursor_api_key();
-            let cursor_has_file_or_env_auth = cursor::load_access_token_from_env_or_file().is_ok();
-            status.cursor = if cursor_has_file_or_env_auth || cursor_has_api_key {
-                AuthState::Available
-            } else {
-                AuthState::NotConfigured
-            };
-        }
-    }
-}
-
 fn probe_google_status(status: &mut AuthStatus) {
     match google::load_tokens() {
         Ok(tokens) => {
@@ -1166,62 +1056,6 @@ fn assessment_for_key(
                 } else {
                     AuthValidationMethod::PresenceCheck
                 },
-            )
-        }
-        LoginProviderAuthStateKey::Copilot => {
-            let (source, detail) = summarize_sources(vec![copilot_source()]);
-            (
-                source,
-                detail,
-                if state == AuthState::Available {
-                    AuthExpiryConfidence::PresenceOnly
-                } else {
-                    AuthExpiryConfidence::Unknown
-                },
-                AuthRefreshSupport::ManualRelogin,
-                AuthValidationMethod::CompositeProbe,
-            )
-        }
-        LoginProviderAuthStateKey::Antigravity => {
-            let (source, detail) = summarize_sources(vec![antigravity_source()]);
-            (
-                source,
-                detail,
-                if state == AuthState::NotConfigured {
-                    AuthExpiryConfidence::Unknown
-                } else {
-                    AuthExpiryConfidence::Exact
-                },
-                AuthRefreshSupport::Automatic,
-                AuthValidationMethod::TimestampCheck,
-            )
-        }
-        LoginProviderAuthStateKey::Gemini => {
-            let (source, detail) = summarize_sources(vec![gemini_source()]);
-            (
-                source,
-                detail,
-                if state == AuthState::NotConfigured {
-                    AuthExpiryConfidence::Unknown
-                } else {
-                    AuthExpiryConfidence::Exact
-                },
-                AuthRefreshSupport::Automatic,
-                AuthValidationMethod::TimestampCheck,
-            )
-        }
-        LoginProviderAuthStateKey::Cursor => {
-            let (source, detail) = summarize_sources(vec![cursor_source()]);
-            (
-                source,
-                detail,
-                if state == AuthState::Available {
-                    AuthExpiryConfidence::PresenceOnly
-                } else {
-                    AuthExpiryConfidence::Unknown
-                },
-                AuthRefreshSupport::Conditional,
-                AuthValidationMethod::CompositeProbe,
             )
         }
         LoginProviderAuthStateKey::Google => {
@@ -1382,52 +1216,6 @@ fn openai_oauth_source(status: &AuthStatus) -> Option<(AuthCredentialSource, Str
     None
 }
 
-fn gemini_source() -> Option<(AuthCredentialSource, String)> {
-    if let Ok(path) = crate::auth::gemini::tokens_path()
-        && path.exists()
-    {
-        return Some((
-            AuthCredentialSource::JcodeManagedFile,
-            format!("{}", path.display()),
-        ));
-    }
-    if let Ok(path) = crate::auth::gemini::gemini_cli_oauth_path()
-        && path.exists()
-        && crate::config::Config::external_auth_source_allowed_for_path(
-            crate::auth::gemini::GEMINI_CLI_AUTH_SOURCE_ID,
-            &path,
-        )
-    {
-        return Some((
-            AuthCredentialSource::TrustedExternalFile,
-            format!("trusted Gemini CLI file ({})", path.display()),
-        ));
-    }
-    crate::auth::external::load_gemini_oauth_tokens().map(|_| {
-        (
-            AuthCredentialSource::TrustedExternalFile,
-            "trusted external auth import".to_string(),
-        )
-    })
-}
-
-fn antigravity_source() -> Option<(AuthCredentialSource, String)> {
-    if let Ok(path) = crate::auth::antigravity::tokens_path()
-        && path.exists()
-    {
-        return Some((
-            AuthCredentialSource::JcodeManagedFile,
-            format!("{}", path.display()),
-        ));
-    }
-    crate::auth::external::load_antigravity_oauth_tokens().map(|_| {
-        (
-            AuthCredentialSource::TrustedExternalFile,
-            "trusted external auth import".to_string(),
-        )
-    })
-}
-
 fn google_source() -> Option<(AuthCredentialSource, String)> {
     if let (Ok(tokens_path), Ok(credentials_path)) = (
         crate::auth::google::tokens_path(),
@@ -1441,88 +1229,6 @@ fn google_source() -> Option<(AuthCredentialSource, String)> {
         ));
     }
     None
-}
-
-fn cursor_source() -> Option<(AuthCredentialSource, String)> {
-    if env_var_nonempty("CURSOR_ACCESS_TOKEN") || env_var_nonempty("CURSOR_API_KEY") {
-        return Some((
-            AuthCredentialSource::EnvironmentVariable,
-            "CURSOR_ACCESS_TOKEN / CURSOR_API_KEY environment variable".to_string(),
-        ));
-    }
-    if let Ok(file_path) = crate::auth::cursor::cursor_auth_file_path()
-        && file_path.exists()
-        && crate::config::Config::external_auth_source_allowed_for_path(
-            crate::auth::cursor::CURSOR_AUTH_FILE_SOURCE_ID,
-            &file_path,
-        )
-    {
-        return Some((
-            AuthCredentialSource::TrustedExternalFile,
-            format!("trusted Cursor auth file ({})", file_path.display()),
-        ));
-    }
-    if let Some(source) = crate::auth::cursor::preferred_external_auth_source()
-        && matches!(
-            source,
-            crate::auth::cursor::ExternalCursorAuthSource::CursorVscdb
-        )
-        && let Ok(path) = source.path()
-    {
-        return Some((
-            AuthCredentialSource::TrustedExternalAppState,
-            format!("trusted Cursor app state ({})", path.display()),
-        ));
-    }
-    if config_source("CURSOR_API_KEY", "cursor.env", "~/.config/jcode/cursor.env").is_some() {
-        return config_source("CURSOR_API_KEY", "cursor.env", "~/.config/jcode/cursor.env");
-    }
-    None
-}
-
-fn copilot_source() -> Option<(AuthCredentialSource, String)> {
-    if env_var_nonempty("COPILOT_GITHUB_TOKEN")
-        || env_var_nonempty("GH_TOKEN")
-        || env_var_nonempty("GITHUB_TOKEN")
-    {
-        return Some((
-            AuthCredentialSource::EnvironmentVariable,
-            "COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN".to_string(),
-        ));
-    }
-
-    for source in [
-        crate::auth::copilot::ExternalCopilotAuthSource::ConfigJson,
-        crate::auth::copilot::ExternalCopilotAuthSource::HostsJson,
-        crate::auth::copilot::ExternalCopilotAuthSource::AppsJson,
-    ] {
-        let path = source.path();
-        if path.exists()
-            && crate::config::Config::external_auth_source_allowed_for_path(
-                source.source_id(),
-                &path,
-            )
-        {
-            return Some((
-                AuthCredentialSource::TrustedExternalFile,
-                format!("trusted Copilot file ({})", path.display()),
-            ));
-        }
-    }
-
-    if crate::auth::external::load_copilot_oauth_token().is_some() {
-        return Some((
-            AuthCredentialSource::TrustedExternalFile,
-            "trusted external auth import".to_string(),
-        ));
-    }
-
-    crate::auth::copilot::load_github_token().ok().map(|_| {
-        (
-            AuthCredentialSource::LocalCliSession,
-            "gh CLI token fallback".to_string(),
-        )
-    })
 }
 
 fn env_var_nonempty(key: &str) -> bool {

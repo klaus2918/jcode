@@ -348,7 +348,7 @@ fn test_server_bootstrap_login_selection_preserves_order() {
     );
     assert_eq!(
         resolve_login_selection("5", &providers).map(|provider| provider.id),
-        Some("copilot")
+        Some("openrouter")
     );
 }
 
@@ -372,19 +372,15 @@ fn test_auto_init_login_selection_preserves_order() {
         Some("openrouter")
     );
     assert_eq!(
-        resolve_login_selection("8", &providers).map(|provider| provider.id),
-        Some("gemini")
-    );
-    assert_eq!(
-        resolve_login_selection("11", &providers).map(|provider| provider.id),
+        resolve_login_selection("7", &providers).map(|provider| provider.id),
         Some("ollama")
     );
     assert_eq!(
-        resolve_login_selection("12", &providers).map(|provider| provider.id),
+        resolve_login_selection("8", &providers).map(|provider| provider.id),
         Some("gemini-api")
     );
     assert_eq!(
-        resolve_login_selection("13", &providers).map(|provider| provider.id),
+        resolve_login_selection("9", &providers).map(|provider| provider.id),
         Some("openai-api")
     );
 }
@@ -625,10 +621,6 @@ fn resolve_login_provider_round_trips_core_targets() {
     assert_eq!(
         crate::provider_catalog::resolve_login_provider("azure"),
         Some(provider_catalog::AZURE_LOGIN_PROVIDER)
-    );
-    assert_eq!(
-        crate::provider_catalog::resolve_login_provider("cursor"),
-        Some(provider_catalog::CURSOR_LOGIN_PROVIDER)
     );
     assert_eq!(
         crate::provider_catalog::resolve_login_provider("lmstudio"),

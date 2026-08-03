@@ -15,11 +15,7 @@ pub(crate) enum ResolvedAuthTestTarget {
 pub(crate) enum AuthTestTarget {
     Claude,
     Openai,
-    Gemini,
-    Antigravity,
     Google,
-    Copilot,
-    Cursor,
 }
 
 impl AuthTestTarget {
@@ -27,11 +23,7 @@ impl AuthTestTarget {
         match self {
             Self::Claude => "claude",
             Self::Openai => "openai",
-            Self::Gemini => "gemini",
-            Self::Antigravity => "antigravity",
             Self::Google => "google",
-            Self::Copilot => "copilot",
-            Self::Cursor => "cursor",
         }
     }
 
@@ -39,11 +31,7 @@ impl AuthTestTarget {
         match self {
             Self::Claude => "claude",
             Self::Openai => "openai",
-            Self::Gemini => "gemini",
-            Self::Antigravity => "antigravity",
             Self::Google => "google",
-            Self::Copilot => "copilot",
-            Self::Cursor => "cursor",
         }
     }
 
@@ -55,11 +43,7 @@ impl AuthTestTarget {
         match choice.trim() {
             "claude" | crate::cli::provider_init::CLAUDE_SUBPROCESS_ID => Some(Self::Claude),
             "openai" => Some(Self::Openai),
-            "gemini" => Some(Self::Gemini),
-            "antigravity" => Some(Self::Antigravity),
             "google" => Some(Self::Google),
-            "copilot" => Some(Self::Copilot),
-            "cursor" => Some(Self::Cursor),
             _ => None,
         }
     }
@@ -93,65 +77,11 @@ impl AuthTestTarget {
                     .display()
                     .to_string(),
             ]),
-            Self::Gemini => Ok(vec![
-                crate::auth::gemini::tokens_path()?.display().to_string(),
-                crate::auth::gemini::gemini_cli_oauth_path()?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".local/share/opencode/auth.json")?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".pi/agent/auth.json")?
-                    .display()
-                    .to_string(),
-            ]),
-            Self::Antigravity => Ok(vec![
-                crate::auth::antigravity::tokens_path()?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".local/share/opencode/auth.json")?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".pi/agent/auth.json")?
-                    .display()
-                    .to_string(),
-            ]),
             Self::Google => Ok(vec![
                 crate::auth::google::credentials_path()?
                     .display()
                     .to_string(),
                 crate::auth::google::tokens_path()?.display().to_string(),
-            ]),
-            Self::Copilot => Ok(vec![
-                crate::storage::user_home_path(".copilot/config.json")?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".config/github-copilot/hosts.json")?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".config/github-copilot/apps.json")?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".local/share/opencode/auth.json")?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".pi/agent/auth.json")?
-                    .display()
-                    .to_string(),
-            ]),
-            Self::Cursor => Ok(vec![
-                dirs::config_dir()
-                    .ok_or_else(|| anyhow::anyhow!("No config directory found"))?
-                    .join("jcode")
-                    .join("cursor.env")
-                    .display()
-                    .to_string(),
-                crate::auth::cursor::cursor_auth_file_path()?
-                    .display()
-                    .to_string(),
-                crate::storage::user_home_path(".config/Cursor/User/globalStorage/state.vscdb")?
-                    .display()
-                    .to_string(),
             ]),
         }
     }

@@ -366,23 +366,10 @@ fn auth_full_specs(
         dual_method_label(jcode_provider_core::ActiveProvider::OpenAI, auth, active),
     );
 
-    let gemini_label = if auth.gemini != AuthState::NotConfigured {
-        provider_label("gemini", auth.gemini, Some("oauth"))
-    } else {
-        provider_label("gemini", auth.gemini, None)
-    };
-
     vec![
         (anthropic_label, auth.anthropic.state),
         ("openrouter".to_string(), auth.openrouter),
         (openai_label, auth.openai),
-        (provider_label("cursor", auth.cursor, None), auth.cursor),
-        (provider_label("copilot", auth.copilot, None), auth.copilot),
-        (gemini_label, auth.gemini),
-        (
-            provider_label("antigravity", auth.antigravity, None),
-            auth.antigravity,
-        ),
     ]
 }
 
@@ -464,13 +451,6 @@ fn header_provider_auth_tag(
     }
 
     match name {
-        "copilot" => {
-            if auth.copilot_has_api_token {
-                "oauth"
-            } else {
-                ""
-            }
-        }
         "openrouter" | "openai-compatible" => "api-key",
         other
             if crate::provider_catalog::resolve_openai_compatible_profile_selection(other)
@@ -591,10 +571,6 @@ fn configured_auth_count(auth: &AuthStatus) -> usize {
         auth.openrouter,
         auth.azure,
         auth.openai,
-        auth.cursor,
-        auth.copilot,
-        auth.gemini,
-        auth.antigravity,
         auth.google,
     ]
     .into_iter()

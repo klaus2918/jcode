@@ -394,19 +394,19 @@ fn matrix_cli_login_selection_preserves_existing_order() {
     );
     assert_eq!(
         resolve_login_selection("6", &providers).map(|provider| provider.id),
-        Some("copilot")
-    );
-    assert_eq!(
-        resolve_login_selection("7", &providers).map(|provider| provider.id),
         Some("openrouter")
     );
     assert_eq!(
-        resolve_login_selection("8", &providers).map(|provider| provider.id),
+        resolve_login_selection("7", &providers).map(|provider| provider.id),
         Some("bedrock")
     );
     assert_eq!(
-        resolve_login_selection("9", &providers).map(|provider| provider.id),
+        resolve_login_selection("8", &providers).map(|provider| provider.id),
         Some("azure")
+    );
+    assert_eq!(
+        resolve_login_selection("9", &providers).map(|provider| provider.id),
+        Some("openai-compatible")
     );
     assert_eq!(
         resolve_login_selection("bedrock", &providers).map(|provider| provider.id),
@@ -516,27 +516,23 @@ fn named_provider_profile_reports_malformed_config_instead_of_unknown_profile() 
     std::fs::write(
         &config_path,
         r#"
-        [providers.antigravity]
-        type = "anthropic-compatible"
+        [providers.test-gateway]
+        type = "bogus-format"
         base_url = "http://192.168.1.202:8080"
-        api_key_env = "ANTIGRAVITY_API_KEY"
-        default_model = "gemini-3.1-pro-low"
+        api_key_env = "TEST_GATEWAY_API_KEY"
+        default_model = "test-model"
 
-        [[providers.antigravity.models]]
-        id = "gemini-3.1-pro-low"
+        [[providers.test-gateway.models]]
+        id = "test-model"
         context_window = 128000
         "#,
     )
     .expect("write config");
 
-    let err = apply_named_provider_profile_env("antigravity").expect_err("malformed config");
+    let err = apply_named_provider_profile_env("test-gateway").expect_err("malformed config");
     let message = err.to_string();
     assert!(
         message.contains("Failed to parse config file"),
-        "unexpected error: {message}"
-    );
-    assert!(
-        message.contains("anthropic-compatible"),
         "unexpected error: {message}"
     );
     assert!(

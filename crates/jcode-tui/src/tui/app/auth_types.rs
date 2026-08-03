@@ -13,18 +13,6 @@ pub(crate) enum PendingLogin {
         expected_state: String,
         redirect_uri: String,
     },
-    /// Waiting for user to paste a Gemini OAuth callback URL/query or auth code.
-    Gemini {
-        verifier: String,
-        expected_state: Option<String>,
-        redirect_uri: String,
-    },
-    /// Waiting for user to paste an Antigravity OAuth callback URL/query.
-    Antigravity {
-        verifier: String,
-        expected_state: String,
-        redirect_uri: String,
-    },
     /// Waiting for user to paste an API key for an OpenAI-compatible provider.
     ApiKeyProfile {
         provider_id: String,
@@ -42,10 +30,6 @@ pub(crate) enum PendingLogin {
     OpenAiCompatibleApiBase {
         profile: crate::provider_catalog::OpenAiCompatibleProfile,
     },
-    /// Waiting for user to paste a Cursor API key.
-    CursorApiKey,
-    /// GitHub Copilot device flow in progress (polling in background)
-    Copilot,
     /// Waiting for the user to choose which external auth sources to import.
     AutoImportSelection {
         candidates: Vec<crate::external_auth::ExternalAuthReviewCandidate>,
@@ -111,7 +95,6 @@ pub(crate) enum AccountCommand {
     SetOpenAiTransport(Option<String>),
     SetOpenAiEffort(Option<String>),
     SetOpenAiFast(bool),
-    SetCopilotPremium(Option<String>),
     SetOpenAiCompatApiBase(Option<String>),
     SetOpenAiCompatApiKeyName(Option<String>),
     SetOpenAiCompatEnvFile(Option<String>),

@@ -240,22 +240,12 @@ struct AutoProviderAvailability {
     auth_status: auth::AuthStatus,
     has_claude: bool,
     has_openai: bool,
-    has_copilot: bool,
-    has_antigravity: bool,
-    has_gemini: bool,
-    has_cursor: bool,
     has_openrouter: bool,
 }
 
 impl AutoProviderAvailability {
     fn has_any_provider(&self) -> bool {
-        self.has_claude
-            || self.has_openai
-            || self.has_copilot
-            || self.has_antigravity
-            || self.has_gemini
-            || self.has_cursor
-            || self.has_openrouter
+        self.has_claude || self.has_openai || self.has_openrouter
     }
 }
 
@@ -294,10 +284,6 @@ async fn detect_auto_provider_flags() -> AutoProviderAvailability {
     AutoProviderAvailability {
         has_claude: auth_status.anthropic.has_oauth || auth_status.anthropic.has_api_key,
         has_openai: auth_status.openai_has_oauth || auth_status.openai_has_api_key,
-        has_copilot: auth_status.copilot_has_api_token,
-        has_antigravity: auth::antigravity::load_tokens().is_ok(),
-        has_gemini: auth_status.gemini == auth::AuthState::Available,
-        has_cursor: auth_status.cursor == auth::AuthState::Available,
         has_openrouter: auth_status.openrouter == auth::AuthState::Available,
         auth_status,
     }
@@ -635,216 +621,6 @@ fn maybe_enable_claude_auth_for_auto(has_other_provider: bool) -> Result<bool> {
     Ok(false)
 }
 
-#[cfg(feature = "extra-providers")]
-fn ensure_gemini_auth_allowed_for_explicit_choice() -> Result<()> {
-    // An official Gemini Developer API key (GEMINI_API_KEY) authenticates
-    // directly against generativelanguage.googleapis.com and needs no OAuth
-    // consent flow, so allow it without further prompting.
-    if auth::gemini::has_api_key() {
-        return Ok(());
-    }
-    if auth::gemini::load_tokens().is_ok() {
-        return Ok(());
-    }
-
-    if maybe_prompt_for_generic_oauth_source(
-        "Gemini",
-        auth::external::preferred_unconsented_gemini_oauth_source(),
-        "jcode login --provider gemini",
-        false,
-        || auth::gemini::load_tokens().is_ok(),
-    )? {
-        return Ok(());
-    }
-
-    if !auth::gemini::has_unconsented_cli_auth() {
-        return Ok(());
-    }
-    let path = auth::gemini::gemini_cli_oauth_path()?;
-    if !can_prompt_for_external_auth() {
-        anyhow::bail!(external_auth_blocked_message(
-            "Gemini",
-            "Gemini CLI",
-            &path,
-            "jcode login --provider gemini"
-        ));
-    }
-    if prompt_to_trust_external_auth("Gemini", "Gemini CLI", &path)? {
-        auth::gemini::trust_cli_auth_for_future_use()?;
-        return Ok(());
-    }
-    anyhow::bail!(
-        "Skipped trusting Gemini CLI credentials. Run `jcode login --provider gemini` to authenticate jcode directly."
-    )
-}
-
-fn maybe_enable_gemini_auth_for_auto(has_other_provider: bool) -> Result<bool> {
-    // A configured Gemini Developer API key is sufficient on its own.
-    if auth::gemini::has_api_key() {
-        return Ok(true);
-    }
-    if auth::gemini::load_tokens().is_ok() {
-        return Ok(true);
-    }
-
-    if let Some(source) = auth::external::preferred_unconsented_gemini_oauth_source() {
-        if has_other_provider {
-            return Ok(false);
-        }
-        return maybe_prompt_for_generic_oauth_source(
-            "Gemini",
-            Some(source),
-            "jcode login --provider gemini",
-            true,
-            || auth::gemini::load_tokens().is_ok(),
-        );
-    }
-
-    if !auth::gemini::has_unconsented_cli_auth() {
-        return Ok(false);
-    }
-    if has_other_provider {
-        return Ok(false);
-    }
-    let path = auth::gemini::gemini_cli_oauth_path()?;
-    if !can_prompt_for_external_auth() {
-        crate::logging::warn(&external_auth_blocked_message(
-            "Gemini",
-            "Gemini CLI",
-            &path,
-            "jcode login --provider gemini",
-        ));
-        return Ok(false);
-    }
-    if prompt_to_trust_external_auth("Gemini", "Gemini CLI", &path)? {
-        auth::gemini::trust_cli_auth_for_future_use()?;
-        return Ok(auth::gemini::load_tokens().is_ok());
-    }
-    Ok(false)
-}
-
-fn ensure_antigravity_auth_allowed_for_explicit_choice() -> Result<()> {
-    if auth::antigravity::load_tokens().is_ok() {
-        return Ok(());
-    }
-
-    if maybe_prompt_for_generic_oauth_source(
-        "Antigravity",
-        auth::external::preferred_unconsented_antigravity_oauth_source(),
-        "jcode login --provider antigravity",
-        false,
-        || auth::antigravity::load_tokens().is_ok(),
-    )? {
-        return Ok(());
-    }
-
-    Ok(())
-}
-
-fn ensure_copilot_auth_allowed_for_explicit_choice() -> Result<()> {
-    if auth::copilot::load_github_token().is_ok() {
-        return Ok(());
-    }
-    let Some(source) = auth::copilot::has_unconsented_external_auth() else {
-        return Ok(());
-    };
-    let path = source.path();
-    if !can_prompt_for_external_auth() {
-        anyhow::bail!(external_auth_blocked_message(
-            "GitHub Copilot",
-            source.display_name(),
-            &path,
-            "jcode login --provider copilot"
-        ));
-    }
-    if prompt_to_trust_external_auth("GitHub Copilot", source.display_name(), &path)? {
-        auth::copilot::trust_external_auth_source(source)?;
-        return Ok(());
-    }
-    anyhow::bail!(
-        "Skipped trusting external Copilot credentials. Run `jcode login --provider copilot` to authenticate jcode directly."
-    )
-}
-
-fn maybe_enable_copilot_auth_for_auto(has_other_provider: bool) -> Result<bool> {
-    if auth::copilot::load_github_token().is_ok() {
-        return Ok(true);
-    }
-    let Some(source) = auth::copilot::has_unconsented_external_auth() else {
-        return Ok(false);
-    };
-    if has_other_provider {
-        return Ok(false);
-    }
-    let path = source.path();
-    if !can_prompt_for_external_auth() {
-        crate::logging::warn(&external_auth_blocked_message(
-            "GitHub Copilot",
-            source.display_name(),
-            &path,
-            "jcode login --provider copilot",
-        ));
-        return Ok(false);
-    }
-    if prompt_to_trust_external_auth("GitHub Copilot", source.display_name(), &path)? {
-        auth::copilot::trust_external_auth_source(source)?;
-        return Ok(auth::copilot::load_github_token().is_ok());
-    }
-    Ok(false)
-}
-
-fn ensure_cursor_auth_allowed_for_explicit_choice() -> Result<()> {
-    if auth::cursor::has_cursor_native_auth() || auth::cursor::has_cursor_api_key() {
-        return Ok(());
-    }
-    let Some(source) = auth::cursor::has_unconsented_external_auth() else {
-        return Ok(());
-    };
-    let path = source.path()?;
-    if !can_prompt_for_external_auth() {
-        anyhow::bail!(external_auth_blocked_message(
-            "Cursor",
-            source.display_name(),
-            &path,
-            "jcode login --provider cursor"
-        ));
-    }
-    if prompt_to_trust_external_auth("Cursor", source.display_name(), &path)? {
-        auth::cursor::trust_external_auth_source(source)?;
-        return Ok(());
-    }
-    anyhow::bail!(
-        "Skipped trusting external Cursor credentials. Run `jcode login --provider cursor` to authenticate jcode directly."
-    )
-}
-
-fn maybe_enable_cursor_auth_for_auto(has_other_provider: bool) -> Result<bool> {
-    if auth::cursor::has_cursor_native_auth() || auth::cursor::has_cursor_api_key() {
-        return Ok(true);
-    }
-    let Some(source) = auth::cursor::has_unconsented_external_auth() else {
-        return Ok(false);
-    };
-    if has_other_provider {
-        return Ok(false);
-    }
-    let path = source.path()?;
-    if !can_prompt_for_external_auth() {
-        crate::logging::warn(&external_auth_blocked_message(
-            "Cursor",
-            source.display_name(),
-            &path,
-            "jcode login --provider cursor",
-        ));
-        return Ok(false);
-    }
-    if prompt_to_trust_external_auth("Cursor", source.display_name(), &path)? {
-        auth::cursor::trust_external_auth_source(source)?;
-        return Ok(auth::cursor::has_cursor_native_auth());
-    }
-    Ok(false)
-}
-
 pub fn select_initial_model_provider(provider_key: &str) {
     crate::provider::activation::select_initial_runtime_provider_key(provider_key);
 }
@@ -966,51 +742,6 @@ pub async fn login_and_bootstrap_provider(
                 let _ = multi.set_model(model);
             }
             Arc::new(multi)
-        }
-        LoginProviderTarget::Cursor => {
-            disable_subscription_runtime_mode();
-            clear_initial_model_provider();
-            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "cursor");
-            #[cfg(feature = "extra-providers")]
-            {
-                Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
-            }
-            #[cfg(not(feature = "extra-providers"))]
-            {
-                anyhow::bail!("cursor runtime is not built; enable the `extra-providers` feature")
-            }
-        }
-        LoginProviderTarget::Copilot => {
-            disable_subscription_runtime_mode();
-            Arc::new(provider::MultiProvider::new())
-        }
-        LoginProviderTarget::Gemini => {
-            disable_subscription_runtime_mode();
-            clear_initial_model_provider();
-            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "gemini");
-            #[cfg(feature = "extra-providers")]
-            {
-                Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
-            }
-            #[cfg(not(feature = "extra-providers"))]
-            {
-                anyhow::bail!("gemini runtime is not built; enable the `extra-providers` feature")
-            }
-        }
-        LoginProviderTarget::Antigravity => {
-            disable_subscription_runtime_mode();
-            clear_initial_model_provider();
-            crate::env::set_var("JCODE_ACTIVE_PROVIDER", "antigravity");
-            #[cfg(feature = "extra-providers")]
-            {
-                Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new())
-            }
-            #[cfg(not(feature = "extra-providers"))]
-            {
-                anyhow::bail!(
-                    "antigravity runtime is not built; enable the `extra-providers` feature"
-                )
-            }
         }
         LoginProviderTarget::Google => {
             anyhow::bail!("Google login cannot be used as a model provider bootstrap");
@@ -1156,72 +887,6 @@ async fn init_provider_with_options(
                 }
                 Arc::new(multi)
             }
-            LoginProviderTarget::Cursor => {
-                disable_subscription_runtime_mode();
-                ensure_cursor_auth_allowed_for_explicit_choice()?;
-                init_notice("Using Cursor native HTTPS provider (experimental)");
-                clear_initial_model_provider();
-                crate::env::set_var("JCODE_ACTIVE_PROVIDER", "cursor");
-                #[cfg(feature = "extra-providers")]
-                {
-                    Arc::new(jcode_provider_cursor_runtime::CursorCliProvider::new())
-                }
-                #[cfg(not(feature = "extra-providers"))]
-                {
-                    anyhow::bail!(
-                        "cursor runtime is not built; enable the `extra-providers` feature"
-                    )
-                }
-            }
-            LoginProviderTarget::Copilot => {
-                disable_subscription_runtime_mode();
-                ensure_copilot_auth_allowed_for_explicit_choice()?;
-                init_notice(
-                    "Using GitHub Copilot API as the initial provider (use /model to switch)",
-                );
-                select_initial_model_provider("copilot");
-                Arc::new(provider::MultiProvider::new_fast())
-            }
-            LoginProviderTarget::Gemini => {
-                #[cfg(feature = "extra-providers")]
-                {
-                    disable_subscription_runtime_mode();
-                    ensure_gemini_auth_allowed_for_explicit_choice()?;
-                    if auth::gemini::has_api_key() {
-                        init_notice(
-                            "Using Gemini provider (official Gemini Developer API key, generativelanguage.googleapis.com)",
-                        );
-                    } else {
-                        init_notice("Using Gemini provider (native Google Code Assist OAuth)");
-                    }
-                    clear_initial_model_provider();
-                    crate::env::set_var("JCODE_ACTIVE_PROVIDER", "gemini");
-                    Arc::new(jcode_provider_gemini_runtime::GeminiProvider::new())
-                }
-                #[cfg(not(feature = "extra-providers"))]
-                {
-                    anyhow::bail!(
-                        "gemini runtime is not built; enable the `extra-providers` feature"
-                    )
-                }
-            }
-            LoginProviderTarget::Antigravity => {
-                disable_subscription_runtime_mode();
-                ensure_antigravity_auth_allowed_for_explicit_choice()?;
-                init_notice("Using Antigravity provider (experimental)");
-                clear_initial_model_provider();
-                crate::env::set_var("JCODE_ACTIVE_PROVIDER", "antigravity");
-                #[cfg(feature = "extra-providers")]
-                {
-                    Arc::new(jcode_provider_antigravity_runtime::AntigravityProvider::new())
-                }
-                #[cfg(not(feature = "extra-providers"))]
-                {
-                    anyhow::bail!(
-                        "antigravity runtime is not built; enable the `extra-providers` feature"
-                    )
-                }
-            }
             LoginProviderTarget::Google => {
                 disable_subscription_runtime_mode();
                 init_notice(
@@ -1286,81 +951,24 @@ async fn init_provider_with_options(
                 let supplemental_start = std::time::Instant::now();
                 let mut has_claude = availability.has_claude;
                 let mut has_openai = availability.has_openai;
-                let mut has_copilot = availability.has_copilot;
-                let has_antigravity = availability.has_antigravity;
-                let mut has_gemini = availability.has_gemini;
-                let mut has_cursor = availability.has_cursor;
                 let mut has_openrouter = availability.has_openrouter;
-                let mut has_other_provider = has_claude
-                    || has_copilot
-                    || has_antigravity
-                    || has_gemini
-                    || has_cursor
-                    || has_openrouter;
+                let mut has_other_provider = has_claude || has_openai || has_openrouter;
 
                 if !has_openai {
                     has_openai = maybe_enable_legacy_codex_auth_for_auto(has_other_provider)?;
                 }
-                has_other_provider = has_openai
-                    || has_claude
-                    || has_copilot
-                    || has_antigravity
-                    || has_gemini
-                    || has_cursor
-                    || has_openrouter;
+                has_other_provider = has_openai || has_claude || has_openrouter;
 
                 if !has_claude {
                     has_claude =
                         maybe_enable_claude_auth_for_auto(has_other_provider && !has_claude)?;
-                }
-                has_other_provider = has_openai
-                    || has_claude
-                    || has_copilot
-                    || has_antigravity
-                    || has_gemini
-                    || has_cursor
-                    || has_openrouter;
-
-                if !has_copilot {
-                    has_copilot =
-                        maybe_enable_copilot_auth_for_auto(has_other_provider && !has_copilot)?;
-                }
-                has_other_provider = has_openai
-                    || has_claude
-                    || has_copilot
-                    || has_antigravity
-                    || has_gemini
-                    || has_cursor
-                    || has_openrouter;
-
-                if !has_gemini {
-                    has_gemini =
-                        maybe_enable_gemini_auth_for_auto(has_other_provider && !has_gemini)?;
-                }
-                has_other_provider = has_openai
-                    || has_claude
-                    || has_copilot
-                    || has_antigravity
-                    || has_gemini
-                    || has_cursor
-                    || has_openrouter;
-
-                if !has_cursor {
-                    has_cursor =
-                        maybe_enable_cursor_auth_for_auto(has_other_provider && !has_cursor)?;
                 }
 
                 if !has_openrouter {
                     has_openrouter = maybe_enable_config_default_provider_for_auto()?;
                 }
 
-                has_other_provider = has_openai
-                    || has_claude
-                    || has_copilot
-                    || has_antigravity
-                    || has_gemini
-                    || has_cursor
-                    || has_openrouter;
+                has_other_provider = has_openai || has_claude || has_openrouter;
 
                 if !has_openrouter {
                     has_openrouter = maybe_enable_external_api_key_auth_for_auto(
@@ -1372,10 +980,6 @@ async fn init_provider_with_options(
                     auth_status: auth::AuthStatus::check_fast(),
                     has_claude,
                     has_openai,
-                    has_copilot,
-                    has_antigravity,
-                    has_gemini,
-                    has_cursor,
                     has_openrouter,
                 };
                 crate::logging::info(&format!(
