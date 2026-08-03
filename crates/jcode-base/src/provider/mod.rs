@@ -48,7 +48,7 @@ pub use catalog_routes::{
 pub use jcode_provider_core::attempt_tracker;
 pub use jcode_provider_core::cli_provider_arg_for_session_key;
 pub use jcode_provider_core::{
-    ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, CHATGPT_WEB_MODEL, CHEAPNESS_REFERENCE_INPUT_TOKENS,
+    ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, CHEAPNESS_REFERENCE_INPUT_TOKENS,
     CHEAPNESS_REFERENCE_OUTPUT_TOKENS, CredentialMode, DEFAULT_CONTEXT_LIMIT, EventStream,
     JCODE_USER_AGENT, ModelCapabilities, ModelCatalogRefreshSummary, ModelRoute,
     ModelRouteApiMethod, NativeCompactionResult, NativeToolResult, NativeToolResultSender,
@@ -65,7 +65,7 @@ pub use jcode_provider_core::{
 };
 pub use jcode_provider_core::{ProviderFailoverPrompt, parse_failover_prompt_message};
 pub use route_builders::{
-    build_anthropic_oauth_route, build_chatgpt_web_route, build_openai_api_key_route,
+    build_anthropic_oauth_route, build_openai_api_key_route,
     build_openai_oauth_route, build_openrouter_auto_route, build_openrouter_endpoint_route,
     build_openrouter_fallback_provider_route, is_listable_model_name,
     listable_model_names_from_routes, openrouter_catalog_model_id,

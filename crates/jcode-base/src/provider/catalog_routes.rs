@@ -3,9 +3,9 @@ use crate::auth::{AuthState, AuthStatus};
 use super::pricing::cheapness_for_route;
 use super::registry::ProviderRegistry;
 use super::{
-    ALL_OPENAI_MODELS, AccountModelAvailabilityState, CHATGPT_WEB_MODEL, ModelRoute, MultiProvider,
+    ALL_OPENAI_MODELS, AccountModelAvailabilityState, ModelRoute, MultiProvider,
     Provider, anthropic_api_key_route_availability, anthropic_oauth_route_availability, bedrock,
-    build_anthropic_oauth_route, build_chatgpt_web_route, build_openai_api_key_route,
+    build_anthropic_oauth_route, build_openai_api_key_route,
     build_openai_oauth_route, build_openrouter_auto_route, build_openrouter_endpoint_route,
     build_openrouter_fallback_provider_route, configured_standard_openrouter_profile_routes,
     dedupe_model_routes, direct_openai_compatible_profile_routes,
@@ -38,10 +38,6 @@ pub fn simplified_model_routes_for_picker(
     let mut routes = Vec::new();
 
     for model in display_models {
-        if model == CHATGPT_WEB_MODEL {
-            routes.push(build_chatgpt_web_route());
-            continue;
-        }
         if !model.contains('/') && provider_for_model(&model) == Some("openai") {
             // Platform-API-only GPT Pro models: never advertise an OAuth route.
             if jcode_provider_core::is_openai_api_only_pro_model(&model) {
@@ -381,10 +377,6 @@ fn append_openai_routes(
     };
 
     for model in openai_models {
-        if model == CHATGPT_WEB_MODEL {
-            routes.push(build_chatgpt_web_route());
-            continue;
-        }
         let availability = model_availability_for_account(&model);
         let (available, detail) = if provider.openai_provider().is_none() {
             (false, "no credentials".to_string())

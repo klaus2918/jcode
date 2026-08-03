@@ -168,15 +168,21 @@ pub fn register_external_provider_runtimes() {
     crate::provider::external::register_standard_openrouter_catalog_refresh(
         jcode_provider_openrouter_runtime::maybe_schedule_standard_openrouter_catalog_refresh,
     );
-    // API-backed OpenAI routes use Codex/platform credentials. The runtime is
-    // still registered without them so browser-backed ChatGPT models remain
-    // usable through the logged-in Firefox session.
+    // API-backed OpenAI routes use Codex/platform credentials. Without valid
+    // credentials the runtime is not registered (provider unavailable) rather
+    // than falling back to a browser-backed transport.
     crate::provider::external::register_external_provider_fallible(
         crate::provider::external::OPENAI_RUNTIME,
         || {
             let provider = match crate::auth::codex::load_credentials() {
                 Ok(credentials) => jcode_provider_openai_runtime::OpenAIProvider::new(credentials),
-                Err(_) => jcode_provider_openai_runtime::OpenAIProvider::new_browser_only(),
+                Err(err) => {
+                    logging::info(&format!(
+                        "OpenAI runtime not registered: no usable credentials ({err:#}). \
+                         Run `jcode login --provider openai` to add them."
+                    ));
+                    return None;
+                }
             };
             Some(std::sync::Arc::new(provider) as std::sync::Arc<dyn crate::provider::Provider>)
         },
@@ -421,6 +427,17 @@ mod tests {
 
     #[test]
     fn external_provider_runtimes_register_and_instantiate() {
+        let _guard = crate::storage::lock_test_env();
+        // Inject usable OpenAI credentials so the OpenAI runtime factory
+        // instantiates regardless of the machine's real auth state.
+        crate::auth::codex::upsert_account_from_tokens(
+            &crate::auth::codex::primary_account_label(),
+            "test-oauth-access-token",
+            "test-oauth-refresh-token",
+            None,
+            Some(chrono::Utc::now().timestamp_millis() + 86_400_000),
+        )
+        .expect("save test OpenAI OAuth credentials");
         register_external_provider_runtimes();
         for (key, expected_name) in [
             (crate::provider::external::ANTHROPIC_RUNTIME, "anthropic"),

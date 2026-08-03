@@ -435,7 +435,7 @@ fn test_tool_summary_gmail_actions() {
 }
 
 #[test]
-fn test_tool_activity_detail_prefixes_intent_for_gmail_and_browser() {
+fn test_tool_activity_detail_prefixes_intent_for_gmail() {
     tools_ui::tests_tool_call_details_override::set(true);
     let gmail = ToolCall {
         id: "call_gmail_intent".to_string(),
@@ -452,20 +452,6 @@ fn test_tool_activity_detail_prefixes_intent_for_gmail_and_browser() {
     assert!(detail.starts_with("Check unread mail"), "detail={detail:?}");
     assert!(detail.contains("is:unread"), "detail={detail:?}");
 
-    let browser = ToolCall {
-        id: "call_browser_intent".to_string(),
-        name: "browser".to_string(),
-        input: serde_json::json!({
-            "action": "open",
-            "url": "https://example.com",
-            "intent": "Open docs page"
-        }),
-        intent: Some("Open docs page".to_string()),
-        thought_signature: None,
-    };
-    let detail = tools_ui::get_tool_activity_detail(&browser);
-    assert!(detail.starts_with("Open docs page"), "detail={detail:?}");
-    assert!(detail.contains("example.com"), "detail={detail:?}");
     tools_ui::tests_tool_call_details_override::set(false);
 }
 
@@ -942,85 +928,6 @@ fn test_debug_socket_summary_hides_transient_missing_input() {
 
     let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(200));
     assert_eq!(summary, "");
-}
-
-#[test]
-fn test_tool_summary_browser_open_shows_url() {
-    let tool = ToolCall {
-        id: "browser-open".to_string(),
-        name: "browser".to_string(),
-        input: serde_json::json!({
-            "action": "open",
-            "url": "https://example.com/docs/reference/browser-tool"
-        }),
-        intent: None,
-        thought_signature: None,
-    };
-
-    let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(200));
-    assert_eq!(
-        summary,
-        "open https://example.com/docs/reference/browser-tool"
-    );
-}
-
-#[test]
-fn test_tool_summary_browser_type_hides_typed_text() {
-    let tool = ToolCall {
-        id: "browser-type".to_string(),
-        name: "browser".to_string(),
-        input: serde_json::json!({
-            "action": "type",
-            "selector": "#password",
-            "text": "super-secret-value"
-        }),
-        intent: None,
-        thought_signature: None,
-    };
-
-    let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(200));
-    assert_eq!(summary, "type #password (18 chars)");
-    assert!(
-        !summary.contains("super-secret-value"),
-        "summary={summary:?}"
-    );
-}
-
-#[test]
-fn test_tool_summary_browser_type_without_selector_still_hides_text() {
-    let tool = ToolCall {
-        id: "browser-type-no-selector".to_string(),
-        name: "browser".to_string(),
-        input: serde_json::json!({
-            "action": "type",
-            "text": "secret-token-123"
-        }),
-        intent: None,
-        thought_signature: None,
-    };
-
-    let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(200));
-    assert_eq!(summary, "type (16 chars)");
-    assert!(!summary.contains("secret-token-123"), "summary={summary:?}");
-}
-
-#[test]
-fn test_tool_summary_browser_eval_truncates_script() {
-    let tool = ToolCall {
-        id: "browser-eval".to_string(),
-        name: "browser".to_string(),
-        input: serde_json::json!({
-            "action": "eval",
-            "script": "return window.__APP_STATE__?.reallyLongNestedValue?.items?.map(item => item.name).join(', ')"
-        }),
-        intent: None,
-        thought_signature: None,
-    };
-
-    let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(34));
-    assert!(summary.starts_with("eval "), "summary={summary:?}");
-    assert!(summary.contains('…'), "summary={summary:?}");
-    assert!(unicode_width::UnicodeWidthStr::width(summary.as_str()) <= 34);
 }
 
 #[test]

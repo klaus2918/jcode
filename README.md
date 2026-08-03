@@ -667,42 +667,10 @@ and hotkey-friendly dictation without requiring a bundled speech-to-text stack.
 
 ## Browser Automation
 
-jcode includes a first-class built-in `browser` tool for browser control inside agent sessions.
-
-Current built-in backend:
-- Firefox via Firefox Agent Bridge
-
-Current built-in tool actions include:
-- `status`
-- `setup`
-- `open`
-- `snapshot`
-- `get_content`
-- `interactables`
-- `click`
-- `type`
-- `fill_form`
-- `select`
-- `wait`
-- `screenshot`
-- `eval`
-- `scroll`
-- `upload`
-- `press`
-
-Quick setup:
-
-```bash
-jcode browser status
-jcode browser setup
-```
-
-Once setup is complete, the model can use the built-in `browser` tool directly. The UI also summarizes browser tool calls compactly, for example opening a URL, clicking a selector, or typing into a field without echoing sensitive typed text.
-
-Notes:
-- the provider/tool architecture is in place for additional backends
-- Firefox is the wired built-in backend today
-- Chrome bridge / remote debugging style providers can be added on top of the same browser tool later
+jcode does not embed a browser tool. Browser automation is provided externally
+through skills, for example the `op-browser` skill (Playwright + Chromium/Chrome
+with CDP and bridge adapters), so the agent binary stays decoupled from any
+specific browser or testing backend.
 
 ---
 
@@ -712,7 +680,6 @@ Notes:
 - [jcode.sh/swarm](https://jcode.sh/swarm) — many coding agents in one repository
 - [jcode.sh/bench](https://jcode.sh/bench) — benchmark methodology and results
 - [Ambient Mode / OpenClaw](docs/AMBIENT_MODE.md)
-- [Browser Provider Protocol](docs/BROWSER_PROVIDER_PROTOCOL.md)
 - [Memory Architecture](docs/MEMORY_ARCHITECTURE.md)
 - [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
 - [Server Architecture](docs/SERVER_ARCHITECTURE.md)
@@ -783,7 +750,7 @@ Set up jcode on this machine for me.
    - OpenRouter: help me set `OPENROUTER_API_KEY`
    - Anthropic direct API: help me set `ANTHROPIC_API_KEY`
 7. After setup, run a simple smoke test with `jcode run "say hello"` and confirm it works.
-8. If I want browser automation, also check `jcode browser status`. If browser automation is not ready, run `jcode browser setup`, verify the built-in `browser` tool works, and explain any remaining manual step.
+8. If I want browser automation, use an external skill such as `op-browser` (Playwright + Chromium/Chrome); jcode itself does not embed a browser tool.
 9. Explain any manual step that still needs me, especially browser OAuth, device login, API key entry, or browser extension approval.
 ```
 

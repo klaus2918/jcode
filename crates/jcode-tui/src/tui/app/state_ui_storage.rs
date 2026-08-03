@@ -277,7 +277,7 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                     .unwrap_or(serde_json::Value::Null),
             ),
         ]),
-        // Gmail/browser rows: keep the action plus the small routing fields
+        // Gmail rows: keep the action plus the small routing fields
         // that get_tool_summary_with_budget renders, so the transcript summary
         // survives storage compaction and session reload.
         "gmail" => obj(vec![
@@ -352,46 +352,6 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                     .get("attachments")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null),
-            ),
-        ]),
-        "browser" => obj(vec![
-            (
-                "action",
-                input
-                    .get("action")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null),
-            ),
-            (
-                "url",
-                input
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .map(|s| {
-                        serde_json::Value::String(crate::util::truncate_str(s, 200).to_string())
-                    })
-                    .unwrap_or(serde_json::Value::Null),
-            ),
-            (
-                "selector",
-                input
-                    .get("selector")
-                    .and_then(|v| v.as_str())
-                    .map(|s| {
-                        serde_json::Value::String(crate::util::truncate_str(s, 120).to_string())
-                    })
-                    .unwrap_or(serde_json::Value::Null),
-            ),
-            (
-                "format",
-                input
-                    .get("format")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null),
-            ),
-            (
-                "key",
-                input.get("key").cloned().unwrap_or(serde_json::Value::Null),
             ),
         ]),
         "batch" => {
@@ -710,24 +670,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compaction_keeps_browser_action_and_intent_for_transcript_summary() {
-        let mut message = tool_message(
-            "browser",
-            serde_json::json!({
-                "intent": "Open docs page",
-                "action": "open",
-                "url": "https://example.com/docs",
-                "new_tab": true
-            }),
-        );
-        compact_display_message_tool_data(&mut message);
-        let tool = message.tool_data.expect("tool data");
-        assert_eq!(tool.intent.as_deref(), Some("Open docs page"));
-        let summary = crate::tui::ui::tools_ui::get_tool_summary(&tool);
-        assert!(
-            summary.contains("open") && summary.contains("example.com"),
-            "summary should keep the browser action and url: {summary:?}"
-        );
-    }
 }

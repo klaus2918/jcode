@@ -20,7 +20,7 @@
 /// Examples:
 ///   `gpt-5.5`                   -> `GPT-5.5`
 ///   `gpt-5.1-codex-max`         -> `GPT-5.1 Codex Max`
-///   `gpt-5.6-pro[web]`          -> `GPT-5.6 Pro (web)`
+///   `gpt-5.6[web]`             -> `GPT-5.6 (web)`
 ///   `claude-opus-4-8`           -> `Claude Opus 4.8`
 ///   `claude-opus-4-6[1m]`       -> `Claude Opus 4.6 (1M)`
 ///   `claude-haiku-4-5-20251001` -> `Claude Haiku 4.5 (2025-10-01)`
@@ -360,7 +360,7 @@ mod tests {
         );
         // Bracketed route markers become a parenthetical instead of leaking `[web]`.
         assert_eq!(
-            pretty_model_display_name("gpt-5.6-pro[web]"),
+            pretty_model_display_name("gpt-5.6[web]"),
             "GPT-5.6 Pro (web)"
         );
         // Dated snapshots read as a date, not as extra version digits.
@@ -406,7 +406,7 @@ mod tests {
             Some("Gemini 3.1 Pro Preview")
         );
         assert_eq!(
-            pretty_known_model_family("gpt-5.6-pro[web]").as_deref(),
+            pretty_known_model_family("gpt-5.6[web]").as_deref(),
             Some("GPT-5.6 Pro (web)")
         );
         // Open-weights, third-party, namespaced, and profile-scoped ids stay raw so

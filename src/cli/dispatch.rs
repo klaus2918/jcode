@@ -374,9 +374,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Permissions) => {
             tui::permissions::run_permissions()?;
         }
-        Some(Command::Browser { action }) => {
-            commands::run_browser(&action).await?;
-        }
         Some(Command::Replay {
             session,
             swarm,
