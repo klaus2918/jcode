@@ -187,5 +187,4 @@ mod tests {
         assert_eq!(resolved.active, ActiveCredential::OAuth);
         assert!(resolved.has_both());
     }
-
 }

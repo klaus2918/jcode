@@ -65,10 +65,10 @@ pub use jcode_provider_core::{
 };
 pub use jcode_provider_core::{ProviderFailoverPrompt, parse_failover_prompt_message};
 pub use route_builders::{
-    build_anthropic_oauth_route, build_chatgpt_web_route,
-    build_openai_api_key_route, build_openai_oauth_route, build_openrouter_auto_route,
-    build_openrouter_endpoint_route, build_openrouter_fallback_provider_route,
-    is_listable_model_name, listable_model_names_from_routes, openrouter_catalog_model_id,
+    build_anthropic_oauth_route, build_chatgpt_web_route, build_openai_api_key_route,
+    build_openai_oauth_route, build_openrouter_auto_route, build_openrouter_endpoint_route,
+    build_openrouter_fallback_provider_route, is_listable_model_name,
+    listable_model_names_from_routes, openrouter_catalog_model_id,
 };
 pub(crate) use routing::{
     anthropic_api_key_route_availability, anthropic_oauth_route_availability,
@@ -1937,13 +1937,7 @@ impl Provider for MultiProvider {
         let openrouter = self.openrouter_provider();
         let bedrock = self.bedrock_provider();
 
-        let (
-            anthropic_result,
-            claude_result,
-            openai_result,
-            openrouter_result,
-            bedrock_result,
-        ) = tokio::join!(
+        let (anthropic_result, claude_result, openai_result, openrouter_result, bedrock_result) = tokio::join!(
             async {
                 match anthropic {
                     Some(provider) => provider.prefetch_models().await,
@@ -2115,9 +2109,7 @@ impl Provider for MultiProvider {
 
     fn service_tier(&self) -> Option<String> {
         match self.active_provider() {
-            ActiveProvider::Claude => {
-                self.anthropic_provider().and_then(|a| a.service_tier())
-            }
+            ActiveProvider::Claude => self.anthropic_provider().and_then(|a| a.service_tier()),
             ActiveProvider::OpenAI => self.openai_provider().and_then(|o| o.service_tier()),
             _ => None,
         }

@@ -160,8 +160,7 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
         "default-provider" => {
             if remainder.is_empty() {
                 return Some(Err(
-                    "Usage: /account default-provider <claude|openai|openrouter|auto>"
-                        .to_string(),
+                    "Usage: /account default-provider <claude|openai|openrouter|auto>".to_string(),
                 ));
             }
             return Some(Ok(AccountCommand::SetDefaultProvider(
@@ -975,9 +974,7 @@ fn render_provider_settings_markdown(app: &App, provider_id: &str) -> String {
                 .as_deref()
                 .unwrap_or("(provider default)")
         ));
-        lines.push(
-            "  - /account default-provider <claude|openai|openrouter|auto>".to_string(),
-        );
+        lines.push("  - /account default-provider <claude|openai|openrouter|auto>".to_string());
         lines.push("  - /account default-model <model|clear>".to_string());
     }
 

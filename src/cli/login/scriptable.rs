@@ -171,9 +171,7 @@ pub(super) async fn start_scriptable_login(
             )
         }
         _ => {
-            anyhow::bail!(
-                "`--print-auth-url` is currently supported for: claude, openai, google."
-            )
+            anyhow::bail!("`--print-auth-url` is currently supported for: claude, openai, google.")
         }
     };
 
