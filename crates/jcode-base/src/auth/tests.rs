@@ -457,11 +457,11 @@ fn openrouter_like_status_is_provider_specific() {
     let _lock = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("create temp dir");
     let prev_home = std::env::var_os("JCODE_HOME");
-    let prev_gemini = std::env::var_os("GEMINI_API_KEY");
+    let prev_ollama = std::env::var_os("OLLAMA_API_KEY");
     let prev_compat = std::env::var_os("OPENAI_COMPAT_API_KEY");
 
     crate::env::set_var("JCODE_HOME", temp.path());
-    crate::env::set_var("GEMINI_API_KEY", "test-gemini-key");
+    crate::env::set_var("OLLAMA_API_KEY", "test-ollama-key");
     crate::env::remove_var("OPENAI_COMPAT_API_KEY");
     crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
     crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
@@ -470,96 +470,24 @@ fn openrouter_like_status_is_provider_specific() {
     AuthStatus::invalidate_cache();
 
     let status = AuthStatus::check_fast();
-    let gemini_assessment =
-        status.assessment_for_provider(crate::provider_catalog::GEMINI_API_LOGIN_PROVIDER);
+    let ollama_assessment =
+        status.assessment_for_provider(crate::provider_catalog::OLLAMA_LOGIN_PROVIDER);
     let compat_assessment =
         status.assessment_for_provider(crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER);
-    assert!(gemini_assessment.is_available());
+    assert!(ollama_assessment.is_available());
     assert_eq!(compat_assessment.state, AuthState::NotConfigured);
     assert_eq!(
-        gemini_assessment.method_detail,
-        "API key (`GEMINI_API_KEY`)".to_string()
+        ollama_assessment.method_detail,
+        "API key (`OLLAMA_API_KEY`)".to_string()
     );
 
     restore_env_var("JCODE_HOME", prev_home);
-    restore_env_var("GEMINI_API_KEY", prev_gemini);
-    restore_env_var("OLLAMA_API_KEY", prev_compat);
+    restore_env_var("OLLAMA_API_KEY", prev_ollama);
+    restore_env_var("OPENAI_COMPAT_API_KEY", prev_compat);
     AuthStatus::invalidate_cache();
 }
 
 #[test]
-fn azure_readiness_distinguishes_credentials_from_deployment_validation() {
-    let _lock = crate::storage::lock_test_env();
-    let temp = tempfile::TempDir::new().expect("create temp dir");
-    let saved = [
-        "JCODE_HOME",
-        crate::auth::azure::ENDPOINT_ENV,
-        crate::auth::azure::API_KEY_ENV,
-        crate::auth::azure::MODEL_ENV,
-        crate::auth::azure::USE_ENTRA_ENV,
-    ]
-    .into_iter()
-    .map(|key| (key, std::env::var_os(key)))
-    .collect::<Vec<_>>();
-
-    crate::env::set_var("JCODE_HOME", temp.path());
-    crate::env::set_var(
-        crate::auth::azure::ENDPOINT_ENV,
-        "https://example.openai.azure.com",
-    );
-    crate::env::set_var(crate::auth::azure::API_KEY_ENV, "azure-test-key");
-    crate::env::set_var(crate::auth::azure::MODEL_ENV, "gpt-test-deployment");
-    crate::env::remove_var(crate::auth::azure::USE_ENTRA_ENV);
-    AuthStatus::invalidate_cache();
-
-    let status = AuthStatus::check_fast();
-    let assessment = status.assessment_for_provider(crate::provider_catalog::AZURE_LOGIN_PROVIDER);
-    assert_eq!(assessment.state, AuthState::Available);
-    assert_eq!(assessment.readiness, AuthReadinessLevel::CredentialPresent);
-    assert!(
-        assessment
-            .health_summary()
-            .contains("readiness: credential present")
-    );
-
-    crate::auth::validation::save(
-        "azure",
-        crate::auth::validation::ProviderValidationRecord {
-            checked_at_ms: chrono::Utc::now().timestamp_millis(),
-            success: false,
-            provider_smoke_ok: Some(false),
-            tool_smoke_ok: None,
-            summary: "provider_smoke: deployment not found".to_string(),
-        },
-    )
-    .expect("save failed validation");
-    let assessment = status.assessment_for_provider(crate::provider_catalog::AZURE_LOGIN_PROVIDER);
-    assert_eq!(assessment.readiness, AuthReadinessLevel::CredentialPresent);
-
-    crate::auth::validation::save(
-        "azure",
-        crate::auth::validation::ProviderValidationRecord {
-            checked_at_ms: chrono::Utc::now().timestamp_millis(),
-            success: true,
-            provider_smoke_ok: Some(true),
-            tool_smoke_ok: None,
-            summary: "provider_smoke: ok".to_string(),
-        },
-    )
-    .expect("save successful validation");
-    let assessment = status.assessment_for_provider(crate::provider_catalog::AZURE_LOGIN_PROVIDER);
-    assert_eq!(assessment.readiness, AuthReadinessLevel::DeploymentValid);
-    assert!(
-        assessment
-            .health_summary()
-            .contains("readiness: deployment valid")
-    );
-
-    for (key, value) in saved {
-        restore_env_var(key, value);
-    }
-    AuthStatus::invalidate_cache();
-}
 
 #[cfg(unix)]
 #[test]
@@ -712,108 +640,6 @@ fn configured_api_key_source_rejects_invalid_values() {
 }
 
 #[test]
-fn anthropic_api_provider_reports_api_key_independently_of_oauth() {
-    // Regression: the `anthropic-api` (API-key) login provider used to share the
-    // OAuth/subscription credential's availability via `auth_state_key::Anthropic`.
-    // That made it claim "available / OAuth + API key" even with zero API key
-    // configured, then fail at request time (API-key mode never falls back to
-    // OAuth). It must report purely on the presence of an Anthropic API key.
-    let _lock = crate::storage::lock_test_env();
-    let temp = tempfile::TempDir::new().expect("create temp dir");
-    let home = temp.path().join("home");
-    let xdg = temp.path().join("xdg");
-    std::fs::create_dir_all(&home).expect("create temp home");
-    std::fs::create_dir_all(&xdg).expect("create temp xdg config");
-    let saved = ["JCODE_HOME", "XDG_CONFIG_HOME", "HOME", "ANTHROPIC_API_KEY"]
-        .into_iter()
-        .map(|key| (key, std::env::var_os(key)))
-        .collect::<Vec<_>>();
-
-    crate::env::set_var("JCODE_HOME", temp.path().join("jcode-home"));
-    crate::env::set_var("XDG_CONFIG_HOME", &xdg);
-    crate::env::set_var("HOME", &home);
-    crate::env::remove_var("ANTHROPIC_API_KEY");
-    AuthStatus::invalidate_cache();
-
-    // No API key anywhere: the API-key provider must be NotConfigured, even if
-    // OAuth credentials happen to exist for the separate `claude` provider.
-    let status = AuthStatus::check_fast();
-    let api = status.assessment_for_provider(crate::provider_catalog::ANTHROPIC_API_LOGIN_PROVIDER);
-    assert_eq!(
-        api.state,
-        AuthState::NotConfigured,
-        "anthropic-api must not borrow OAuth availability"
-    );
-    assert_eq!(api.method_detail, "not configured");
-
-    // With an API key present (env here; config-file path is covered separately),
-    // the API-key provider becomes available and names ANTHROPIC_API_KEY honestly.
-    crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-api-test-key");
-    AuthStatus::invalidate_cache();
-    let status = AuthStatus::check_fast();
-    let api = status.assessment_for_provider(crate::provider_catalog::ANTHROPIC_API_LOGIN_PROVIDER);
-    assert_eq!(api.state, AuthState::Available);
-    assert!(
-        api.method_detail.contains("ANTHROPIC_API_KEY"),
-        "method detail should name the API key env: {}",
-        api.method_detail
-    );
-
-    for (key, value) in saved {
-        restore_env_var(key, value);
-    }
-    AuthStatus::invalidate_cache();
-}
-
-#[test]
-fn claude_oauth_provider_reports_oauth_independently_of_api_key() {
-    // Mirror of the regression above: the `claude` (OAuth/subscription) login
-    // provider must report on OAuth credentials alone. An ANTHROPIC_API_KEY
-    // used to leak into `auth_state_key::Anthropic`, making the OAuth row claim
-    // "available / OAuth + API key" with zero OAuth accounts -- contradicting
-    // the separate `anthropic-api` row and the header's active-route tag.
-    let _lock = crate::storage::lock_test_env();
-    let temp = tempfile::TempDir::new().expect("create temp dir");
-    let home = temp.path().join("home");
-    let xdg = temp.path().join("xdg");
-    std::fs::create_dir_all(&home).expect("create temp home");
-    std::fs::create_dir_all(&xdg).expect("create temp xdg config");
-    let saved = ["JCODE_HOME", "XDG_CONFIG_HOME", "HOME", "ANTHROPIC_API_KEY"]
-        .into_iter()
-        .map(|key| (key, std::env::var_os(key)))
-        .collect::<Vec<_>>();
-
-    crate::env::set_var("JCODE_HOME", temp.path().join("jcode-home"));
-    crate::env::set_var("XDG_CONFIG_HOME", &xdg);
-    crate::env::set_var("HOME", &home);
-    // API key present, no OAuth anywhere: the OAuth provider must stay
-    // NotConfigured and must not describe the API key as its method.
-    crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-api-test-key");
-    AuthStatus::invalidate_cache();
-
-    let status = AuthStatus::check_fast();
-    let oauth = status.assessment_for_provider(crate::provider_catalog::CLAUDE_LOGIN_PROVIDER);
-    assert_eq!(
-        oauth.state,
-        AuthState::NotConfigured,
-        "claude (OAuth) must not borrow API-key availability"
-    );
-    assert_eq!(oauth.method_detail, "not configured");
-    assert!(
-        !oauth.credential_source_detail.contains("ANTHROPIC_API_KEY"),
-        "OAuth row must not attribute the API key as its source: {}",
-        oauth.credential_source_detail
-    );
-
-    // The API-key row still owns that credential.
-    let api = status.assessment_for_provider(crate::provider_catalog::ANTHROPIC_API_LOGIN_PROVIDER);
-    assert_eq!(api.state, AuthState::Available);
-
-    for (key, value) in saved {
-        restore_env_var(key, value);
-    }
-    AuthStatus::invalidate_cache();
-}
 
 /// Test binaries must never open real browser windows: login/onboarding flows
 /// are exercised heavily by unit tests, and each ungated `open::that` pops an

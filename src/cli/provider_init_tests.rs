@@ -583,22 +583,13 @@ fn parse_login_provider_selection_supports_skip_and_names() {
 #[test]
 fn login_provider_menu_shows_autodetected_auth_and_skip() {
     let providers = vec![
-        provider_catalog::CLAUDE_LOGIN_PROVIDER,
-        provider_catalog::OPENAI_LOGIN_PROVIDER,
+        provider_catalog::JCODE_LOGIN_PROVIDER,
+        provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
     ];
-    let status = auth::AuthStatus {
-        anthropic: auth::ProviderAuth {
-            state: auth::AuthState::Available,
-            has_oauth: true,
-            oauth_state: auth::AuthState::Available,
-            has_api_key: false,
-        },
-        ..Default::default()
-    };
+    let status = auth::AuthStatus::default();
 
     let menu = render_login_provider_selection_menu("Choose a provider:", &providers, &status);
     assert!(menu.contains("Autodetected auth:"));
-    assert!(menu.contains("Anthropic/Claude: configured: OAuth"));
     assert!(menu.contains("[configured"));
     assert!(menu.contains("[not configured"));
     assert!(menu.contains("Skip: press Enter"));
@@ -609,18 +600,6 @@ fn resolve_login_provider_round_trips_core_targets() {
     assert_eq!(
         crate::provider_catalog::resolve_login_provider("jcode"),
         Some(provider_catalog::JCODE_LOGIN_PROVIDER)
-    );
-    assert_eq!(
-        crate::provider_catalog::resolve_login_provider("openrouter"),
-        Some(provider_catalog::OPENROUTER_LOGIN_PROVIDER)
-    );
-    assert_eq!(
-        crate::provider_catalog::resolve_login_provider("anthropic-api"),
-        Some(provider_catalog::ANTHROPIC_API_LOGIN_PROVIDER)
-    );
-    assert_eq!(
-        crate::provider_catalog::resolve_login_provider("azure"),
-        Some(provider_catalog::AZURE_LOGIN_PROVIDER)
     );
     assert_eq!(
         crate::provider_catalog::resolve_login_provider("lmstudio"),

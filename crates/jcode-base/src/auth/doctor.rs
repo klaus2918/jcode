@@ -234,7 +234,7 @@ mod tests {
         assert!(needs_attention(&assessment, None));
         assert!(
             diagnostics(
-                crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
+                crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
                 &assessment,
                 None
             )
@@ -243,7 +243,7 @@ mod tests {
         );
         assert!(
             recommended_actions(
-                crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
+                crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
                 &assessment,
                 None,
             )
@@ -266,7 +266,7 @@ mod tests {
         assert!(needs_attention(&assessment, None));
         assert!(
             recommended_actions(
-                crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
+                crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
                 &assessment,
                 None,
             )

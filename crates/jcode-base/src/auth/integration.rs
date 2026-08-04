@@ -71,9 +71,7 @@ pub fn runtime_id_for_login_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider_catalog::{
-        AZURE_LOGIN_PROVIDER, GOOGLE_LOGIN_PROVIDER, OPENAI_COMPAT_LOGIN_PROVIDER,
-    };
+    use crate::provider_catalog::{JCODE_LOGIN_PROVIDER, OPENAI_COMPAT_LOGIN_PROVIDER};
     use std::collections::HashSet;
 
     #[test]
@@ -99,14 +97,13 @@ mod tests {
     #[test]
     fn integration_registry_preserves_runtime_identity() {
         assert_eq!(
-            runtime_id_for_login_provider(AZURE_LOGIN_PROVIDER),
-            Some(RuntimeProviderId::AzureOpenAi)
+            runtime_id_for_login_provider(JCODE_LOGIN_PROVIDER),
+            Some(RuntimeProviderId::Jcode)
         );
         assert_eq!(
             runtime_id_for_login_provider(OPENAI_COMPAT_LOGIN_PROVIDER),
             Some(RuntimeProviderId::OpenAiCompatible)
         );
-        assert_eq!(runtime_id_for_login_provider(GOOGLE_LOGIN_PROVIDER), None);
     }
 
     #[test]

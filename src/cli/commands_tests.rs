@@ -158,12 +158,12 @@ fn explicit_supported_provider_maps_to_single_auth_target() {
 
 #[test]
 fn explicit_generic_provider_maps_to_generic_auth_target() {
-    let targets = resolve_auth_test_targets("openrouter", false).expect("resolve target");
+    let targets = resolve_auth_test_targets("openai-compatible", false).expect("resolve target");
     assert_eq!(
         targets,
         vec![ResolvedAuthTestTarget::Generic {
-            provider: crate::provider_catalog::OPENROUTER_LOGIN_PROVIDER,
-            choice: "openrouter".to_string(),
+            provider: crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
+            choice: "openai-compatible".to_string(),
         }]
     );
 }

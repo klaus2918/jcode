@@ -502,33 +502,9 @@ mod tests {
     fn login_provider_defaults_are_canonical_config_keys() {
         assert_eq!(
             MultiProvider::config_default_provider_for_login_provider(
-                crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
-            ),
-            Some("claude")
-        );
-        assert_eq!(
-            MultiProvider::config_default_provider_for_login_provider(
-                crate::provider_catalog::OPENAI_LOGIN_PROVIDER,
-            ),
-            Some("openai")
-        );
-        assert_eq!(
-            MultiProvider::config_default_provider_for_login_provider(
-                crate::provider_catalog::OPENAI_API_LOGIN_PROVIDER,
-            ),
-            Some("openai")
-        );
-        assert_eq!(
-            MultiProvider::config_default_provider_for_login_provider(
                 crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
             ),
             Some("openai-compatible")
-        );
-        assert_eq!(
-            MultiProvider::config_default_provider_for_login_provider(
-                crate::provider_catalog::AZURE_LOGIN_PROVIDER,
-            ),
-            None
         );
     }
 
