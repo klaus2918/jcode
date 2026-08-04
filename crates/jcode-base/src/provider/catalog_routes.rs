@@ -1269,41 +1269,4 @@ mod tests {
         .expect("write cache");
     }
 
-    /// OpenRouter alternative routes must not be fabricated for models the
-    /// OpenRouter catalog definitively does not list (e.g. the
-    /// ChatGPT-exclusive `gpt-5.3-codex-spark`), while staying optimistic
-    /// when no catalog cache exists yet.
-    #[test]
-    fn openrouter_alternative_routes_skip_models_absent_from_catalog() {
-        let _guard = EnvGuard::new();
-
-        // No catalog cache: optimistic, spark gets a fallback route.
-        let mut routes = Vec::new();
-        let mut stats = OpenRouterRouteStats::default();
-        append_openrouter_alternative_routes(&mut routes, &mut stats);
-        assert!(
-            routes
-                .iter()
-                .any(|r| r.model == "gpt-5.3-codex-spark" && r.api_method == "openrouter"),
-            "without a catalog cache the fallback route stays optimistic"
-        );
-
-        // Fresh catalog listing codex but not spark: spark route is dropped.
-        save_openrouter_catalog_cache(&["openai/gpt-5.3-codex", "openai/gpt-5.5"]);
-        let mut routes = Vec::new();
-        let mut stats = OpenRouterRouteStats::default();
-        append_openrouter_alternative_routes(&mut routes, &mut stats);
-        assert!(
-            !routes
-                .iter()
-                .any(|r| r.model == "gpt-5.3-codex-spark" && r.api_method == "openrouter"),
-            "catalog-confirmed-absent model must not get an OpenRouter fallback route"
-        );
-        assert!(
-            routes
-                .iter()
-                .any(|r| r.model == "gpt-5.3-codex" && r.api_method == "openrouter"),
-            "catalog-listed model keeps its OpenRouter fallback route"
-        );
-    }
 }

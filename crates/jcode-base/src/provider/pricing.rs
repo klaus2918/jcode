@@ -1,4 +1,4 @@
-use super::{ALL_OPENAI_MODELS, openrouter};
+use super::openrouter;
 use crate::auth;
 use crate::provider::models::provider_for_model;
 use jcode_provider_core::pricing as core_pricing;
@@ -282,7 +282,7 @@ pub(crate) fn cheapness_for_route(
                 model.to_string()
             } else if provider_for_model(model) == Some("claude") {
                 format!("anthropic/{}", model)
-            } else if ALL_OPENAI_MODELS.contains(&model) {
+            } else if provider_for_model(model) == Some("openai") {
                 format!("openai/{}", model)
             } else {
                 model.to_string()

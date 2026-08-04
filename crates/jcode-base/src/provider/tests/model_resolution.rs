@@ -99,20 +99,8 @@ fn test_available_models_display_uses_route_models_and_filters_placeholder_rows(
         };
 
         let models = provider.available_models_display();
-        assert!(
-            models
-                .iter()
-                .any(|model| known_openai_model_ids().contains(model)),
-            "route-backed display models should include OpenAI picker rows: {:?}",
-            models
-        );
-        assert!(
-            models
-                .iter()
-                .any(|model| known_anthropic_model_ids().contains(model)),
-            "route-backed display models should include Anthropic picker rows: {:?}",
-            models
-        );
+        // 零内置模型配置：未配置任何 provider 时，显示列表为空（模型完全
+        // 来自配置的 openai-compatible profile 路由）。
         assert!(!models.iter().any(|model| model == "openrouter models"));
         assert!(!models.iter().any(|model| model == "copilot models"));
     });
@@ -1592,6 +1580,7 @@ fn test_merge_openai_model_ids_appends_dynamic_oauth_models() {
 
 #[test]
 fn test_merge_anthropic_model_ids_appends_dynamic_models() {
+    // 零内置模型配置：静态 fallback 为空，合并结果完全来自 dynamic 输入。
     let models = models::merge_anthropic_model_ids(vec![
         "claude-opus-4-6".to_string(),
         "claude-sonnet-5-preview".to_string(),
@@ -1600,7 +1589,6 @@ fn test_merge_anthropic_model_ids_appends_dynamic_models() {
     ]);
 
     assert!(models.iter().any(|model| model == "claude-opus-4-6"));
-    assert!(models.iter().any(|model| model == "claude-opus-4-6[1m]"));
     assert!(
         models
             .iter()

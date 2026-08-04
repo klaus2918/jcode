@@ -237,34 +237,18 @@ pub fn globally_preferred_default_route(routes: &[ModelRoute]) -> Option<ModelRo
 
 fn globally_preferred_model_rank(model: &str) -> (u8, usize) {
     let normalized = normalize_model_for_preference(model);
-    let openai_default = normalize_model_for_preference(jcode_provider_core::DEFAULT_OPENAI_MODEL);
-    let claude_default = normalize_model_for_preference(jcode_provider_core::DEFAULT_CLAUDE_MODEL);
-
-    if normalized == openai_default {
+    // 零内置模型配置：全局默认路由只优先用户配置的默认模型，其余完全按
+    // catalog 顺序（配置驱动的 openai-compatible profile 决定模型列表）。
+    let configured_default = crate::config::config()
+        .provider
+        .default_model
+        .as_deref()
+        .map(normalize_model_for_preference);
+    if Some(normalized.as_str()) == configured_default.as_deref() {
         return (0, 0);
     }
-    // Some catalogs expose the clean release id instead of jcode's Sol route.
-    if normalized == "gpt-5.6" {
-        return (1, 0);
-    }
-    if normalized == claude_default {
-        return (2, 0);
-    }
-    if let Some(position) = crate::provider::ALL_CLAUDE_MODELS
-        .iter()
-        .position(|candidate| normalize_model_for_preference(candidate) == normalized)
-    {
-        return (3, position);
-    }
-    if let Some(position) = crate::provider::ALL_OPENAI_MODELS
-        .iter()
-        .position(|candidate| normalize_model_for_preference(candidate) == normalized)
-    {
-        return (4, position);
-    }
-
-    // Unknown provider families retain catalog order as the final fallback.
-    (5, usize::MAX)
+    // 其余模型保持 catalog 顺序。
+    (1, usize::MAX)
 }
 
 /// Flagship-first preference tiers used only to break ties when falling back to
@@ -1588,7 +1572,14 @@ mod tests {
     }
 
     #[test]
-    fn global_default_route_prefers_gpt_5_6_over_fable_and_preserves_route() {
+    fn global_default_route_uses_catalog_order_when_no_config_default() {
+        let _guard = crate::storage::lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::config::invalidate_config_cache();
+        // 零内置模型配置：无配置默认模型时，全局默认路由按 catalog 顺序
+        // （输入顺序），不再按内置厂商的旗舰排序。
         let routes = vec![
             route("gpt-5.5", "OpenAI", "openai-api-key", true),
             route("claude-fable-5", "Anthropic", "anthropic-api-key", true),
@@ -1596,13 +1587,23 @@ mod tests {
         ];
 
         let selected = globally_preferred_default_route(&routes).expect("strongest route");
-        assert_eq!(selected.model, "gpt-5.6-sol");
+        assert_eq!(selected.model, "gpt-5.5");
         assert_eq!(selected.provider, "OpenAI");
-        assert_eq!(selected.api_method, "openai-oauth");
+        assert_eq!(selected.api_method, "openai-api-key");
+        match prev_home {
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        crate::config::invalidate_config_cache();
     }
 
     #[test]
-    fn global_default_route_uses_clean_gpt_5_6_then_fable_before_weaker_models() {
+    fn global_default_route_uses_catalog_order_and_skips_unavailable() {
+        let _guard = crate::storage::lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::env::set_var("JCODE_HOME", temp.path());
+        crate::config::invalidate_config_cache();
         let clean_release = vec![
             route("claude-fable-5", "Anthropic", "claude-oauth", true),
             route("gpt-5.6", "OpenAI", "openai-api-key", true),
@@ -1611,7 +1612,7 @@ mod tests {
             globally_preferred_default_route(&clean_release)
                 .as_ref()
                 .map(|route| route.model.as_str()),
-            Some("gpt-5.6")
+            Some("claude-fable-5")
         );
 
         let unavailable_gpt = vec![
@@ -1623,8 +1624,13 @@ mod tests {
             globally_preferred_default_route(&unavailable_gpt)
                 .as_ref()
                 .map(|route| route.model.as_str()),
-            Some("claude-fable-5")
+            Some("gpt-5.5")
         );
+        match prev_home {
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        crate::config::invalidate_config_cache();
     }
 
     #[test]
