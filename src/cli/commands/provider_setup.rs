@@ -547,19 +547,87 @@ fn upsert_key_in_range(lines: &mut Vec<String>, start: usize, end: usize, key: &
 
 fn remove_named_provider_sections(content: &str, name: &str) -> String {
     let lines = split_lines_lossy(content);
-    let mut kept = Vec::with_capacity(lines.len());
-    let mut skip = false;
+    let mut kept: Vec<String> = Vec::with_capacity(lines.len());
+    // Buffer a top-level `[[providers]]` array block until its `name` is known
+    // (resonix entries declare `name = "..."` inside the block). Nested
+    // `[[providers.models]]` subtables belong to the same array element and stay
+    // in the buffer.
+    let mut providers_block: Vec<String> = Vec::new();
+    let mut in_providers_block = false;
 
     for line in lines {
+        let trimmed = line.trim();
         if is_toml_header(&line) {
-            skip = is_named_provider_header(&line, name);
+            if trimmed == "[[providers]]" {
+                // Start of a new resonix array entry: flush the previous block.
+                if in_providers_block {
+                    flush_providers_block(&mut kept, &mut providers_block, name);
+                }
+                in_providers_block = true;
+                providers_block.clear();
+                providers_block.push(line.clone());
+                continue;
+            }
+            if trimmed.starts_with("[[providers.") {
+                // Nested sub-table of the current `[[providers]]` element
+                // (e.g. `[[providers.models]]`): still part of the block.
+                if in_providers_block {
+                    providers_block.push(line.clone());
+                    continue;
+                }
+                // Legacy standalone `[[providers.<name>.models]]` table style.
+                if !is_named_provider_header(&line, name) {
+                    kept.push(line);
+                }
+                continue;
+            }
+            if in_providers_block {
+                // Any other section header (e.g. `[providers.x]` table or a
+                // top-level `[provider]` section) ends the resonix block.
+                flush_providers_block(&mut kept, &mut providers_block, name);
+                in_providers_block = false;
+            }
         }
-        if !skip {
+
+        if in_providers_block {
+            providers_block.push(line.clone());
+        } else if !is_named_provider_header(&line, name) {
             kept.push(line);
         }
     }
+    if in_providers_block {
+        flush_providers_block(&mut kept, &mut providers_block, name);
+    }
 
     join_lines(kept)
+}
+
+/// Emit a buffered `[[providers]]` block unless it declares `name = "<target>"`.
+fn flush_providers_block(kept: &mut Vec<String>, block: &mut Vec<String>, target: &str) {
+    let block_name = block
+        .iter()
+        .find_map(|line| providers_block_name(line))
+        .unwrap_or_default();
+    if block_name == target {
+        // Matching resonix entry: drop the whole block (including any nested
+        // `[[providers.models]]` subtables).
+        return;
+    }
+    kept.extend(block.iter().cloned());
+}
+
+/// The `name = "..."` value of a line inside a `[[providers]]` block.
+fn providers_block_name(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("name")?;
+    if !rest.trim_start().starts_with('=') {
+        return None;
+    }
+    let value = rest.trim_start().trim_start_matches('=').trim();
+    let unquoted = value
+        .strip_prefix('"')?
+        .strip_suffix('"')?;
+    Some(unquoted.to_string())
 }
 
 fn is_named_provider_header(line: &str, name: &str) -> bool {
@@ -820,5 +888,60 @@ mod tests {
         let parsed: Config = toml::from_str(&config).expect("valid config");
         let profile = parsed.providers.get("gw-http").expect("profile");
         assert_eq!(profile.base_url, "http://gateway.example.com");
+    }
+
+    #[test]
+    fn remove_named_provider_sections_removes_resonix_array_entry() {
+        // `--overwrite` against a provider that exists as a resonix-style
+        // top-level `[[providers]]` entry must drop that block (including its
+        // nested `[[providers.models]]` subtables) and keep unrelated entries.
+        let content = r#"[[providers]]
+name = "keep"
+type = "openai-compatible"
+kind = "openai"
+base_url = "https://api.keep.com"
+model = "m1"
+
+[[providers]]
+name = "testgw"
+type = "openai-compatible"
+base_url = "https://api.testgw.com"
+model = "m1"
+api_key_env = "TESTGW_KEY"
+
+[[providers.models]]
+id = "m1"
+context_window = 1000
+
+[display]
+centered = true
+"#;
+        let result = remove_named_provider_sections(content, "testgw");
+        assert!(result.contains("name = \"keep\""), "keep entry must survive");
+        assert!(!result.contains("testgw"), "target entry must be removed");
+        assert!(!result.contains("api_key_env = \"TESTGW_KEY\""));
+        assert!(result.contains("[display]"), "unrelated section must survive");
+        // Result must still parse as valid TOML with only `keep`.
+        let parsed: Config = toml::from_str(&result).expect("valid config");
+        assert!(parsed.providers.contains_key("keep"));
+        assert!(!parsed.providers.contains_key("testgw"));
+    }
+
+    #[test]
+    fn remove_named_provider_sections_keeps_unrelated_resonix_entries() {
+        let content = r#"[[providers]]
+name = "one"
+type = "openai-compatible"
+base_url = "https://api.one.com"
+
+[[providers]]
+name = "two"
+type = "openai-compatible"
+base_url = "https://api.two.com"
+"#;
+        let result = remove_named_provider_sections(content, "missing");
+        let parsed: Config = toml::from_str(&result).expect("valid config");
+        assert!(parsed.providers.contains_key("one"));
+        assert!(parsed.providers.contains_key("two"));
     }
 }
