@@ -1124,6 +1124,24 @@ model_picker_providers = ["self-deepseek"]
         "only OpenAI-compatible login entries should remain: {filtered:?}"
     );
 
+    // The auth-status diagnostic list follows the same allowlist: built-in
+    // providers are hidden, the generic openai-compatible entry stays.
+    let auth_filtered = auth_status_login_providers_filtered();
+    assert!(
+        auth_filtered.iter().any(|p| matches!(
+            p.target,
+            LoginProviderTarget::OpenAiCompatible(profile)
+                if profile.id == OPENAI_COMPAT_PROFILE.id
+        )),
+        "auth-status must keep the generic openai-compatible entry: {auth_filtered:?}"
+    );
+    for hidden in ["claude", "openai", "openrouter", "bedrock", "azure"] {
+        assert!(
+            !auth_filtered.iter().any(|p| p.id == hidden),
+            "auth-status must hide built-in provider '{hidden}': {auth_filtered:?}"
+        );
+    }
+
     crate::env::remove_var("JCODE_HOME");
     if let Some(prev_home) = prev_home {
         crate::env::set_var("JCODE_HOME", prev_home);
