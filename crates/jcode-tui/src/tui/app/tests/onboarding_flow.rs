@@ -30,7 +30,7 @@ impl Provider for QualityFirstOpenAiProvider {
     fn model_routes(&self) -> Vec<crate::provider::ModelRoute> {
         vec![
             crate::provider::ModelRoute { capability: None,
-                model: jcode_provider_core::DEFAULT_CLAUDE_MODEL.to_string(),
+                model: "claude-opus-5".to_string(),
                 provider: "Anthropic".to_string(),
                 api_method: "claude-oauth".to_string(),
                 available: true,
@@ -46,7 +46,7 @@ impl Provider for QualityFirstOpenAiProvider {
                 cheapness: None,
             },
             crate::provider::ModelRoute { capability: None,
-                model: jcode_provider_core::DEFAULT_OPENAI_MODEL.to_string(),
+                model: "gpt-5.5".to_string(),
                 provider: "OpenAI".to_string(),
                 api_method: "openai-api-key".to_string(),
                 available: true,
@@ -1464,7 +1464,7 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
             .await
             .expect("strongest model activation event");
 
-            assert_eq!(model, jcode_provider_core::DEFAULT_OPENAI_MODEL);
+            assert_eq!(model, "gpt-5.5");
             assert_eq!(provider_key.as_deref(), Some("openai-api"));
         });
     });

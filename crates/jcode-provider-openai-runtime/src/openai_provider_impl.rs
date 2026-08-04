@@ -720,9 +720,7 @@ impl Provider for OpenAIProvider {
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
-        let mut models =
-            jcode_base::provider::cached_openai_model_ids().unwrap_or_else(|| vec![self.model()]);
-        models
+        jcode_base::provider::cached_openai_model_ids().unwrap_or_else(|| vec![self.model()])
     }
 
     fn available_models_display(&self) -> Vec<String> {

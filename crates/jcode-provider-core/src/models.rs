@@ -87,9 +87,7 @@ pub fn provider_for_model_with_hint(
     // cursor). Without this, "CLAUDE-OPUS-4-8" or "claude-opus-4-8[1m]"
     // classified differently across the two call sites.
     let canonical = crate::model_id::canonical(model);
-    if canonical.contains('@') {
-        Some("openrouter")
-    } else if canonical.contains('/') {
+    if canonical.contains('@') || canonical.contains('/') {
         Some("openrouter")
     } else if canonical.starts_with("claude-") {
         Some("claude")
@@ -667,5 +665,4 @@ mod tests {
             Some(1_000_000)
         );
     }
-
 }

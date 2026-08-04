@@ -233,10 +233,7 @@ impl NamedAnthropicProvider {
             },
         };
 
-        let model = profile
-            .default_model
-            .clone()
-            .unwrap_or_default();
+        let model = profile.default_model.clone().unwrap_or_default();
         let static_models = profile
             .models
             .iter()
