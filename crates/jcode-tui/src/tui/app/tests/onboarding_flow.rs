@@ -438,10 +438,12 @@ fn pending_login_entry_is_not_intercepted_by_onboarding_login_phase() {
         if let Some(flow) = app.onboarding_flow.as_mut() {
             flow.phase = OnboardingPhase::Login { import: None };
         }
-        // Simulate having chosen OpenRouter: the picker closed and a pending
+        // Simulate having chosen openai-compatible: the picker closed and a pending
         // API-key login prompt is now active.
         app.inline_interactive_state = None;
-        app.start_login_provider(crate::provider_catalog::resolve_login_provider("openrouter").unwrap());
+        app.start_login_provider(
+            crate::provider_catalog::resolve_login_provider("openai-compatible").unwrap(),
+        );
         assert!(app.pending_login.is_some());
         assert!(app.inline_interactive_state.is_none());
 

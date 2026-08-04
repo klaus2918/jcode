@@ -647,7 +647,7 @@ mod tests {
         let before_status = build_auth_status_report();
         let before_cerebras = provider_status(&before_status, provider.id);
         assert_eq!(before_cerebras.status, "not_configured");
-        assert_eq!(before_cerebras.auth_kind, "API key");
+        assert_eq!(before_cerebras.auth_kind, "API key / CLI");
         assert_eq!(before_cerebras.credential_source, "none");
         assert_eq!(before_cerebras.method, "not configured");
 
@@ -672,16 +672,17 @@ mod tests {
         );
 
         crate::cli::login::run_login(
-            "gemini-api",
+            "openai-compatible",
             None,
             crate::cli::login::LoginOptions {
                 no_validate: true,
+                openai_compatible_api_base: Some("https://api.example.com/v1".to_string()),
                 openai_compatible_api_key: Some("test-cerebras-cli-key".to_string()),
                 ..Default::default()
             },
         )
         .await
-        .expect("CLI login should save Cerebras key in sandbox");
+        .expect("CLI login should save openai-compatible key in sandbox");
 
         assert!(
             env_file.exists(),
@@ -702,7 +703,7 @@ mod tests {
         let after_cerebras = provider_status(&after_status, provider.id);
         assert!(after_status.any_available);
         assert_eq!(after_cerebras.status, "available");
-        assert_eq!(after_cerebras.auth_kind, "API key");
+        assert_eq!(after_cerebras.auth_kind, "API key / CLI");
         assert_eq!(after_cerebras.credential_source, "app config file");
         assert!(after_cerebras.method.contains(&resolved.api_key_env));
         assert!(

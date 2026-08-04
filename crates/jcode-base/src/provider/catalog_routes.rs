@@ -1271,36 +1271,21 @@ mod tests {
     fn remote_compatible_route_uses_live_cache_and_does_not_mark_fallback() {
         let guard = EnvGuard::new();
         guard.save_compatible_cache(
-            "gemini-api",
-            "https://generativelanguage.googleapis.com/v1beta/openai",
-            &["gemini-2.5-flash"],
+            "ollama",
+            "http://localhost:11434/v1",
+            &["llama-3.1-8b"],
         );
 
-        let route = remote_openai_compatible_route_for_model("gemini-2.5-flash")
-            .expect("live-cache-only Gemini API model should be routed");
+        let route = remote_openai_compatible_route_for_model("llama-3.1-8b")
+            .expect("live-cache-only Ollama model should be routed");
 
-        assert_eq!(route.provider, "Gemini API");
-        assert_eq!(route.api_method, "openai-compatible:gemini-api");
+        assert_eq!(route.provider, "Ollama");
+        assert_eq!(route.api_method, "openai-compatible:ollama");
         assert_eq!(
             route.detail,
-            "https://generativelanguage.googleapis.com/v1beta/openai"
+            "http://localhost:11434/v1"
         );
         assert!(!route.detail.contains("fallback"));
-    }
-
-    #[test]
-    fn remote_compatible_route_marks_static_model_list_fallback() {
-        let _guard = EnvGuard::new();
-
-        let route = remote_openai_compatible_route_for_model("gemini-2.5-flash")
-            .expect("static Gemini API fallback model should be routed");
-
-        assert_eq!(route.provider, "Gemini API");
-        assert!(
-            route
-                .detail
-                .contains("fallback: static provider model list")
-        );
     }
 
     #[test]

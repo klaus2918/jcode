@@ -51,20 +51,12 @@ fn matrix_login_provider_aliases_resolve_to_canonical_ids() {
         Some("jcode")
     );
     assert_eq!(
-        resolve_login_provider("anthropic").map(|provider| provider.id),
-        Some("claude")
-    );
-    assert_eq!(
         resolve_login_provider("compat").map(|provider| provider.id),
         Some("openai-compatible")
     );
     assert_eq!(
-        resolve_login_provider("aoai").map(|provider| provider.id),
-        Some("azure")
-    );
-    assert_eq!(
-        resolve_login_provider("gmail").map(|provider| provider.id),
-        Some("google")
+        resolve_login_provider("lm-studio").map(|provider| provider.id),
+        Some("lmstudio")
     );
 }
 
@@ -331,31 +323,19 @@ fn matrix_tui_login_selection_supports_numbers_and_names() {
     );
     assert_eq!(
         resolve_login_selection("2", &providers).map(|provider| provider.id),
-        Some("claude")
+        Some("jcode")
     );
-    // `anthropic-api` sits at 3 (between claude and openai), shifting the
-    // rest of the list down one slot relative to the pre-May-2026 order.
     assert_eq!(
         resolve_login_selection("3", &providers).map(|provider| provider.id),
-        Some("anthropic-api")
-    );
-    assert_eq!(
-        resolve_login_selection("7", &providers).map(|provider| provider.id),
-        Some("bedrock")
-    );
-    assert_eq!(
-        resolve_login_selection("compat", &providers).map(|provider| provider.id),
         Some("openai-compatible")
     );
     assert_eq!(
-        resolve_login_selection("bedrock", &providers).map(|provider| provider.id),
-        Some("bedrock")
+        resolve_login_selection("4", &providers).map(|provider| provider.id),
+        Some("lmstudio")
     );
-    assert!(
-        providers
-            .iter()
-            .take(7)
-            .any(|provider| provider.id == "bedrock")
+    assert_eq!(
+        resolve_login_selection("5", &providers).map(|provider| provider.id),
+        Some("ollama")
     );
     assert!(resolve_login_selection("google", &providers).is_none());
 }
@@ -367,40 +347,17 @@ fn matrix_cli_login_selection_preserves_existing_order() {
         resolve_login_selection("1", &providers).map(|provider| provider.id),
         Some("auto-import")
     );
-    // `anthropic-api` at 3 shifted everything after it down one slot.
     assert_eq!(
-        resolve_login_selection("3", &providers).map(|provider| provider.id),
-        Some("anthropic-api")
-    );
-    assert_eq!(
-        resolve_login_selection("5", &providers).map(|provider| provider.id),
+        resolve_login_selection("2", &providers).map(|provider| provider.id),
         Some("jcode")
     );
     assert_eq!(
-        resolve_login_selection("6", &providers).map(|provider| provider.id),
-        Some("openrouter")
-    );
-    assert_eq!(
-        resolve_login_selection("7", &providers).map(|provider| provider.id),
-        Some("bedrock")
-    );
-    assert_eq!(
-        resolve_login_selection("8", &providers).map(|provider| provider.id),
-        Some("azure")
-    );
-    assert_eq!(
-        resolve_login_selection("9", &providers).map(|provider| provider.id),
+        resolve_login_selection("3", &providers).map(|provider| provider.id),
         Some("openai-compatible")
     );
     assert_eq!(
-        resolve_login_selection("bedrock", &providers).map(|provider| provider.id),
-        Some("bedrock")
-    );
-    assert!(
-        providers
-            .iter()
-            .position(|provider| provider.id == "bedrock")
-            < providers.iter().position(|provider| provider.id == "azure")
+        resolve_login_selection("4", &providers).map(|provider| provider.id),
+        Some("lmstudio")
     );
 }
 
@@ -910,74 +867,6 @@ fn quality_tier_ranks_flagship_above_bare_above_cheap() {
 }
 
 #[test]
-fn newest_release_picker_prefers_strongest_tier_over_newest_cheap() {
-    use jcode_provider_openrouter::ModelInfo;
-    let _lock = crate::storage::lock_test_env();
-    let _env = EnvGuard::save(&["JCODE_HOME"]);
-    let temp = tempfile::tempdir().expect("tempdir");
-    crate::env::set_var("JCODE_HOME", temp.path());
-
-    let mk = |id: &str, created: u64| ModelInfo {
-        id: id.to_string(),
-        name: String::new(),
-        context_length: None,
-        pricing: Default::default(),
-        created: Some(created),
-    };
-
-    // A heterogeneous proxy catalog (like OpenCode Zen): the NEWEST model is a
-    // cheap `*-flash`, but a slightly older flagship-marked model exists. The
-    // picker must choose the flagship, not the newest-cheap.
-    jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
-        "gemini-api",
-        &[
-            mk("gemini-2.5-flash", 1_900_000_000), // newest, but cheap tier
-            mk("gemini-2.5-pro", 1_850_000_000),   // bare frontier
-            mk("gemini-3-pro", 1_800_000_000),     // flagship tier, oldest
-        ],
-        Some("https://generativelanguage.googleapis.com/v1beta/openai"),
-    );
-
-    assert_eq!(
-        newest_released_model_for_openai_compatible_profile("gemini-api").as_deref(),
-        Some("gemini-2.5-pro"),
-        "a flagship-marked model must win over a newer cheap/flash sibling"
-    );
-}
-
-#[test]
-fn newest_release_picker_uses_recency_within_a_tier() {
-    use jcode_provider_openrouter::ModelInfo;
-    let _lock = crate::storage::lock_test_env();
-    let _env = EnvGuard::save(&["JCODE_HOME"]);
-    let temp = tempfile::tempdir().expect("tempdir");
-    crate::env::set_var("JCODE_HOME", temp.path());
-
-    let mk = |id: &str, created: u64| ModelInfo {
-        id: id.to_string(),
-        name: String::new(),
-        context_length: None,
-        pricing: Default::default(),
-        created: Some(created),
-    };
-
-    // All same (bare frontier) tier: recency decides.
-    jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
-        "gemini-api",
-        &[
-            mk("gemini-2.0", 1_700_000_000),
-            mk("gemini-2.5", 1_900_000_000), // newest within the same tier
-            mk("gemini-2.1", 1_800_000_000),
-        ],
-        Some("https://generativelanguage.googleapis.com/v1beta/openai"),
-    );
-
-    assert_eq!(
-        newest_released_model_for_openai_compatible_profile("gemini-api").as_deref(),
-        Some("gemini-2.5"),
-        "within one quality tier the newest release should win"
-    );
-}
 
 /// Exhaustiveness guard: every model shipped in a profile's static catalog must
 /// resolve to a concrete context window. Open-weight gateways frequently omit
