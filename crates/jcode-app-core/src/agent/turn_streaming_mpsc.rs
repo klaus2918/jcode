@@ -692,7 +692,6 @@ impl Agent {
                         }
                     }
                     StreamEvent::ConnectionType { connection } => {
-
                         self.last_connection_type = Some(connection.clone());
                         let _ = event_tx.send(ServerEvent::ConnectionType { connection });
                     }
@@ -951,8 +950,6 @@ impl Agent {
                 || usage_cache_read.is_some()
                 || usage_cache_creation.is_some()
             {
-
-
                 let input = usage_input.unwrap_or(0);
                 let output = usage_output.unwrap_or(0);
                 let total = input
@@ -1066,7 +1063,6 @@ impl Agent {
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
-
                 let token_usage = Some(crate::session::StoredTokenUsage {
                     input_tokens: self.last_usage.input_tokens,
                     output_tokens: self.last_usage.output_tokens,
@@ -1232,7 +1228,6 @@ impl Agent {
             for tool_index in 0..tool_count {
                 // === INJECTION POINT C (before): Check for urgent abort before each tool (except first) ===
                 if tool_index > 0 && self.has_urgent_interrupt() {
-
                     // Add tool_results for all remaining skipped tools to maintain valid history
                     for skipped_tc in &tool_calls[tool_index..] {
                         self.add_message(

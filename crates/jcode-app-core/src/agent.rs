@@ -859,7 +859,6 @@ impl Agent {
 
     /// Mark this agent session as closed and persist it.
     pub fn mark_closed(&mut self) {
-
         self.persist_soft_interrupt_snapshot();
         self.session.mark_closed();
         if !self.session.messages.is_empty() {
@@ -885,7 +884,6 @@ impl Agent {
     }
 
     pub fn mark_crashed(&mut self, message: Option<String>) {
-
         self.persist_soft_interrupt_snapshot();
         self.session.mark_crashed(message);
         if !self.session.messages.is_empty() {

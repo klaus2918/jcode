@@ -671,7 +671,6 @@ impl Agent {
                 ],
             );
 
-
             if print_output
                 && (usage_input.is_some()
                     || usage_output.is_some()
@@ -740,7 +739,6 @@ impl Agent {
             }
 
             let assistant_message_id = if !content_blocks.is_empty() {
-
                 let token_usage = Some(crate::session::StoredTokenUsage {
                     input_tokens: self.last_usage.input_tokens,
                     output_tokens: self.last_usage.output_tokens,
@@ -1026,7 +1024,6 @@ impl Agent {
                         tool_results_dirty = true;
                     }
                     Err(e) => {
-
                         Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
                             session_id: self.session.id.clone(),
                             message_id: message_id.clone(),

@@ -516,5 +516,4 @@ mod tests {
 
         assert_eq!(selected, Some(recent_repo));
     }
-
 }

@@ -263,7 +263,11 @@ fn build_target_for_paths<'a>(paths: impl Iterator<Item = &'a str>) -> SelfDevBu
             workspace_wide = true;
         }
     }
-    if workspace_wide { SelfDevBuildTarget::All } else { SelfDevBuildTarget::Tui }
+    if workspace_wide {
+        SelfDevBuildTarget::All
+    } else {
+        SelfDevBuildTarget::Tui
+    }
 }
 
 fn shell_escape(value: &str) -> String {
@@ -638,7 +642,6 @@ mod tests {
             }
         }
     }
-
 
     /// `auto` must route a change to the binary that contains it, so editing
     /// the TUI builds the TUI binary.
