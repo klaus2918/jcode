@@ -15,9 +15,8 @@ pub use catalog::{
 };
 use catalog_service::{ModelCatalogService, RuntimeModelUnavailability};
 use jcode_provider_core::{
-    ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, ModelCapabilities, OPENAI_API_ONLY_PRO_MODELS,
-    context_limit_for_model_with_provider_and_cache, core_provider_for_model_with_hint,
-    is_openai_api_only_pro_model, provider_key_from_hint, shared_http_client,
+    ModelCapabilities, context_limit_for_model_with_provider_and_cache,
+    core_provider_for_model_with_hint, provider_key_from_hint, shared_http_client,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -245,23 +244,13 @@ fn current_provider_runtime_scope_key(provider: &str) -> String {
 }
 
 fn openai_static_model_ids() -> Vec<String> {
-    let mut models: Vec<String> = ALL_OPENAI_MODELS.iter().map(|m| (*m).to_string()).collect();
-
-    // Only advertise the explicit [1m] alias when the live catalog we fetched
-    // says this backend exposes a >=1M context window for GPT-5.4.
-    if get_cached_context_limit("gpt-5.4").unwrap_or_default() >= 1_000_000 {
-        if let Some(index) = models.iter().position(|model| model == "gpt-5.4") {
-            models.insert(index + 1, "gpt-5.4[1m]".to_string());
-        } else {
-            models.push("gpt-5.4[1m]".to_string());
-        }
-    }
-
-    models
+    // 零内置模型配置：OpenAI 平台 API 已移除，静态模型列表不再提供。
+    Vec::new()
 }
 
 fn anthropic_static_model_ids() -> Vec<String> {
-    ALL_CLAUDE_MODELS.iter().map(|m| (*m).to_string()).collect()
+    // 零内置模型配置：Anthropic 平台 API 已移除，静态模型列表不再提供。
+    Vec::new()
 }
 
 fn model_ids_with_context_aliases(models: Vec<String>) -> Vec<String> {
@@ -696,18 +685,8 @@ pub fn openai_platform_api_key_configured() -> bool {
 }
 
 pub fn known_openai_model_ids() -> Vec<String> {
-    let mut models = cached_openai_model_ids().unwrap_or_else(openai_static_model_ids);
-    // GPT Pro models never appear in the ChatGPT/Codex OAuth catalog (they are
-    // platform-API-only), so a live OAuth catalog must not hide them when the
-    // user has an OPENAI_API_KEY that can actually reach them.
-    if openai_platform_api_key_configured() {
-        for pro in OPENAI_API_ONLY_PRO_MODELS {
-            if !models.iter().any(|model| model == pro) {
-                models.push((*pro).to_string());
-            }
-        }
-    }
-    models
+    // 零内置模型配置：OpenAI 平台 API 已移除，模型列表仅来自 API 发现的目录。
+    cached_openai_model_ids().unwrap_or_else(openai_static_model_ids)
 }
 
 pub fn note_openai_model_catalog_refresh_attempt() {
@@ -996,32 +975,6 @@ pub fn model_availability_for_account(model: &str) -> AccountModelAvailability {
         };
     }
 
-    // GPT Pro models are platform-API-only: the ChatGPT/Codex OAuth account
-    // snapshot never contains them, so judging them against it would report
-    // "not available for your account" to every OAuth user who also has a
-    // perfectly working OPENAI_API_KEY. Key presence is the real signal.
-    if is_openai_api_only_pro_model(model) {
-        return if openai_platform_api_key_configured() {
-            AccountModelAvailability {
-                state: AccountModelAvailabilityState::Available,
-                reason: None,
-                source: "api-key",
-                observed_at: None,
-            }
-        } else {
-            AccountModelAvailability {
-                state: AccountModelAvailabilityState::Unavailable,
-                reason: Some(
-                    "requires an OpenAI platform API key (OPENAI_API_KEY); \
-                     not available via ChatGPT/Codex OAuth"
-                        .to_string(),
-                ),
-                source: "api-key",
-                observed_at: None,
-            }
-        };
-    }
-
     if !account_model_cache_is_fresh() {
         return AccountModelAvailability {
             state: AccountModelAvailabilityState::Unknown,
@@ -1236,10 +1189,6 @@ pub fn provider_for_model_with_hint(
     let model = model.trim();
     if model.contains('@') {
         Some("openrouter")
-    } else if jcode_provider_core::model_id::matches_known_model(model, ALL_CLAUDE_MODELS) {
-        Some("claude")
-    } else if jcode_provider_core::model_id::matches_known_model(model, ALL_OPENAI_MODELS) {
-        Some("openai")
     } else if crate::provider::bedrock::BedrockProvider::is_bedrock_model_id(model) {
         Some("bedrock")
     } else if model.contains('/') {
