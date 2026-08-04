@@ -48,9 +48,9 @@ pub use catalog_routes::{
 pub use jcode_provider_core::attempt_tracker;
 pub use jcode_provider_core::cli_provider_arg_for_session_key;
 pub use jcode_provider_core::{
-    ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, CHEAPNESS_REFERENCE_INPUT_TOKENS,
-    CHEAPNESS_REFERENCE_OUTPUT_TOKENS, CredentialMode, DEFAULT_CONTEXT_LIMIT, EventStream,
-    JCODE_USER_AGENT, ModelCapabilities, ModelCatalogRefreshSummary, ModelRoute,
+    CHEAPNESS_REFERENCE_INPUT_TOKENS, CHEAPNESS_REFERENCE_OUTPUT_TOKENS, CredentialMode,
+    DEFAULT_CONTEXT_LIMIT, EventStream, JCODE_USER_AGENT, ModelCapabilities,
+    ModelCatalogRefreshSummary, ModelRoute,
     ModelRouteApiMethod, NativeCompactionResult, NativeToolResult, NativeToolResultSender,
     PremiumMode, Provider, RouteBillingKind, RouteCapabilityView, RouteCheapnessEstimate,
     RouteCostConfidence, RouteCostSource, RouteSelection, RuntimeKey, dedupe_model_routes,
@@ -1618,6 +1618,15 @@ impl Provider for MultiProvider {
     }
 
     fn model(&self) -> String {
+        // 配置驱动的默认模型：无内置厂商 fallback，全部走用户配置。
+        let config_default = || {
+            crate::config::config()
+                .provider
+                .default_model
+                .clone()
+                .filter(|model| !model.trim().is_empty())
+                .unwrap_or_default()
+        };
         match self.active_provider() {
             ActiveProvider::Claude => {
                 // Prefer anthropic if available
@@ -1626,21 +1635,21 @@ impl Provider for MultiProvider {
                 } else if let Some(claude) = self.claude_provider() {
                     claude.model()
                 } else {
-                    jcode_provider_core::DEFAULT_CLAUDE_MODEL.to_string()
+                    config_default()
                 }
             }
             ActiveProvider::OpenAI => self
                 .openai_provider()
                 .map(|o| o.model())
-                .unwrap_or_else(|| jcode_provider_core::DEFAULT_OPENAI_MODEL.to_string()),
+                .unwrap_or_else(config_default),
             ActiveProvider::Bedrock => self
                 .bedrock_provider()
                 .map(|o| o.model())
-                .unwrap_or_else(|| "anthropic.claude-3-5-sonnet-20241022-v2:0".to_string()),
+                .unwrap_or_else(config_default),
             ActiveProvider::OpenRouter => self
                 .active_openrouter_execution_provider()
                 .map(|o| o.model())
-                .unwrap_or_else(|| "anthropic/claude-sonnet-4".to_string()),
+                .unwrap_or_else(config_default),
         }
     }
 
@@ -1893,10 +1902,10 @@ impl Provider for MultiProvider {
     }
 
     fn available_models(&self) -> Vec<&'static str> {
-        let mut models = Vec::new();
-        models.extend_from_slice(ALL_CLAUDE_MODELS);
-        models.extend_from_slice(ALL_OPENAI_MODELS);
-        models
+        // 配置驱动模式：可用模型完全来自配置/API 发现的 openai-compatible
+        // profile（见 available_models_display / available_models_for_switching）。
+        // 不再返回内置厂商的静态模型列表。
+        Vec::new()
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
