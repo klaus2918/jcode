@@ -48,6 +48,270 @@ where
     }
 }
 
+/// Serialize the `providers` config section back out as a resonix-style
+/// top-level `[[providers]]` array of tables, preserving the array style on
+/// every `Config::save()` round-trip (matching DeepSeek-Reasonix).
+///
+/// The `toml` crate cannot derive `[[providers]]` array-of-tables output from a
+/// plain `Vec<Struct>` (it errors `UnsupportedType`), so the section is built
+/// explicitly as `toml::Value` trees and emitted through the value serializer.
+/// Ordering follows the `BTreeMap` key order (deterministic, alphabetical).
+///
+/// Round-trip rules:
+/// - Every `NamedProviderConfig` field is preserved (see `provider_to_value`).
+/// - `context_window` is hoisted provider-wide when all declared models share
+///   one value, then dropped per-model; otherwise it stays per-model.
+/// - Models that carry only an `id` render as a clean `models = ["a", "b"]`
+///   string array; models with extra fields render as `[[providers.models]]`
+///   tables. Both forms are accepted by `deserialize_array_models`.
+fn serialize_providers<S>(
+    providers: &BTreeMap<String, NamedProviderConfig>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let entries = providers
+        .iter()
+        .map(|(name, config)| provider_to_value(name, config))
+        .collect::<Vec<_>>();
+    toml::Value::Array(entries).serialize(serializer)
+}
+
+/// Convert one named provider into a `[[providers]]` array-entry table.
+fn provider_to_value(name: &str, config: &NamedProviderConfig) -> toml::Value {
+    let mut table = toml::map::Map::new();
+
+    table.insert("name".to_string(), toml::Value::String(name.to_string()));
+
+    let provider_type = match config.provider_type {
+        NamedProviderType::OpenAiCompatible => "openai-compatible",
+        NamedProviderType::OpenRouter => "open-router",
+    };
+    table.insert("type".to_string(), toml::Value::String(provider_type.to_string()));
+
+    // `api_format` renders as the resonix `kind` selector ("openai"/"anthropic").
+    // `OpenAiCompatible` is the default so it is omitted unless set differently.
+    if let Some(format) = config.api_format {
+        let kind = match format {
+            ProviderApiFormat::OpenAiCompatible => "openai",
+            ProviderApiFormat::Anthropic => "anthropic",
+        };
+        table.insert("kind".to_string(), toml::Value::String(kind.to_string()));
+    }
+
+    table.insert(
+        "base_url".to_string(),
+        toml::Value::String(config.base_url.clone()),
+    );
+
+    if let Some(model) = config.default_model.as_deref().filter(|m| !m.is_empty()) {
+        table.insert("model".to_string(), toml::Value::String(model.to_string()));
+    }
+
+    if let Some(key_env) = config.api_key_env.as_deref().filter(|k| !k.is_empty()) {
+        table.insert("api_key_env".to_string(), toml::Value::String(key_env.to_string()));
+    }
+
+    if let Some(proxy) = config.proxy.as_deref().filter(|p| !p.is_empty()) {
+        table.insert("proxy".to_string(), toml::Value::String(proxy.to_string()));
+    }
+
+    let auth = match config.auth {
+        NamedProviderAuth::Bearer => "bearer",
+        NamedProviderAuth::Header => "header",
+        NamedProviderAuth::None => "none",
+    };
+    table.insert("auth".to_string(), toml::Value::String(auth.to_string()));
+
+    if let Some(header) = config.auth_header.as_deref().filter(|h| !h.is_empty()) {
+        table.insert("auth_header".to_string(), toml::Value::String(header.to_string()));
+    }
+
+    if let Some(env_file) = config.env_file.as_deref().filter(|f| !f.is_empty()) {
+        table.insert("env_file".to_string(), toml::Value::String(env_file.to_string()));
+    }
+
+    // Inline API keys are deprecated but must not be lost on round-trip.
+    if let Some(key) = config.api_key.as_deref().filter(|k| !k.is_empty()) {
+        table.insert("api_key".to_string(), toml::Value::String(key.to_string()));
+    }
+
+    if let Some(requires) = config.requires_api_key {
+        table.insert("requires_api_key".to_string(), toml::Value::Boolean(requires));
+    }
+
+    if config.provider_routing {
+        table.insert("provider_routing".to_string(), toml::Value::Boolean(true));
+    }
+    if config.model_catalog {
+        table.insert("model_catalog".to_string(), toml::Value::Boolean(true));
+    }
+    if config.allow_provider_pinning {
+        table.insert("allow_provider_pinning".to_string(), toml::Value::Boolean(true));
+    }
+
+    if let Some(extra_body) = config.extra_body.as_ref() {
+        match toml::Value::try_from(extra_body.clone()) {
+            Ok(value) => {
+                table.insert("extra_body".to_string(), value);
+            }
+            Err(_) => {
+                // Non-TOML-representable JSON value; serialize as a JSON string
+                // so the data survives. `extra_body` re-parses either way.
+                table.insert(
+                    "extra_body".to_string(),
+                    toml::Value::String(extra_body.to_string()),
+                );
+            }
+        }
+    }
+
+    if let Some(supports) = config.supports_reasoning_effort {
+        table.insert(
+            "supports_reasoning_effort".to_string(),
+            toml::Value::Boolean(supports),
+        );
+    }
+
+    // Provider-wide context window: hoist when every model shares the same
+    // non-`None` value; otherwise keep windows on the model tables.
+    let shared_context = models_shared_context(&config.models);
+    if let Some(window) = shared_context {
+        table.insert(
+            "context_window".to_string(),
+            toml::Value::Integer(window as i64),
+        );
+    }
+
+    table.insert("models".to_string(), models_to_value(&config.models, shared_context));
+
+    toml::Value::Table(table)
+}
+
+/// The single `context_window` all models share, if any.
+fn models_shared_context(models: &[NamedProviderModelConfig]) -> Option<usize> {
+    let mut shared: Option<usize> = None;
+    for model in models {
+        match model.context_window {
+            Some(window) => match shared {
+                None => shared = Some(window),
+                Some(existing) if existing != window => return None,
+                _ => {}
+            },
+            None => return None,
+        }
+    }
+    shared
+}
+
+/// Render the `models` list: a clean `["a", "b"]` string array when every model
+/// carries only its `id`, otherwise `[[providers.models]]` tables.
+fn models_to_value(
+    models: &[NamedProviderModelConfig],
+    shared_context: Option<usize>,
+) -> toml::Value {
+    let all_simple = models
+        .iter()
+        .all(|model| model_is_simple(model, shared_context));
+
+    if all_simple {
+        let ids = models
+            .iter()
+            .map(|model| toml::Value::String(model.id.clone()))
+            .collect::<Vec<_>>();
+        return toml::Value::Array(ids);
+    }
+
+    let tables = models
+        .iter()
+        .map(|model| {
+            let mut table = toml::map::Map::new();
+            table.insert("id".to_string(), toml::Value::String(model.id.clone()));
+            if let Some(window) = model.context_window {
+                if shared_context != Some(window) {
+                    table.insert(
+                        "context_window".to_string(),
+                        toml::Value::Integer(window as i64),
+                    );
+                }
+            }
+            if !model.input.is_empty() {
+                let input = model
+                    .input
+                    .iter()
+                    .map(|v| toml::Value::String(v.clone()))
+                    .collect::<Vec<_>>();
+                table.insert("input".to_string(), toml::Value::Array(input));
+            }
+            insert_opt_bool(&mut table, "vision", model.vision);
+            insert_opt_bool(&mut table, "tools", model.tools);
+            insert_opt_str(&mut table, "reasoning_protocol", model.reasoning_protocol.as_deref());
+            if let Some(efforts) = model.supported_efforts.as_ref() {
+                let values = efforts
+                    .iter()
+                    .map(|v| toml::Value::String(v.clone()))
+                    .collect::<Vec<_>>();
+                table.insert("supported_efforts".to_string(), toml::Value::Array(values));
+            }
+            insert_opt_str(&mut table, "default_effort", model.default_effort.as_deref());
+            insert_opt_usize(&mut table, "output_window", model.output_window);
+            insert_opt_bool(&mut table, "temperature_supported", model.temperature_supported);
+            insert_opt_bool(&mut table, "fixed_sampling", model.fixed_sampling);
+            insert_opt_str(
+                &mut table,
+                "output_limit_field",
+                model.output_limit_field.as_deref(),
+            );
+            toml::Value::Table(table)
+        })
+        .collect::<Vec<_>>();
+
+    toml::Value::Array(tables)
+}
+
+/// A model is "simple" (renders as a bare id string) when it carries nothing
+/// beyond `id` and, at most, the context window that was hoisted provider-wide.
+fn model_is_simple(model: &NamedProviderModelConfig, shared_context: Option<usize>) -> bool {
+    if !model.input.is_empty()
+        || model.vision.is_some()
+        || model.tools.is_some()
+        || model.reasoning_protocol.is_some()
+        || model.supported_efforts.is_some()
+        || model.default_effort.is_some()
+        || model.output_window.is_some()
+        || model.temperature_supported.is_some()
+        || model.fixed_sampling.is_some()
+        || model.output_limit_field.is_some()
+    {
+        return false;
+    }
+    match model.context_window {
+        // A model window identical to the hoisted provider-wide window is
+        // implied and safe to drop.
+        Some(window) => shared_context == Some(window),
+        None => true,
+    }
+}
+
+fn insert_opt_bool(table: &mut toml::map::Map<String, toml::Value>, key: &str, value: Option<bool>) {
+    if let Some(value) = value {
+        table.insert(key.to_string(), toml::Value::Boolean(value));
+    }
+}
+
+fn insert_opt_str(table: &mut toml::map::Map<String, toml::Value>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|v| !v.is_empty()) {
+        table.insert(key.to_string(), toml::Value::String(value.to_string()));
+    }
+}
+
+fn insert_opt_usize(table: &mut toml::map::Map<String, toml::Value>, key: &str, value: Option<usize>) {
+    if let Some(value) = value {
+        table.insert(key.to_string(), toml::Value::Integer(value as i64));
+    }
+}
+
 /// One entry of a resonix-style top-level `[[providers]]` array table.
 #[derive(Deserialize)]
 struct NamedProviderArrayEntry {
@@ -81,7 +345,9 @@ struct NamedProviderArrayEntry {
 impl NamedProviderArrayEntry {
     fn into_config(self) -> NamedProviderConfig {
         let mut models = self.models;
-        if models.is_empty() && let Some(model) = &self.default_model {
+        if models.is_empty()
+            && let Some(model) = &self.default_model
+        {
             models.push(NamedProviderModelConfig {
                 id: model.clone(),
                 ..NamedProviderModelConfig::default()
@@ -605,7 +871,10 @@ pub struct Config {
     /// type = "openai-compatible"
     /// base_url = "https://llm.example.com/v1"
     /// api_key_env = "MY_GATEWAY_API_KEY"
-    #[serde(deserialize_with = "deserialize_providers")]
+    #[serde(
+        deserialize_with = "deserialize_providers",
+        serialize_with = "serialize_providers"
+    )]
     pub providers: BTreeMap<String, NamedProviderConfig>,
 
     /// Agent-specific model defaults
