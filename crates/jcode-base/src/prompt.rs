@@ -605,10 +605,10 @@ fn build_selfdev_prompt_for_context(context: SelfDevProductContext) -> String {
 pub fn build_session_context(working_dir: Option<&Path>) -> String {
     let mut lines = vec!["# Session Context".to_string()];
 
-    let now_utc = chrono::Utc::now();
-    lines.push(format!("Date: {}", now_utc.format("%Y-%m-%d")));
-    lines.push(format!("Time: {} UTC", now_utc.format("%H:%M:%S")));
-    lines.push("Timezone: UTC".to_string());
+    let now_local = chrono::Local::now();
+    lines.push(format!("Date: {}", now_local.format("%Y-%m-%d")));
+    lines.push(format!("Time: {}", now_local.format("%H:%M:%S")));
+    lines.push(format!("Timezone: UTC{}", now_local.format("%:z")));
     lines.push(format!("OS: {}", std::env::consts::OS));
     lines.push(format!("Architecture: {}", std::env::consts::ARCH));
     lines.push(format!(
