@@ -1019,12 +1019,12 @@ fn render_auth_doctor_markdown(provider_filter: Option<&str>) -> String {
             }
         },
         None => {
-            let configured = crate::provider_catalog::auth_status_login_providers()
+            let configured = crate::provider_catalog::auth_status_login_providers_filtered()
                 .into_iter()
                 .filter(|provider| status.assessment_for_provider(*provider).is_configured())
                 .collect::<Vec<_>>();
             if configured.is_empty() {
-                crate::provider_catalog::auth_status_login_providers().to_vec()
+                crate::provider_catalog::auth_status_login_providers_filtered().to_vec()
             } else {
                 configured
             }
@@ -1114,8 +1114,9 @@ mod tests {
             Some(Ok(AccountCommand::Doctor { provider_id: None }))
         ));
         assert!(matches!(
-            parse_account_command("/account openai doctor"),
-            Some(Ok(AccountCommand::Doctor { provider_id: Some(provider_id) })) if provider_id == "openai"
+            parse_account_command("/account openai-compatible doctor"),
+            Some(Ok(AccountCommand::Doctor { provider_id: Some(provider_id) }))
+                if provider_id == "openai-compatible"
         ));
     }
 
@@ -1142,10 +1143,10 @@ mod tests {
     #[test]
     fn render_auth_doctor_markdown_includes_recovery_steps() {
         let _guard = crate::storage::lock_test_env();
-        let markdown = render_auth_doctor_markdown(Some("openai"));
-        assert!(markdown.contains("OpenAI (openai)"));
+        let markdown = render_auth_doctor_markdown(Some("openai-compatible"));
+        assert!(markdown.contains("OpenAI-compatible (openai-compatible)"));
         assert!(markdown.contains("Next steps"));
-        assert!(markdown.contains("jcode login --provider openai"));
+        assert!(markdown.contains("jcode login --provider openai-compatible"));
         assert!(markdown.contains("Review current state: jcode auth status --json"));
     }
 }
