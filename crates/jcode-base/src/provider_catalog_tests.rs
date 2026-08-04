@@ -983,7 +983,14 @@ model_picker_providers = ["self-deepseek"]
         "generic openai-compatible login entry must survive the allowlist: {filtered:?}"
     );
     // Unrelated built-in providers are hidden.
-    for hidden in ["claude", "anthropic-api", "openai", "openrouter", "bedrock", "azure"] {
+    for hidden in [
+        "claude",
+        "anthropic-api",
+        "openai",
+        "openrouter",
+        "bedrock",
+        "azure",
+    ] {
         assert!(
             !filtered.iter().any(|p| p.id == hidden),
             "allowlist must hide built-in login provider '{hidden}': {filtered:?}"

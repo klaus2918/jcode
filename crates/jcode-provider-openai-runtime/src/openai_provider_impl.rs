@@ -686,9 +686,7 @@ impl Provider for OpenAIProvider {
             );
         }
         let availability = jcode_base::provider::model_availability_for_account(model);
-        if availability.state
-                == jcode_base::provider::AccountModelAvailabilityState::Unavailable
-        {
+        if availability.state == jcode_base::provider::AccountModelAvailabilityState::Unavailable {
             let detail =
                 jcode_base::provider::format_account_model_availability_detail(&availability)
                     .unwrap_or_else(|| "not available for your account".to_string());

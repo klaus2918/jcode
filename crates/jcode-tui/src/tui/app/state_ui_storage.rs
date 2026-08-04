@@ -669,5 +669,4 @@ mod tests {
             "attachments must survive compaction"
         );
     }
-
 }

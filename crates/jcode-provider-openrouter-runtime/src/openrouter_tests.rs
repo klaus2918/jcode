@@ -935,7 +935,12 @@ fn autodetected_profile_seeds_default_model_and_cache_namespace() {
     let compat = jcode_base::provider_catalog::resolve_openai_compatible_profile(
         jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
     );
-    write_test_api_key(&temp, &compat.env_file, &compat.api_key_env, "test-compat-key");
+    write_test_api_key(
+        &temp,
+        &compat.env_file,
+        &compat.api_key_env,
+        "test-compat-key",
+    );
 
     let provider = OpenRouterProvider::new().expect("provider");
     assert_eq!(provider.model.blocking_read().clone(), "openai-compatible");

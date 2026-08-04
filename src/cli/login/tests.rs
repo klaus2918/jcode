@@ -63,4 +63,3 @@ fn uses_scriptable_flow_detects_dash_input_without_consuming_stdin() {
     );
     assert!(options.has_provided_input());
 }
-

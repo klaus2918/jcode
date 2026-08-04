@@ -686,8 +686,7 @@ fn list_cli_providers_includes_auto_and_openai() {
     let providers = super::report_info::list_cli_providers();
     assert!(providers.iter().any(|provider| provider.id == "auto"));
     assert!(providers.iter().any(|provider| {
-        provider.id == "openai-compatible"
-            && provider.display_name == "OpenAI-compatible"
+        provider.id == "openai-compatible" && provider.display_name == "OpenAI-compatible"
     }));
 }
 

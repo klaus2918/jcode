@@ -171,7 +171,10 @@ fn resonix_array_config_round_trips_advanced_fields() {
     assert_eq!(original.requires_api_key, round.requires_api_key);
     assert_eq!(original.provider_routing, round.provider_routing);
     assert_eq!(original.model_catalog, round.model_catalog);
-    assert_eq!(original.allow_provider_pinning, round.allow_provider_pinning);
+    assert_eq!(
+        original.allow_provider_pinning,
+        round.allow_provider_pinning
+    );
     assert_eq!(original.models.len(), round.models.len());
     assert_eq!(round.models[0].id, "claude-sonnet-4-6");
     assert_eq!(round.models[0].context_window, Some(200_000));

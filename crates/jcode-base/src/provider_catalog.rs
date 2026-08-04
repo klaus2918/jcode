@@ -1008,6 +1008,7 @@ fn dedup_sources(sources: Vec<(String, String)>) -> Vec<(String, String)> {
 /// - the generic `openai-compatible` entry (how a named profile gets its API
 ///   key configured), and
 /// - any built-in login provider that the allowlist explicitly names.
+///
 /// A missing/empty allowlist leaves the list unchanged (default behavior).
 pub fn filter_login_providers_by_allowlist(
     providers: Vec<LoginProviderDescriptor>,

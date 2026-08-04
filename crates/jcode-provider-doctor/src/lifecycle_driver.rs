@@ -64,8 +64,10 @@ impl AuthLifecycleSpec {
             jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
             auth_path,
         );
-        spec.catalog_models_after_auth =
-            vec!["fixture-model".to_string(), "fixture-alternate-model".to_string()];
+        spec.catalog_models_after_auth = vec![
+            "fixture-model".to_string(),
+            "fixture-alternate-model".to_string(),
+        ];
         spec.selected_model_override = None;
         spec
     }
@@ -736,9 +738,11 @@ mod tests {
             .expect("lifecycle result");
 
         result.assert_success(&spec);
-        assert!(result
-            .transcript_text()
-            .contains("**OpenAI-compatible API Key**"));
+        assert!(
+            result
+                .transcript_text()
+                .contains("**OpenAI-compatible API Key**")
+        );
         assert!(
             result
                 .transcript_text()
@@ -895,9 +899,11 @@ mod tests {
 
             result.assert_success(&spec);
             if auth_path.shows_paste_prompt() {
-                assert!(result
-                    .transcript_text()
-                    .contains("**OpenAI-compatible API Key**"));
+                assert!(
+                    result
+                        .transcript_text()
+                        .contains("**OpenAI-compatible API Key**")
+                );
             } else {
                 assert!(
                     result
@@ -1107,7 +1113,10 @@ mod tests {
 
         assert_eq!(
             picker.provider_entries,
-            vec!["fixture-model".to_string(), "fixture-alternate-model".to_string()]
+            vec![
+                "fixture-model".to_string(),
+                "fixture-alternate-model".to_string()
+            ]
         );
         assert_eq!(
             picker.switch_target.as_deref(),
@@ -1242,7 +1251,6 @@ mod tests {
             "unexpected assertion failure: {order_message}"
         );
     }
-
 
     #[tokio::test(flavor = "current_thread")]
     async fn opencode_zen_live_opt_in_tool_call_smoke() {

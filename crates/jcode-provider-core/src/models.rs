@@ -27,7 +27,7 @@ pub const ALL_CLAUDE_MODELS: &[&str] = &[
 
 /// Available OpenAI models used by model lists and provider routing.
 /// The list is curated best-first; position 0 is the quality-first default.
-
+///
 /// GPT Pro reasoning models. These are exposed only on the OpenAI platform
 /// API (`api.openai.com` with an `OPENAI_API_KEY`); the ChatGPT/Codex OAuth
 /// backend rejects them ("not supported when using Codex with a ChatGPT
