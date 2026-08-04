@@ -563,7 +563,7 @@ pub(super) fn list_cli_providers() -> Vec<ProviderListEntry> {
     // `auto` 自动探测。厂商名只存在于注册表数据，核心不硬编码名单。
     // AutoImport 是登录菜单动作（导入其他工具的凭据），不是模型 provider，
     // 不在 `--provider` 列表中展示。
-    let mut entries = crate::provider_catalog::cli_login_providers()
+    let mut entries = crate::provider_catalog::cli_login_providers_filtered()
         .into_iter()
         .filter(|provider| {
             !matches!(
