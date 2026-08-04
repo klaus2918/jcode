@@ -1254,29 +1254,14 @@ impl App {
     fn onboarding_login_suggestion_provider() -> Option<&'static str> {
         use crate::auth::AuthState;
         let status = crate::auth::AuthStatus::check_fast();
-        // An expired login is the strongest signal: the user already picked
-        // this provider once, so re-login is the fastest path back to working.
-        let states = [
-            ("claude", status.anthropic.state),
-            ("openai", status.openai),
-            ("openrouter", status.openrouter),
-        ];
-        for (id, state) in states {
+        // Config-driven mode: only allowlisted providers are relevant. An
+        // expired login is the strongest signal (the user already picked this
+        // provider once), so re-login is the fastest path back to working.
+        for provider in crate::provider_catalog::auth_status_login_providers_filtered() {
+            let state = status.state_for_provider(provider);
+            let id: &'static str = provider.id;
             if matches!(state, AuthState::Expired) {
                 return Some(id);
-            }
-        }
-        // Otherwise suggest a provider whose credentials another CLI on this
-        // machine already holds, so the import/login completes without any
-        // new sign-up.
-        for cli in super::onboarding_flow::detect_external_cli_oauths() {
-            let id = match cli {
-                ExternalCli::Codex => Some("openai"),
-                ExternalCli::ClaudeCode => Some("claude"),
-                ExternalCli::Pi | ExternalCli::OpenCode => None,
-            };
-            if id.is_some() {
-                return id;
             }
         }
         None
@@ -1291,26 +1276,29 @@ impl App {
     fn onboarding_other_provider_rows(skip: Option<&str>) -> (Vec<String>, Vec<String>) {
         use crate::auth::AuthState;
         let status = crate::auth::AuthStatus::check_fast();
-        // (display name, provider-key, state)
-        let providers: [(&str, &str, AuthState); 4] = [
-            ("Anthropic (Claude)", "anthropic", status.anthropic.state),
-            ("OpenAI", "openai", status.openai),
-            ("Jcode subscription", "jcode", status.jcode),
-            ("OpenRouter", "openrouter", status.openrouter),
-        ];
-        // Normalize the default provider's key so aliases like "claude" map to
-        // the canonical "anthropic" bucket we list below.
-        let skip = skip.map(|s| {
-            let s = s.trim().to_ascii_lowercase();
-            match s.as_str() {
-                "claude" | "claude cli" => "anthropic".to_string(),
-                other => other.to_string(),
-            }
-        });
+        // Config-driven mode: only allowlisted providers appear in the
+        // readiness summary, so removed built-ins never show up here.
+        let providers = crate::provider_catalog::auth_status_login_providers_filtered()
+            .into_iter()
+            .filter(|provider| {
+                !matches!(
+                    provider.target,
+                    crate::provider_catalog::LoginProviderTarget::AutoImport
+                )
+            })
+            .map(|provider| {
+                (
+                    provider.display_name.to_string(),
+                    provider.id.to_string(),
+                    status.state_for_provider(provider),
+                )
+            })
+            .collect::<Vec<_>>();
+        let skip = skip.map(|s| s.trim().to_ascii_lowercase());
         let mut ready = Vec::new();
         let mut attention = Vec::new();
         for (name, key, state) in providers {
-            if skip.as_deref() == Some(key) {
+            if skip.as_deref() == Some(key.as_str()) {
                 continue;
             }
             match state {
