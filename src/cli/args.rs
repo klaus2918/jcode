@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+﻿use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum GoogleAccessTierArg {
@@ -172,72 +172,6 @@ pub(crate) enum Command {
 
         /// The message to send
         message: String,
-    },
-
-    /// Login to a provider via OAuth, API key, or local credentials
-    Login {
-        /// Provider to log in to. Equivalent to --provider for this command, e.g. `jcode login google`.
-        // Distinct clap id: the global `--provider` flag also has id "provider";
-        // sharing the id makes clap drop the flag inside `login` (so
-        // `jcode login --provider x` errors) and propagate the global default
-        // into this positional.
-        #[arg(id = "login_provider", value_name = "PROVIDER")]
-        provider: Option<String>,
-
-        /// Account label for multi-account support (stored labels are auto-numbered)
-        #[arg(long, short = 'a')]
-        account: Option<String>,
-
-        /// Do not try to open a browser locally. Useful over SSH or on headless machines.
-        #[arg(long, alias = "headless")]
-        no_browser: bool,
-
-        /// Print a script-friendly auth URL and persist temporary login state for later completion.
-        #[arg(long, conflicts_with_all = ["callback_url", "auth_code"])]
-        print_auth_url: bool,
-
-        /// Complete a previously printed auth flow using a full callback URL or query string.
-        #[arg(long, conflicts_with = "auth_code")]
-        callback_url: Option<String>,
-
-        /// Complete a previously printed auth flow using a provider-issued authorization code.
-        #[arg(long, conflicts_with = "callback_url")]
-        auth_code: Option<String>,
-
-        /// Emit machine-readable JSON for script-friendly login flows.
-        #[arg(long)]
-        json: bool,
-
-        /// Resume a pending scriptable login flow that does not require callback/code input.
-        #[arg(long, conflicts_with_all = ["print_auth_url", "callback_url", "auth_code"])]
-        complete: bool,
-
-        /// Save credentials without running the post-login live provider validation.
-        /// Useful for offline setup, CI, or when entering credentials before network access is available.
-        #[arg(long)]
-        no_validate: bool,
-
-        /// Gmail/Google access tier for non-interactive flows. Defaults to full.
-        #[arg(long, value_enum)]
-        google_access_tier: Option<GoogleAccessTierArg>,
-
-        /// OpenAI-compatible API base URL. Used with --provider openai-compatible/custom profiles.
-        #[arg(long)]
-        api_base: Option<String>,
-
-        /// OpenAI-compatible API key. If omitted, jcode prompts securely when needed.
-        #[arg(long)]
-        api_key: Option<String>,
-
-        /// Environment variable name to store/use for an OpenAI-compatible API key.
-        #[arg(long)]
-        api_key_env: Option<String>,
-    },
-
-    /// Log in to and manage your Jcode account
-    Account {
-        #[command(subcommand)]
-        action: AccountCommand,
     },
 
     /// Run in simple REPL mode (no TUI)
@@ -453,26 +387,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: RestartCommand,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum AccountCommand {
-    /// Open browser-based device authorization and wait for plan activation
-    Login {
-        /// Do not open a browser automatically; print the public approval URL instead
-        #[arg(long, alias = "headless")]
-        no_browser: bool,
-    },
-    /// Show canonical account, plan, and usage status from /v1/me
-    Status {
-        /// Emit JSON instead of human-readable output
-        #[arg(long)]
-        json: bool,
-    },
-    /// Open the public Jcode account management page
-    Manage,
-    /// Revoke the current key when reachable, then securely clear local state
-    Logout,
 }
 
 #[derive(Subcommand, Debug)]

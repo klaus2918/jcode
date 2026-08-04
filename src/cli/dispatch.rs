@@ -1,4 +1,4 @@
-#![cfg_attr(test, allow(clippy::await_holding_lock))]
+﻿#![cfg_attr(test, allow(clippy::await_holding_lock))]
 
 use anyhow::Result;
 use std::io::IsTerminal;
@@ -204,58 +204,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             )
             .await?;
         }
-        Some(Command::Login {
-            provider: login_provider,
-            account,
-            no_browser,
-            print_auth_url,
-            callback_url,
-            auth_code,
-            json,
-            complete,
-            no_validate,
-            google_access_tier,
-            api_base,
-            api_key,
-            api_key_env,
-        }) => {
-            login::run_login(
-                login_provider
-                    .as_deref()
-                    .unwrap_or(args.provider.as_deref().unwrap_or("auto")),
-                account.as_deref(),
-                login::LoginOptions {
-                    no_browser,
-                    print_auth_url,
-                    callback_url,
-                    auth_code,
-                    json,
-                    complete,
-                    no_validate,
-                    google_access_tier: google_access_tier.map(|tier| match tier {
-                        super::args::GoogleAccessTierArg::Full => {
-                            auth::google::GmailAccessTier::Full
-                        }
-                        super::args::GoogleAccessTierArg::Readonly => {
-                            auth::google::GmailAccessTier::ReadOnly
-                        }
-                    }),
-                    openai_compatible_api_base: api_base,
-                    openai_compatible_api_key: api_key,
-                    openai_compatible_api_key_env: api_key_env,
-                    openai_compatible_default_model: args.model.clone(),
-                },
-            )
-            .await?;
-        }
-        Some(Command::Account { action }) => match action {
-            super::args::AccountCommand::Login { no_browser } => {
-                account::run_login(no_browser).await?
-            }
-            super::args::AccountCommand::Status { json } => account::run_status(json).await?,
-            super::args::AccountCommand::Manage => account::run_manage()?,
-            super::args::AccountCommand::Logout => account::run_logout().await?,
-        },
         Some(Command::Repl) => {
             let (provider, registry) = provider_init::init_provider_and_registry(
                 args.provider.as_deref().unwrap_or("auto"),
@@ -675,7 +623,7 @@ async fn run_default_command(args: Args) -> Result<()> {
     let already_in_selfdev = crate::cli::selfdev::client_selfdev_requested();
 
     if in_jcode_repo && !already_in_selfdev && !args.no_selfdev {
-        output::stderr_info("📍 Detected jcode repository - enabling self-dev mode");
+        output::stderr_info("馃搷 Detected jcode repository - enabling self-dev mode");
         output::stderr_info("   Using shared server with self-dev session mode");
         output::stderr_info("   (use --no-selfdev to disable auto-detection)");
         output::stderr_blank_line();
@@ -975,20 +923,11 @@ pub(crate) async fn maybe_prompt_server_bootstrap_login(provider_choice: &str) -
         return Ok(());
     }
 
-    if auth::AuthStatus::has_any_untrusted_external_auth() {
-        let _ = provider_init::maybe_run_external_auth_auto_import_flow().await?;
-        if detect_bootstrap_credentials().await.has_any {
-            return Ok(());
-        }
-    }
-
-    let provider = provider_init::prompt_login_provider_selection(
-        &provider_catalog::server_bootstrap_login_providers(),
-        "No credentials found. Let's log in!\n\nChoose a provider:",
-    )?;
-    login::run_login_provider(provider, None, login::LoginOptions::default()).await?;
-    provider_init::apply_login_provider_profile_env(provider);
-    output::stderr_blank_line();
+    // 配置驱动模式：不再有交互式登录。无凭据时提示通过
+    // `jcode provider add` 配置 `[[providers]]` 接入模型。
+    output::stderr_info(
+        "No configured providers found. Add a model provider with:\n  jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>",
+    );
 
     Ok(())
 }
