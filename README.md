@@ -364,7 +364,7 @@ There are two ways to set one up:
   jcode login --provider gemini-api
   ```
 
-  Built-in OpenAI-compatible profile ids are registry-driven and include: `openrouter`, `anthropic`, `openai-native`, `gemini-api`, `lmstudio` (local), `ollama` (local), and `openai-compatible` (custom endpoint). Each profile only sets the endpoint and key variable; you still pick the model with `/model` (or `--model`). Run `jcode login` with no provider to see the interactive list. jcode never hardcodes vendor names — any other service is a `[providers.<name>]` config entry via `jcode provider add` (below).
+  Built-in OpenAI-compatible profile ids are registry-driven and include: `openrouter`, `anthropic`, `openai-native`, `gemini-api`, `lmstudio` (local), `ollama` (local), and `openai-compatible` (custom endpoint). Each profile only sets the endpoint and key variable; you still pick the model with `/model` (or `--model`). Run `jcode login` with no provider to see the interactive list. jcode never hardcodes vendor names — any other service is a `[providers.<name>]` config entry (or the equivalent resonix-style `[[providers]]` array entry) via `jcode provider add` (below).
 
 - **Any other endpoint** — point jcode at an arbitrary OpenAI-compatible API (hosted or local) with `jcode login --provider openai-compatible` or the scriptable `jcode provider add` command described below.
 
@@ -430,32 +430,49 @@ Useful flags:
 - `--overwrite`: replace an existing profile of the same name.
 - `--model-catalog`: use the endpoint's `/models` response in addition to configured models.
 
-The generated profile can also be edited manually in `~/.jcode/config.toml`:
+The generated profile can also be edited manually in `~/.jcode/config.toml`. Two equivalent styles are accepted — the concise resonix-style top-level `[[providers]]` array (recommended) and the classic `[providers.<name>]` table:
 
 ```toml
 [provider]
 default_provider = "my-api"
 default_model = "my-model-id"
 
-[providers.my-api]
-type = "openai-compatible"
+# Resonix style: one `[[providers]]` array entry per endpoint.
+# `kind` = wire protocol, `model` = default model, `models` = model list.
+# API keys are referenced by env-var name only (`api_key_env`), never stored here.
+[[providers]]
+name = "my-api"
+type = "openai-compatible"   # or "open-router"
+kind = "openai"              # or "anthropic"
 base_url = "https://llm.example.com/v1"
+model = "my-model-id"
 api_key_env = "JCODE_PROVIDER_MY_API_API_KEY"
 env_file = "provider-my-api.env"
-default_model = "my-model-id"
-
-[[providers.my-api.models]]
-id = "my-model-id"
 context_window = 128000
+models = ["my-model-id"]
 ```
+
+Both styles parse to the same internal profile, and jcode preserves the array
+style across every config save — you can keep hand-written `[[providers]]`
+configs without them being rewritten to `[providers.<name>]` tables.
 
 ##### Extra request-body fields (`extra_body`)
 
 Some OpenAI-compatible backends require non-standard top-level request fields. For example, NVIDIA NIM DeepSeek-V4 reasoning models (`deepseek-ai/deepseek-v4-flash`, `deepseek-ai/deepseek-v4-pro`) only enable thinking when the request includes `chat_template_kwargs`; without it they reply without reasoning (or, for some deployments, hang). jcode lets you inject arbitrary top-level fields two ways.
 
-1. Per named profile, via `extra_body` in `config.toml` (a TOML table merged verbatim into the JSON body):
+1. Per named profile, via `extra_body` in `config.toml` (a TOML table merged verbatim into the JSON body). In a resonix `[[providers]]` array entry, `extra_body` is an inline table; in a `[providers.<name>]` table it is a nested section:
 
    ```toml
+   # Resonix array style (recommended)
+   [[providers]]
+   name = "my-nim"
+   type = "openai-compatible"
+   base_url = "https://integrate.api.nvidia.com/v1"
+   model = "deepseek-ai/deepseek-v4-flash"
+   api_key_env = "NVIDIA_API_KEY"
+   extra_body = { chat_template_kwargs = { thinking = true, reasoning_effort = "high" } }
+
+   # Classic table style (equivalent)
    [providers.my-nim]
    type = "openai-compatible"
    base_url = "https://integrate.api.nvidia.com/v1"
