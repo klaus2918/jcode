@@ -341,8 +341,9 @@ async fn ensure_oauth_preflight(
     Ok(())
 }
 
-/// Quality-first default shared with model routing and first-run selection.
-const DEFAULT_MODEL: &str = jcode_provider_core::DEFAULT_CLAUDE_MODEL;
+/// 零内置模型配置：Anthropic 平台不再提供内置默认模型，fallback 为空串
+/// （配置驱动的 named provider 通过 profile.default_model 提供）。
+const DEFAULT_MODEL: &str = "";
 
 /// API version header
 const API_VERSION: &str = "2023-06-01";
@@ -1998,30 +1999,14 @@ fn anthropic_model_is_retired(model: &str) -> bool {
         .any(|marker| normalized.contains(marker))
 }
 
-/// Quality rank for an Anthropic model id: lower is better. Uses the curated
-/// flagship-first `ALL_CLAUDE_MODELS` order (Opus > Sonnet > Haiku > older), so
-/// fallback never silently downgrades to a cheaper tier when a stronger model is
-/// available. Unknown/uncurated ids sort after every curated one but before
-/// retired models, which sort last.
+/// Quality rank for an Anthropic model id: lower is better. 零内置模型配置：
+/// 不再有内置 curated 排序，所有非 retired 模型保持 catalog 顺序，retired
+/// 模型排最后。
 fn anthropic_model_quality_rank(model: &str) -> usize {
     if anthropic_model_is_retired(model) {
         return usize::MAX;
     }
-    let normalized = jcode_provider_core::model_id::strip_date_suffix(
-        &jcode_provider_core::model_id::canonical(model),
-    )
-    .to_string();
-    jcode_provider_core::ALL_CLAUDE_MODELS
-        .iter()
-        .position(|candidate| {
-            jcode_provider_core::model_id::strip_date_suffix(
-                &jcode_provider_core::model_id::canonical(candidate),
-            ) == normalized
-        })
-        // Curated models keep their position; unknown-but-not-retired models sort
-        // just after the curated list so they only win when nothing curated is
-        // available.
-        .unwrap_or(jcode_provider_core::ALL_CLAUDE_MODELS.len())
+    0
 }
 
 /// Parse a server-recommended replacement model from a 404 body, e.g.

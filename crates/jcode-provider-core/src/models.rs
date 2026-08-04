@@ -1,81 +1,3 @@
-/// Quality-first default for Claude-capable routes.
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5";
-
-/// Quality-first default for OpenAI-capable routes.
-pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5.6-sol";
-
-/// Available Claude models used by model lists and provider routing.
-///
-/// NOTE: The Mythos preview family was retired by Anthropic and 404s, so it is
-/// intentionally NOT listed here. `claude-fable-5` was briefly retired but is
-/// live again. The list is curated best-first; position 0 is the flagship
-/// used for post-login default selection.
-pub const ALL_CLAUDE_MODELS: &[&str] = &[
-    DEFAULT_CLAUDE_MODEL,
-    "claude-fable-5",
-    "claude-opus-4-8",
-    "claude-opus-4-6",
-    "claude-opus-4-6[1m]",
-    "claude-sonnet-5",
-    "claude-sonnet-4-6",
-    "claude-sonnet-4-6[1m]",
-    "claude-haiku-4-5",
-    "claude-opus-4-5",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-20250514",
-];
-
-/// Available OpenAI models used by model lists and provider routing.
-/// The list is curated best-first; position 0 is the quality-first default.
-///
-/// GPT Pro reasoning models. These are exposed only on the OpenAI platform
-/// API (`api.openai.com` with an `OPENAI_API_KEY`); the ChatGPT/Codex OAuth
-/// backend rejects them ("not supported when using Codex with a ChatGPT
-/// account"). Keep them in their own list so the OAuth-scoped Codex catalog
-/// can never hide them from the picker and so route building can mark them
-/// API-key-only.
-pub const OPENAI_API_ONLY_PRO_MODELS: &[&str] =
-    &["gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.2-pro", "gpt-5-pro"];
-
-/// True when `model` is a GPT Pro model that only works with an OpenAI
-/// platform API key (never ChatGPT/Codex OAuth).
-pub fn is_openai_api_only_pro_model(model: &str) -> bool {
-    let trimmed = model.trim();
-    OPENAI_API_ONLY_PRO_MODELS
-        .iter()
-        .any(|pro| trimmed.eq_ignore_ascii_case(pro))
-        || (trimmed.len() > 4
-            && OPENAI_API_ONLY_PRO_MODELS
-                .iter()
-                .any(|pro| trimmed.to_ascii_lowercase().starts_with(&format!("{pro}-"))))
-}
-
-pub const ALL_OPENAI_MODELS: &[&str] = &[
-    DEFAULT_OPENAI_MODEL,
-    "gpt-5.5-pro",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-pro",
-    "gpt-5.3-codex",
-    "gpt-5.3-codex-spark",
-    "gpt-5.2-chat-latest",
-    "gpt-5.2-codex",
-    "gpt-5.2-pro",
-    "gpt-5.1-codex-mini",
-    "gpt-5.1-codex-max",
-    "gpt-5.2",
-    "gpt-5.1-chat-latest",
-    "gpt-5.1",
-    "gpt-5.1-codex",
-    "gpt-5-chat-latest",
-    "gpt-5-codex",
-    "gpt-5-codex-mini",
-    "gpt-5-pro",
-    "gpt-5-mini",
-    "gpt-5-nano",
-    "gpt-5",
-];
-
 /// Default context window size when model-specific data isn't known.
 pub const DEFAULT_CONTEXT_LIMIT: usize = 200_000;
 
@@ -167,10 +89,6 @@ pub fn provider_for_model_with_hint(
     let canonical = crate::model_id::canonical(model);
     if canonical.contains('@') {
         Some("openrouter")
-    } else if crate::model_id::matches_known_model(&canonical, ALL_CLAUDE_MODELS) {
-        Some("claude")
-    } else if crate::model_id::matches_known_model(&canonical, ALL_OPENAI_MODELS) {
-        Some("openai")
     } else if canonical.contains('/') {
         Some("openrouter")
     } else if canonical.starts_with("claude-") {
@@ -458,39 +376,9 @@ pub fn context_limit_for_model(model: &str) -> Option<usize> {
     context_limit_for_model_with_provider(model, None)
 }
 
-/// Normalize a Copilot-style model name to the canonical form used by our
-/// provider model lists. Copilot uses dots in version numbers (e.g.
-/// `claude-opus-4.6`) while canonical lists use hyphens (`claude-opus-4-6`).
-/// Returns None if no normalization is needed (model already canonical or unknown).
-pub fn normalize_copilot_model_name(model: &str) -> Option<&'static str> {
-    for canonical in ALL_CLAUDE_MODELS.iter().chain(ALL_OPENAI_MODELS.iter()) {
-        if *canonical == model {
-            return None;
-        }
-    }
-    let normalized = model.replace('.', "-");
-    ALL_CLAUDE_MODELS
-        .iter()
-        .chain(ALL_OPENAI_MODELS.iter())
-        .find(|canonical| **canonical == normalized)
-        .copied()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn quality_first_defaults_are_first_in_curated_model_orders() {
-        assert_eq!(
-            ALL_CLAUDE_MODELS.first().copied(),
-            Some(DEFAULT_CLAUDE_MODEL)
-        );
-        assert_eq!(
-            ALL_OPENAI_MODELS.first().copied(),
-            Some(DEFAULT_OPENAI_MODEL)
-        );
-    }
 
     #[test]
     fn bare_k3_resolves_globally_to_one_million_context() {
@@ -780,29 +668,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn normalizes_copilot_model_names() {
-        assert_eq!(
-            normalize_copilot_model_name("claude-opus-4.6"),
-            Some("claude-opus-4-6")
-        );
-        assert_eq!(normalize_copilot_model_name("claude-opus-4-6"), None);
-    }
-
-    #[test]
-    fn classifies_api_only_pro_models() {
-        assert!(is_openai_api_only_pro_model("gpt-5.5-pro"));
-        assert!(is_openai_api_only_pro_model("gpt-5-pro"));
-        assert!(is_openai_api_only_pro_model(" GPT-5.4-PRO "));
-        // Dated snapshots of a pro model count too.
-        assert!(is_openai_api_only_pro_model("gpt-5.5-pro-2026-04-23"));
-        // Non-pro and near-miss ids do not.
-        assert!(!is_openai_api_only_pro_model("gpt-5.5"));
-        assert!(!is_openai_api_only_pro_model("gpt-5.6-sol"));
-        assert!(!is_openai_api_only_pro_model("gemini-2.5-pro"));
-        // Every listed pro model classifies as pro.
-        for pro in OPENAI_API_ONLY_PRO_MODELS {
-            assert!(is_openai_api_only_pro_model(pro));
-        }
-    }
 }
