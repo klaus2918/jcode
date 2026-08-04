@@ -3,7 +3,7 @@ use crate::auth::{AuthState, AuthStatus};
 use super::pricing::cheapness_for_route;
 use super::registry::ProviderRegistry;
 use super::{
-    ALL_OPENAI_MODELS, AccountModelAvailabilityState, ModelRoute, MultiProvider, Provider,
+    AccountModelAvailabilityState, ModelRoute, MultiProvider, Provider,
     anthropic_api_key_route_availability, anthropic_oauth_route_availability, bedrock,
     build_anthropic_oauth_route, build_openai_api_key_route, build_openai_oauth_route,
     build_openrouter_auto_route, build_openrouter_endpoint_route,
@@ -39,23 +39,6 @@ pub fn simplified_model_routes_for_picker(
 
     for model in display_models {
         if !model.contains('/') && provider_for_model(&model) == Some("openai") {
-            // Platform-API-only GPT Pro models: never advertise an OAuth route.
-            if jcode_provider_core::is_openai_api_only_pro_model(&model) {
-                routes.push(ModelRoute {
-                    capability: route_capability(&model),
-                    model: model.clone(),
-                    provider: "OpenAI".to_string(),
-                    api_method: "openai-api-key".to_string(),
-                    available: auth.openai_has_api_key,
-                    detail: if auth.openai_has_api_key {
-                        String::new()
-                    } else {
-                        "requires OPENAI_API_KEY".to_string()
-                    },
-                    cheapness: None,
-                });
-                continue;
-            }
             if auth.openai_has_oauth {
                 routes.push(ModelRoute {
                     capability: route_capability(&model),
@@ -395,24 +378,6 @@ fn append_openai_routes(
                 }
             }
         };
-        // GPT Pro models are platform-API-only: never offer an OAuth route
-        // for them (the Codex backend rejects them for ChatGPT accounts).
-        if jcode_provider_core::is_openai_api_only_pro_model(&model) {
-            if openai_auth.openai_has_api_key {
-                routes.push(build_openai_api_key_route(
-                    &model,
-                    provider.openai_provider().is_some(),
-                    String::new(),
-                ));
-            } else {
-                routes.push(build_openai_api_key_route(
-                    &model,
-                    false,
-                    "requires OPENAI_API_KEY",
-                ));
-            }
-            continue;
-        }
         if openai_auth.openai_has_oauth {
             routes.push(build_openai_oauth_route(&model, available, detail.clone()));
         }
@@ -708,24 +673,6 @@ fn append_openrouter_alternative_routes(
             ));
         }
     }
-
-    for model in ALL_OPENAI_MODELS {
-        let or_model = format!("openai/{}", model);
-        if let Some((endpoints, _)) = openrouter::load_endpoints_disk_cache_public(&or_model) {
-            stats.endpoint_cache_hits += 1;
-            for ep in &endpoints {
-                stats.endpoint_routes += 1;
-                routes.push(build_openrouter_endpoint_route(model, ep, true, None));
-            }
-        } else if openrouter::standard_catalog_lists_model(&or_model) != Some(false) {
-            // Skip fallback routes for models OpenRouter definitively does not
-            // serve (e.g. openai/gpt-5.3-codex-spark) so the picker never
-            // offers a route that would 400 at request time.
-            routes.push(build_openrouter_fallback_provider_route(
-                model, &or_model, "OpenAI",
-            ));
-        }
-    }
 }
 
 /// Count routes per provider label (lowercased, spaces removed) so the catalog
@@ -910,29 +857,6 @@ pub fn remote_model_routes_fallback(
                 });
                 added_any = true;
             }
-        }
-
-        if jcode_provider_core::model_id::matches_known_model(model, ALL_OPENAI_MODELS) {
-            let availability = model_availability_for_account(model);
-            let (available, detail) = if auth.openai == AuthState::NotConfigured {
-                (false, "no credentials".to_string())
-            } else {
-                match availability.state {
-                    AccountModelAvailabilityState::Available => (true, String::new()),
-                    AccountModelAvailabilityState::Unavailable => (
-                        false,
-                        format_account_model_availability_detail(&availability)
-                            .unwrap_or_else(|| "not available".to_string()),
-                    ),
-                    AccountModelAvailabilityState::Unknown => (
-                        true,
-                        format_account_model_availability_detail(&availability)
-                            .unwrap_or_else(|| "availability unknown".to_string()),
-                    ),
-                }
-            };
-            routes.push(build_openai_oauth_route(model, available, detail));
-            added_any = true;
         }
 
         if auth.openrouter != AuthState::NotConfigured {

@@ -548,10 +548,13 @@ pub(super) async fn execute_debug_command(
                 if claude_usage_exhausted {
                     "claude-sonnet-4-6"
                 } else {
-                    jcode_provider_core::DEFAULT_CLAUDE_MODEL
+                    // Provider-core's quality-first default was removed with the
+                    // built-in Claude/OpenAI providers; keep a stable literal
+                    // for the debug `set_provider:` command.
+                    "claude-fable-5"
                 }
             }
-            "openai" | "codex" => jcode_provider_core::DEFAULT_OPENAI_MODEL,
+            "openai" | "codex" => "gpt-5.6-sol",
             "openrouter" => "anthropic/claude-sonnet-4",
             "cursor" => "gpt-5",
             "copilot" => "copilot:claude-sonnet-4",
