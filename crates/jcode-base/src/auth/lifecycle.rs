@@ -267,24 +267,6 @@ fn globally_preferred_model_rank(model: &str) -> (u8, usize) {
     (5, usize::MAX)
 }
 
-/// Curated flagship-first order for Bedrock-hosted models. Bedrock ids carry a
-/// vendor prefix (`anthropic.claude-opus-4-...`, `us.anthropic.claude-...`) which
-/// `parse_frontier_model`/`normalize_model_for_preference` strip before matching,
-/// so the bare canonical ids here line up with the live route ids. Claude Opus
-/// is the flagship, then Sonnet, then Nova/Llama/Mistral, then Haiku/cheap.
-const ALL_BEDROCK_MODELS: &[&str] = &[
-    "claude-opus-4",
-    "claude-sonnet-4",
-    "claude-3-7-sonnet",
-    "claude-3-5-sonnet",
-    "amazon.nova-pro",
-    "meta.llama3-1-405b-instruct",
-    "mistral.mistral-large",
-    "claude-3-5-haiku",
-    "amazon.nova-lite",
-    "amazon.nova-micro",
-];
-
 /// Flagship-first preference tiers used only to break ties when falling back to
 /// an arbitrary matching route after a login. Each inner slice is one curated
 /// family ordered best-first; earlier families outrank later ones. Returns an
@@ -295,16 +277,11 @@ const ALL_BEDROCK_MODELS: &[&str] = &[
 /// model. Bedrock/Azure are native hosted catalogs whose route lists are often
 /// ordered oldest-first, so they get an explicit curated order too.
 fn provider_preferred_model_orders(
-    activation: &AuthActivationResult,
+    _activation: &AuthActivationResult,
 ) -> &'static [&'static [&'static str]] {
-    match activation.provider_id.as_deref() {
-        Some("claude") | Some("claude-api") => &[crate::provider::ALL_CLAUDE_MODELS],
-        Some("openai") | Some("openai-api") => &[crate::provider::ALL_OPENAI_MODELS],
-        Some("bedrock") => &[ALL_BEDROCK_MODELS],
-        // Azure hosts the OpenAI family.
-        Some("azure-openai") => &[crate::provider::ALL_OPENAI_MODELS],
-        _ => &[],
-    }
+    // 配置驱动模式下只剩 jcode / openai-compatible 接入，均无旗舰排序；
+    // 内置 claude/openai/bedrock/azure 已从注册表移除，不再需要 curated 顺序。
+    &[]
 }
 
 /// Rank a (possibly date-suffixed) catalog model id against flagship-first
@@ -766,12 +743,7 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
 
 pub fn normalized_auth_provider_id(provider_hint: Option<&str>) -> Option<&'static str> {
     let provider = provider_hint?.trim();
-    if provider.eq_ignore_ascii_case("azure")
-        || provider.eq_ignore_ascii_case("azure-openai")
-        || provider.eq_ignore_ascii_case("azure openai")
-    {
-        Some("azure-openai")
-    } else if let Some(profile) =
+    if let Some(profile) =
         crate::provider_catalog::resolve_openai_compatible_profile_selection(provider)
     {
         Some(profile.id)
@@ -820,24 +792,13 @@ pub fn preferred_frontier_auth_provider(status: &crate::auth::AuthStatus) -> Opt
 
 fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
     match provider_id.trim().to_ascii_lowercase().as_str() {
-        "claude" | "anthropic" => Some("claude"),
-        "anthropic-api" | "claude-api" | "anthropic-key" | "claude-key" => Some("claude-api"),
-        "openai" => Some("openai"),
-        "openai-api" | "openai-key" | "openai-apikey" | "openai-platform" | "platform-openai" => {
-            Some("openai-api")
-        }
-        "openrouter" => Some("openrouter"),
         "jcode" | "subscription" | "jcode-subscription" => Some("jcode"),
-        "bedrock" | "aws-bedrock" | "aws_bedrock" => Some("bedrock"),
         _ => None,
     }
 }
 
 pub fn provider_display_label(provider_id: Option<&str>) -> Option<String> {
     let provider = normalized_auth_provider_id(provider_id)?;
-    if provider == "azure-openai" {
-        return Some("Azure OpenAI".to_string());
-    }
     crate::provider_catalog::openai_compatible_profile_by_id(provider)
         .map(|profile| profile.display_name.to_string())
         .or_else(|| {
@@ -870,12 +831,6 @@ pub fn activate_auth_change(request: &AuthActivationRequest) -> AuthActivationRe
 /// credentials live in token stores, not env vars.
 fn api_key_env_bindings_for_provider(provider_id: &str) -> Vec<(String, String)> {
     match provider_id {
-        "claude-api" => vec![("ANTHROPIC_API_KEY".to_string(), "anthropic.env".to_string())],
-        "openai-api" => vec![("OPENAI_API_KEY".to_string(), "openai.env".to_string())],
-        "openrouter" => vec![(
-            "OPENROUTER_API_KEY".to_string(),
-            "openrouter.env".to_string(),
-        )],
         "jcode" => vec![
             (
                 crate::subscription_catalog::JCODE_API_KEY_ENV.to_string(),
@@ -884,30 +839,6 @@ fn api_key_env_bindings_for_provider(provider_id: &str) -> Vec<(String, String)>
             (
                 crate::subscription_catalog::JCODE_API_BASE_ENV.to_string(),
                 crate::subscription_catalog::JCODE_ENV_FILE.to_string(),
-            ),
-        ],
-        "bedrock" => vec![
-            (
-                crate::provider::bedrock::API_KEY_ENV.to_string(),
-                crate::provider::bedrock::ENV_FILE.to_string(),
-            ),
-            (
-                crate::provider::bedrock::REGION_ENV.to_string(),
-                crate::provider::bedrock::ENV_FILE.to_string(),
-            ),
-        ],
-        "azure-openai" => vec![
-            (
-                super::azure::API_KEY_ENV.to_string(),
-                super::azure::ENV_FILE.to_string(),
-            ),
-            (
-                super::azure::ENDPOINT_ENV.to_string(),
-                super::azure::ENV_FILE.to_string(),
-            ),
-            (
-                super::azure::MODEL_ENV.to_string(),
-                super::azure::ENV_FILE.to_string(),
             ),
         ],
         other => crate::provider_catalog::openai_compatible_profile_by_id(other)
@@ -994,18 +925,6 @@ fn sync_process_env_from_saved_credentials(
 
 fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<String> {
     match normalized_auth_provider_id(provider_id) {
-        Some("azure-openai") => match crate::provider::activation::apply_azure_openai_runtime() {
-            Ok(model) => model,
-            Err(error) => {
-                let message = error.to_string();
-                crate::logging::auth_event(
-                    "auth_changed_runtime_activation_failed",
-                    "azure-openai",
-                    &[("reason", message.as_str())],
-                );
-                None
-            }
-        },
         Some(profile_id)
             if direct_provider_activation(profile_id).is_none()
                 && crate::provider_catalog::openai_compatible_profile_by_id(profile_id)
@@ -1060,13 +979,7 @@ fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<String> {
 
 fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
     let (runtime_id, active) = match normalized_login_provider_id(provider_id)? {
-        "claude" => (RuntimeProviderId::Claude, ActiveProvider::Claude),
-        "claude-api" => (RuntimeProviderId::ClaudeApiKey, ActiveProvider::Claude),
-        "openai" => (RuntimeProviderId::OpenAi, ActiveProvider::OpenAI),
-        "openai-api" => (RuntimeProviderId::OpenAiApiKey, ActiveProvider::OpenAI),
-        "openrouter" => (RuntimeProviderId::OpenRouter, ActiveProvider::OpenRouter),
         "jcode" => (RuntimeProviderId::Jcode, ActiveProvider::OpenRouter),
-        "bedrock" => (RuntimeProviderId::Bedrock, ActiveProvider::Bedrock),
         _ => return None,
     };
     Some(ProviderActivation::initial(runtime_id, active))
@@ -1078,21 +991,12 @@ pub fn model_switch_request_for_provider_id(
     model: &str,
 ) -> String {
     match normalized_auth_provider_id(provider_id) {
-        Some("azure-openai") => format!("openrouter:{}", model),
         Some(profile_id)
-            if profile_id != "azure-openai"
-                && crate::provider_catalog::openai_compatible_profile_by_id(profile_id)
-                    .is_some() =>
+            if crate::provider_catalog::openai_compatible_profile_by_id(profile_id).is_some() =>
         {
             format!("{}:{}", profile_id, model)
         }
-        Some("claude") => format!("claude-oauth:{}", model),
-        Some("claude-api") => format!("claude-api:{}", model),
-        Some("openai") => format!("openai-oauth:{}", model),
-        Some("openai-api") => format!("openai-api:{}", model),
-        Some("openrouter") => format!("openrouter:{}", model),
         Some("jcode") => model.to_string(),
-        Some("bedrock") => format!("bedrock:{}", model),
         _ => model.to_string(),
     }
 }
@@ -1147,27 +1051,31 @@ mod tests {
 
     #[test]
     fn api_key_login_replaces_stale_process_env_with_saved_file_key() {
-        // Issue #453: a server process that inherited a stale ANTHROPIC_API_KEY
-        // must start using the key that /login just wrote to anthropic.env.
+        // Issue #453: a server process that inherited a stale OPENAI_COMPAT_API_KEY
+        // must start using the key that /login just wrote to openai-compatible.env.
         let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
-        crate::env::set_var("ANTHROPIC_API_KEY", "stale-inherited-key");
+        crate::env::set_var("OPENAI_COMPAT_API_KEY", "stale-inherited-key");
         sandbox
-            .write_env_file("anthropic.env", "ANTHROPIC_API_KEY", "fresh-login-key")
+            .write_env_file(
+                "openai-compatible.env",
+                "OPENAI_COMPAT_API_KEY",
+                "fresh-login-key",
+            )
             .expect("write env file");
 
-        let mut auth = AuthChanged::new("claude-api");
+        let mut auth = AuthChanged::new("openai-compatible");
         auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
         auth.auth_method = Some(crate::protocol::AuthMethod::TuiPasteApiKey);
         let _ = activate_auth_change(&AuthActivationRequest::new(None, Some(auth)));
 
         assert_eq!(
-            std::env::var("ANTHROPIC_API_KEY").as_deref(),
+            std::env::var("OPENAI_COMPAT_API_KEY").as_deref(),
             Ok("fresh-login-key")
         );
         assert_eq!(
             crate::provider_catalog::load_api_key_from_env_or_config(
-                "ANTHROPIC_API_KEY",
-                "anthropic.env"
+                "OPENAI_COMPAT_API_KEY",
+                "openai-compatible.env"
             )
             .as_deref(),
             Some("fresh-login-key"),
@@ -1178,18 +1086,22 @@ mod tests {
     #[test]
     fn legacy_hint_only_auth_change_still_syncs_saved_file_key() {
         let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
-        crate::env::set_var("ANTHROPIC_API_KEY", "stale-inherited-key");
+        crate::env::set_var("OPENAI_COMPAT_API_KEY", "stale-inherited-key");
         sandbox
-            .write_env_file("anthropic.env", "ANTHROPIC_API_KEY", "fresh-login-key")
+            .write_env_file(
+                "openai-compatible.env",
+                "OPENAI_COMPAT_API_KEY",
+                "fresh-login-key",
+            )
             .expect("write env file");
 
         let _ = activate_auth_change(&AuthActivationRequest::new(
-            Some("anthropic-api".to_string()),
+            Some("openai-compatible".to_string()),
             None,
         ));
 
         assert_eq!(
-            std::env::var("ANTHROPIC_API_KEY").as_deref(),
+            std::env::var("OPENAI_COMPAT_API_KEY").as_deref(),
             Ok("fresh-login-key")
         );
     }
@@ -1278,29 +1190,31 @@ mod tests {
     #[test]
     fn typed_auth_request_provider_id_wins_over_legacy_hint() {
         let request = AuthActivationRequest::new(
-            Some("openai".to_string()),
-            Some(AuthChanged::new("gemini-api")),
+            Some("openai-compatible".to_string()),
+            Some(AuthChanged::new("lmstudio")),
         );
 
-        assert_eq!(request.provider_id().as_deref(), Some("gemini-api"));
+        assert_eq!(request.provider_id().as_deref(), Some("lmstudio"));
         assert_eq!(
             provider_display_label(request.provider_id().as_deref()).as_deref(),
-            Some("Gemini API")
+            Some("LM Studio")
         );
     }
 
     #[test]
     fn direct_login_provider_ids_are_normalized_with_display_labels() {
         for (hint, normalized, label) in [
-            ("claude", "claude", "Anthropic/Claude"),
-            ("anthropic", "claude", "Anthropic/Claude"),
-            ("anthropic-api", "claude-api", "Anthropic API"),
-            ("claude-api", "claude-api", "Anthropic API"),
-            ("openai", "openai", "OpenAI"),
-            ("openai-key", "openai-api", "OpenAI API"),
-            ("openrouter", "openrouter", "OpenRouter"),
             ("subscription", "jcode", "Jcode Subscription"),
-            ("bedrock", "bedrock", "AWS Bedrock"),
+            ("jcode-subscription", "jcode", "Jcode Subscription"),
+            ("lmstudio", "lmstudio", "LM Studio"),
+            ("lm-studio", "lmstudio", "LM Studio"),
+            ("ollama", "ollama", "Ollama"),
+            (
+                "openai-compatible",
+                "openai-compatible",
+                "OpenAI-compatible",
+            ),
+            ("compat", "openai-compatible", "OpenAI-compatible"),
         ] {
             assert_eq!(normalized_auth_provider_id(Some(hint)), Some(normalized));
             assert_eq!(provider_display_label(Some(hint)).as_deref(), Some(label));
@@ -1343,13 +1257,10 @@ mod tests {
         let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
 
         for (provider, runtime, active) in [
-            ("claude", "claude", "claude"),
-            ("claude-api", "claude-api", "claude"),
-            ("openai", "openai", "openai"),
-            ("openai-api", "openai-api", "openai"),
-            ("openrouter", "openrouter", "openrouter"),
             ("jcode", "jcode", "openrouter"),
-            ("bedrock", "bedrock", "bedrock"),
+            ("lmstudio", "openai-compatible", "openrouter"),
+            ("ollama", "openai-compatible", "openrouter"),
+            ("openai-compatible", "openai-compatible", "openrouter"),
         ] {
             crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
             crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
@@ -1388,23 +1299,8 @@ mod tests {
                 crate::provider_catalog::LoginProviderTarget::Jcode => {
                     Some(("jcode", "jcode", "openrouter", ""))
                 }
-                crate::provider_catalog::LoginProviderTarget::Claude => {
-                    Some(("claude", "claude", "claude", "claude-oauth"))
-                }
-                crate::provider_catalog::LoginProviderTarget::ClaudeApiKey => {
-                    Some(("claude-api", "claude-api", "claude", "claude-api"))
-                }
-                crate::provider_catalog::LoginProviderTarget::OpenAi => {
-                    Some(("openai", "openai", "openai", "openai-oauth"))
-                }
-                crate::provider_catalog::LoginProviderTarget::OpenAiApiKey => {
-                    Some(("openai-api", "openai-api", "openai", "openai-api"))
-                }
-                crate::provider_catalog::LoginProviderTarget::OpenRouter => {
-                    Some(("openrouter", "openrouter", "openrouter", "openrouter"))
-                }
-                crate::provider_catalog::LoginProviderTarget::Bedrock => {
-                    Some(("bedrock", "bedrock", "bedrock", "bedrock"))
+                crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
+                    Some((profile.id, "openai-compatible", "openrouter", profile.id))
                 }
                 _ => None,
             }) else {
@@ -1472,15 +1368,7 @@ mod tests {
             );
         }
 
-        for expected in [
-            "claude",
-            "anthropic-api",
-            "openai",
-            "openai-api",
-            "openrouter",
-            "jcode",
-            "bedrock",
-        ] {
+        for expected in ["jcode", "lmstudio", "ollama", "openai-compatible"] {
             assert!(
                 covered.contains(&expected),
                 "direct provider parity matrix did not cover {expected}: {covered:?}"
@@ -1491,36 +1379,22 @@ mod tests {
     #[test]
     fn model_switch_request_prefixes_openai_compatible_profiles_with_profile_id() {
         assert_eq!(
-            model_switch_request_for_provider_id(
-                Some("gemini-api"),
-                "mock-auth",
-                "gemini-2.5-flash"
-            ),
-            "gemini-api:gemini-2.5-flash"
+            model_switch_request_for_provider_id(Some("lmstudio"), "mock-auth", "shared-model"),
+            "lmstudio:shared-model"
         );
         assert_eq!(
-            model_switch_request_for_provider_id(
-                Some("gemini-api"),
-                "openrouter",
-                "gemini-2.5-flash"
-            ),
-            "gemini-api:gemini-2.5-flash"
+            model_switch_request_for_provider_id(Some("ollama"), "openrouter", "shared-model"),
+            "ollama:shared-model"
         );
     }
 
     #[test]
     fn model_switch_request_is_provider_explicit_for_all_auth_providers() {
         for (provider, expected) in [
-            ("claude", "claude-oauth:shared-model"),
-            ("anthropic", "claude-oauth:shared-model"),
-            ("anthropic-api", "claude-api:shared-model"),
-            ("openai", "openai-oauth:shared-model"),
-            ("openai-api", "openai-api:shared-model"),
-            ("openrouter", "openrouter:shared-model"),
             ("jcode", "shared-model"),
-            ("azure-openai", "openrouter:shared-model"),
-            ("bedrock", "bedrock:shared-model"),
-            ("gemini-api", "gemini-api:shared-model"),
+            ("lmstudio", "lmstudio:shared-model"),
+            ("ollama", "ollama:shared-model"),
+            ("openai-compatible", "openai-compatible:shared-model"),
         ] {
             assert_eq!(
                 model_switch_request_for_provider_id(Some(provider), "mock-auth", "shared-model"),
@@ -1714,78 +1588,6 @@ mod tests {
     }
 
     #[test]
-    fn post_auth_model_selection_prefers_anthropic_flagship_over_catalog_order() {
-        // Live Anthropic catalogs list `claude-haiku-4-5-...` before the
-        // flagship, and an API-key login supplies no activated model. Plain
-        // catalog order would auto-select Haiku; the flagship-first fallback
-        // must land on the curated quality-first default (Opus 5) instead.
-        let activation = AuthActivationResult {
-            provider_id: Some("claude-api".to_string()),
-            provider_label: Some("Anthropic".to_string()),
-            activated_model: None,
-            expected_runtime: None,
-            expected_catalog_namespace: None,
-        };
-        let routes = vec![
-            route("claude-haiku-4-5-20251001", "Anthropic", "claude-api", true),
-            route("claude-opus-4-6", "Anthropic", "claude-api", true),
-            route("claude-opus-4-8", "Anthropic", "claude-api", true),
-            route("claude-opus-5", "Anthropic", "claude-api", true),
-            route("claude-fable-5", "Anthropic", "claude-api", true),
-            route("claude-sonnet-4-6", "Anthropic", "claude-api", true),
-        ];
-
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("claude-opus-5"),
-            "API-key login should auto-select the Anthropic flagship, not the first catalog route"
-        );
-    }
-
-    #[test]
-    fn post_auth_model_selection_prefers_claude_oauth_flagship() {
-        let activation = AuthActivationResult {
-            provider_id: Some("claude".to_string()),
-            provider_label: Some("Anthropic".to_string()),
-            activated_model: None,
-            expected_runtime: None,
-            expected_catalog_namespace: None,
-        };
-        let routes = vec![
-            route("claude-haiku-4-5", "Anthropic", "claude-oauth", true),
-            route("claude-opus-4-8", "Anthropic", "claude-oauth", true),
-            route("claude-opus-5", "Anthropic", "claude-oauth", true),
-            route("claude-fable-5", "Anthropic", "claude-oauth", true),
-        ];
-
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("claude-opus-5")
-        );
-    }
-
-    #[test]
-    fn post_auth_model_selection_prefers_openai_flagship_over_catalog_order() {
-        let activation = AuthActivationResult {
-            provider_id: Some("openai-api".to_string()),
-            provider_label: Some("OpenAI".to_string()),
-            activated_model: None,
-            expected_runtime: None,
-            expected_catalog_namespace: None,
-        };
-        let routes = vec![
-            route("gpt-5.1", "OpenAI", "openai-api", true),
-            route("gpt-5.5", "OpenAI", "openai-api", true),
-            route("gpt-5.6-sol", "OpenAI", "openai-api", true),
-        ];
-
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("gpt-5.6-sol")
-        );
-    }
-
-    #[test]
     fn global_default_route_prefers_gpt_5_6_over_fable_and_preserves_route() {
         let routes = vec![
             route("gpt-5.5", "OpenAI", "openai-api-key", true),
@@ -1839,42 +1641,6 @@ mod tests {
     }
 
     #[test]
-    fn post_auth_model_selection_falls_back_when_quality_first_model_is_unavailable() {
-        let claude = activation_for_provider_id("claude-api");
-        let claude_routes = vec![
-            route("claude-opus-5", "Anthropic", "claude-api", false),
-            route("claude-fable-5", "Anthropic", "claude-api", true),
-            route("claude-opus-4-8", "Anthropic", "claude-api", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&claude, None, &claude_routes).as_deref(),
-            Some("claude-fable-5")
-        );
-
-        let openai = activation_for_provider_id("openai-api");
-        let openai_routes = vec![
-            route("gpt-5.6-sol", "OpenAI", "openai-api", false),
-            route("gpt-5.5", "OpenAI", "openai-api", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&openai, None, &openai_routes).as_deref(),
-            Some("gpt-5.5")
-        );
-
-        let openai_routes_with_clean_release = vec![
-            route("gpt-5.6-sol", "OpenAI", "openai-api", false),
-            route("gpt-5.5", "OpenAI", "openai-api", true),
-            route("gpt-5.6", "OpenAI", "openai-api", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&openai, None, &openai_routes_with_clean_release)
-                .as_deref(),
-            Some("gpt-5.6"),
-            "a clean same-generation release should beat GPT 5.5 when Sol is unavailable"
-        );
-    }
-
-    #[test]
     fn post_auth_model_selection_keeps_catalog_order_for_unranked_providers() {
         // OpenAI-compatible / namespaced providers have no curated flagship
         // order; the fallback must preserve live-catalog order for them.
@@ -1885,31 +1651,46 @@ mod tests {
         let _env = EnvGuard::new(&["JCODE_HOME"]);
         let temp = tempfile::tempdir().expect("tempdir");
         crate::env::set_var("JCODE_HOME", temp.path());
+        jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
+            "lmstudio",
+            &[
+                jcode_provider_openrouter::ModelInfo {
+                    id: "gpt-4o-mini".to_string(),
+                    name: String::new(),
+                    context_length: None,
+                    pricing: Default::default(),
+                    created: None,
+                },
+                jcode_provider_openrouter::ModelInfo {
+                    id: "gpt-4o".to_string(),
+                    name: String::new(),
+                    context_length: None,
+                    pricing: Default::default(),
+                    created: None,
+                },
+            ],
+            Some("http://localhost:1234/v1"),
+        );
         let activation = AuthActivationResult {
-            provider_id: Some("gemini-api".to_string()),
-            provider_label: Some("Gemini API".to_string()),
+            provider_id: Some("lmstudio".to_string()),
+            provider_label: Some("LM Studio".to_string()),
             activated_model: None,
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("gemini-api".to_string()),
+            expected_catalog_namespace: Some("lmstudio".to_string()),
         };
         let routes = vec![
             route(
-                "gemini-2.5-flash",
-                "Gemini API",
-                "openai-compatible:gemini-api",
+                "gpt-4o-mini",
+                "LM Studio",
+                "openai-compatible:lmstudio",
                 true,
             ),
-            route(
-                "gemini-2.5-pro",
-                "Gemini API",
-                "openai-compatible:gemini-api",
-                true,
-            ),
+            route("gpt-4o", "LM Studio", "openai-compatible:lmstudio", true),
         ];
 
         assert_eq!(
             provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("gemini-2.5-flash"),
+            Some("gpt-4o-mini"),
             "providers without a curated flagship order keep live-catalog order"
         );
     }
@@ -1920,189 +1701,47 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         crate::env::set_var("JCODE_HOME", temp.path());
         jcode_provider_openrouter::save_disk_cache_with_source_for_namespace(
-            "gemini-api",
+            "lmstudio",
             &[
                 jcode_provider_openrouter::ModelInfo {
-                    id: "gemini-2.5-flash".to_string(),
+                    id: "gpt-4o-mini".to_string(),
                     name: String::new(),
                     context_length: None,
                     pricing: Default::default(),
                     created: Some(1_700_000_000),
                 },
                 jcode_provider_openrouter::ModelInfo {
-                    id: "gemini-2.5-pro".to_string(),
+                    id: "gpt-4o".to_string(),
                     name: String::new(),
                     context_length: None,
                     pricing: Default::default(),
                     created: Some(1_800_000_000),
                 },
             ],
-            Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+            Some("http://localhost:1234/v1"),
         );
 
         let activation = AuthActivationResult {
-            provider_id: Some("gemini-api".to_string()),
-            provider_label: Some("Gemini API".to_string()),
+            provider_id: Some("lmstudio".to_string()),
+            provider_label: Some("LM Studio".to_string()),
             activated_model: None,
             expected_runtime: Some("openai-compatible".to_string()),
-            expected_catalog_namespace: Some("gemini-api".to_string()),
+            expected_catalog_namespace: Some("lmstudio".to_string()),
         };
         let routes = vec![
             route(
-                "gemini-2.5-flash",
-                "Gemini API",
-                "openai-compatible:gemini-api",
+                "gpt-4o-mini",
+                "LM Studio",
+                "openai-compatible:lmstudio",
                 true,
             ),
-            route(
-                "gemini-2.5-pro",
-                "Gemini API",
-                "openai-compatible:gemini-api",
-                true,
-            ),
+            route("gpt-4o", "LM Studio", "openai-compatible:lmstudio", true),
         ];
 
         assert_eq!(
             provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("gemini-2.5-pro"),
+            Some("gpt-4o"),
             "unranked providers should prefer the newest live release when the catalog includes release timestamps"
-        );
-    }
-
-    #[test]
-    fn post_auth_auto_promotes_newer_frontier_release_not_yet_in_curated_list() {
-        // The day Anthropic ships a stronger Opus than the curated flagship, the
-        // live catalog carries it and it must auto-promote to the post-login
-        // default without a code change. Here `claude-opus-4-9` beats the curated
-        // baseline `claude-opus-4-8`.
-        let activation = activation_for_provider_id("claude-api");
-        let routes = vec![
-            route("claude-haiku-4-5", "Anthropic", "claude-api", true),
-            route("claude-opus-4-8", "Anthropic", "claude-api", true),
-            route("claude-opus-4-9", "Anthropic", "claude-api", true),
-            route("claude-sonnet-4-6", "Anthropic", "claude-api", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("claude-opus-4-9"),
-            "a newer pure Opus flagship in the live catalog should auto-promote"
-        );
-
-        // Same for OpenAI: a future `gpt-5.7` beats the curated Sol 5.6 baseline.
-        let activation = activation_for_provider_id("openai");
-        let routes = vec![
-            route("gpt-5-mini", "OpenAI", "openai", true),
-            route("gpt-5.6-sol", "OpenAI", "openai", true),
-            route("gpt-5.7", "OpenAI", "openai", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("gpt-5.7")
-        );
-    }
-
-    #[test]
-    fn quality_first_defaults_are_not_displaced_by_lower_family_or_equal_release() {
-        let claude = activation_for_provider_id("claude-api");
-        let claude_routes = vec![
-            route("claude-opus-4-9", "Anthropic", "claude-api", true),
-            route("claude-fable-5", "Anthropic", "claude-api", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&claude, None, &claude_routes).as_deref(),
-            Some("claude-fable-5"),
-            "a newer lower-priority Opus release must not displace available Fable"
-        );
-
-        let openai = activation_for_provider_id("openai");
-        let openai_routes = vec![
-            route("gpt-5.6", "OpenAI", "openai", true),
-            route("gpt-5.6-sol", "OpenAI", "openai", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&openai, None, &openai_routes).as_deref(),
-            Some("gpt-5.6-sol"),
-            "the base model at the same release must not displace the Sol quality profile"
-        );
-    }
-
-    #[test]
-    fn post_auth_frontier_promotion_ignores_cheaper_and_specialized_variants() {
-        // A newer *cheaper/specialized* variant must NOT auto-promote over the
-        // curated flagship: only clean flagship ids qualify. Even though
-        // `claude-haiku-5` and `gpt-6-mini`/`gpt-6-codex` have higher version
-        // numbers, they carry non-flagship tier words and must be rejected, so
-        // selection stays on the curated flagship.
-        let activation = activation_for_provider_id("claude-api");
-        let routes = vec![
-            route("claude-haiku-5", "Anthropic", "claude-api", true),
-            route("claude-opus-4-8", "Anthropic", "claude-api", true),
-            route("claude-sonnet-5", "Anthropic", "claude-api", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("claude-opus-4-8"),
-            "cheaper/other-family models must not auto-promote over the curated Opus flagship"
-        );
-
-        let activation = activation_for_provider_id("openai");
-        let routes = vec![
-            route("gpt-6-mini", "OpenAI", "openai", true),
-            route("gpt-6-codex", "OpenAI", "openai", true),
-            route("gpt-5.5", "OpenAI", "openai", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("gpt-5.5"),
-            "mini/codex variants must not auto-promote over the clean gpt flagship"
-        );
-    }
-
-    #[test]
-    fn post_auth_frontier_promotion_no_op_when_curated_is_still_newest() {
-        // When the live catalog contains nothing newer than the curated flagship,
-        // the curated quality order decides and frontier promotion is a no-op.
-        let activation = activation_for_provider_id("claude-api");
-        let routes = vec![
-            route("claude-haiku-4-5-20251001", "Anthropic", "claude-api", true),
-            route("claude-opus-4-6", "Anthropic", "claude-api", true),
-            route("claude-opus-4-8", "Anthropic", "claude-api", true),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("claude-opus-4-8")
-        );
-    }
-
-    #[test]
-    fn post_auth_frontier_promotion_covers_bedrock() {
-        // Bedrock: a newer Opus 5 (vendor-prefixed + dated) auto-promotes over the
-        // curated Opus 4 baseline, and never falls back to the year-old 3.5.
-        let activation = activation_for_provider_id("bedrock");
-        let routes = vec![
-            route(
-                "anthropic.claude-3-5-sonnet-20241022-v2:0",
-                "AWS Bedrock",
-                "bedrock",
-                true,
-            ),
-            route(
-                "anthropic.claude-opus-4-20250514-v1:0",
-                "AWS Bedrock",
-                "bedrock",
-                true,
-            ),
-            route(
-                "anthropic.claude-opus-5-20260101-v1:0",
-                "AWS Bedrock",
-                "bedrock",
-                true,
-            ),
-        ];
-        assert_eq!(
-            provider_model_to_select_after_auth(&activation, None, &routes).as_deref(),
-            Some("anthropic.claude-opus-5-20260101-v1:0"),
-            "a newer Bedrock Opus must auto-promote over the curated Opus 4"
         );
     }
 
@@ -2211,14 +1850,9 @@ mod tests {
     /// `activated_model`, so a "cheap model first" catalog would otherwise
     /// auto-select the wrong default. Kept here as the single source of truth
     /// the exhaustive walk asserts against.
-    const RANKED_PROVIDER_IDS: &[&str] = &[
-        "claude",
-        "claude-api",
-        "openai",
-        "openai-api",
-        "bedrock",
-        "azure-openai",
-    ];
+    // 内置 claude/openai/bedrock/azure 已移除，配置驱动模式下没有需要
+    // 旗舰优先排序的 provider。
+    const RANKED_PROVIDER_IDS: &[&str] = &[];
 
     fn activation_for_provider_id(provider_id: &str) -> AuthActivationResult {
         AuthActivationResult {
@@ -2274,63 +1908,9 @@ mod tests {
     #[test]
     fn post_auth_model_selection_picks_flagship_for_every_ranked_provider() {
         // (provider_id, api_method, provider_display, cheap_first_routes, expected flagship)
-        let cases: &[(&str, &str, &str, &[&str], &str)] = &[
-            (
-                "claude",
-                "claude-oauth",
-                "Anthropic",
-                &["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"],
-                "claude-opus-4-8",
-            ),
-            (
-                "claude-api",
-                "claude-api",
-                "Anthropic",
-                &[
-                    "claude-haiku-4-5-20251001",
-                    "claude-sonnet-4-6",
-                    "claude-opus-4-8",
-                ],
-                "claude-opus-4-8",
-            ),
-            (
-                "openai",
-                "openai-oauth",
-                "OpenAI",
-                &["gpt-5-nano", "gpt-5.1", "gpt-5.5"],
-                "gpt-5.5",
-            ),
-            (
-                "openai-api",
-                "openai-api-key",
-                "OpenAI",
-                &["gpt-5-mini", "gpt-5.1", "gpt-5.5"],
-                "gpt-5.5",
-            ),
-            (
-                // Bedrock lists year-old Claude first; the curated order must
-                // still pick Opus 4 over claude-3-5-sonnet. Bedrock ids carry the
-                // vendor prefix + version tag, normalized away before ranking.
-                "bedrock",
-                "bedrock",
-                "AWS Bedrock",
-                &[
-                    "anthropic.claude-3-5-sonnet-20241022-v2:0",
-                    "anthropic.claude-3-5-haiku-20241022-v1:0",
-                    "anthropic.claude-sonnet-4-20250514-v1:0",
-                    "anthropic.claude-opus-4-20250514-v1:0",
-                ],
-                "anthropic.claude-opus-4-20250514-v1:0",
-            ),
-            (
-                // Azure hosts the OpenAI family over the OpenRouter transport.
-                "azure-openai",
-                "openrouter",
-                "Azure OpenAI",
-                &["gpt-5-mini", "gpt-5.1", "gpt-5.5"],
-                "gpt-5.5",
-            ),
-        ];
+        // 内置 claude/openai/bedrock/azure 已移除，没有 ranked provider；
+        // 空 cases 与空的 RANKED_PROVIDER_IDS 保持一致。
+        let cases: &[(&str, &str, &str, &[&str], &str)] = &[];
 
         // Guard: the hand-written cases must cover every ranked provider, or the
         // "for_every_ranked_provider" claim silently rots when a new ranked

@@ -444,21 +444,19 @@ mod tests {
 
     #[test]
     fn source_key_mapping_covers_known_providers() {
-        assert_eq!(
-            source_key_for_provider_label("gemini-api", None),
-            "openai-compatible:gemini-api"
-        );
-        assert_eq!(
-            source_key_for_provider_label("Gemini API", None),
-            "openai-compatible:gemini-api"
-        );
+        assert_eq!(source_key_for_provider_label("gemini-api", None), "gemini");
+        assert_eq!(source_key_for_provider_label("Gemini API", None), "gemini");
         assert_eq!(
             source_key_for_provider_label("OpenRouter", None),
             "openrouter"
         );
         assert_eq!(
-            source_key_for_provider_label("OpenRouter", Some("gemini-api")),
-            "openai-compatible:gemini-api"
+            source_key_for_provider_label("OpenRouter", Some("lmstudio")),
+            "openai-compatible:lmstudio"
+        );
+        assert_eq!(
+            source_key_for_provider_label("LM Studio", None),
+            "openai-compatible:lmstudio"
         );
         assert_eq!(
             source_key_for_provider_label("Anthropic", None),
