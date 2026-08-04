@@ -561,7 +561,7 @@ fn remove_named_provider_sections(content: &str, name: &str) -> String {
             if trimmed == "[[providers]]" {
                 // Start of a new resonix array entry: flush the previous block.
                 if in_providers_block {
-                    flush_providers_block(&mut kept, &mut providers_block, name);
+                    flush_providers_block(&mut kept, &providers_block, name);
                 }
                 in_providers_block = true;
                 providers_block.clear();
@@ -584,7 +584,7 @@ fn remove_named_provider_sections(content: &str, name: &str) -> String {
             if in_providers_block {
                 // Any other section header (e.g. `[providers.x]` table or a
                 // top-level `[provider]` section) ends the resonix block.
-                flush_providers_block(&mut kept, &mut providers_block, name);
+                flush_providers_block(&mut kept, &providers_block, name);
                 in_providers_block = false;
             }
         }
@@ -596,14 +596,14 @@ fn remove_named_provider_sections(content: &str, name: &str) -> String {
         }
     }
     if in_providers_block {
-        flush_providers_block(&mut kept, &mut providers_block, name);
+        flush_providers_block(&mut kept, &providers_block, name);
     }
 
     join_lines(kept)
 }
 
 /// Emit a buffered `[[providers]]` block unless it declares `name = "<target>"`.
-fn flush_providers_block(kept: &mut Vec<String>, block: &mut Vec<String>, target: &str) {
+fn flush_providers_block(kept: &mut Vec<String>, block: &[String], target: &str) {
     let block_name = block
         .iter()
         .find_map(|line| providers_block_name(line))

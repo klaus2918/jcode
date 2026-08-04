@@ -573,13 +573,19 @@ mod tests {
     #[ignore = "developer review: dumps raw -> pretty model name mapping for manual audit"]
     fn dump_pretty_model_names_for_manual_audit() {
         let mut names: Vec<String> = Vec::new();
-        for list in [
-            jcode_provider_core::ALL_CLAUDE_MODELS,
-            jcode_provider_core::ALL_OPENAI_MODELS,
-            jcode_provider_core::OPENAI_API_ONLY_PRO_MODELS,
-        ] {
-            names.extend(list.iter().map(|m| m.to_string()));
-        }
+        // 零内置模型配置：不再遍历内置厂商模型列表，改用代表性模型。
+        names.extend(
+            [
+                "claude-opus-5",
+                "claude-sonnet-5",
+                "gpt-5.5",
+                "gpt-5.4-pro",
+                "deepseek-v4-flash",
+                "kimi-k3",
+            ]
+            .iter()
+            .map(|m| m.to_string()),
+        );
         if let Ok(extra) = std::fs::read_to_string("/tmp/audit_names.txt") {
             names.extend(
                 extra
