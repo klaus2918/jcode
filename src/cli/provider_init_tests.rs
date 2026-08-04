@@ -29,103 +29,18 @@ fn test_provider_input_resolution() {
         resolve_provider_input("").unwrap(),
         ResolvedProviderInput::Auto
     ));
-    assert!(matches!(
-        resolve_provider_input("claude").unwrap(),
-        ResolvedProviderInput::Login(provider) if provider.id == "claude"
-    ));
-    assert!(matches!(
-        resolve_provider_input("anthropic-api").unwrap(),
-        ResolvedProviderInput::Login(provider) if provider.id == "anthropic-api"
-    ));
-    assert!(matches!(
-        resolve_provider_input("claude-subprocess").unwrap(),
-        ResolvedProviderInput::ClaudeSubprocess
-    ));
+    // resonix 化：Claude/Anthropic 不再是内置登录 provider，只能走配置。
+    assert!(resolve_provider_input("claude").is_err());
+    assert!(resolve_provider_input("anthropic-api").is_err());
+    // claude-subprocess 是登录专用入口，resonix 化后不再解析（无注册表条目）。
+    assert!(resolve_provider_input("claude-subprocess").is_err());
     assert!(matches!(
         resolve_provider_input("ollama").unwrap(),
         ResolvedProviderInput::Login(provider) if provider.id == "ollama"
     ));
-    assert!(matches!(
-        resolve_provider_input("gemini-api").unwrap(),
-        ResolvedProviderInput::Login(provider) if provider.id == "gemini-api"
-    ));
+    // gemini-api 同样不再内置，只能走配置。
+    assert!(resolve_provider_input("gemini-api").is_err());
     assert!(resolve_provider_input("unknown-provider-xyz").is_err());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "test env locks intentionally stay held across provider init to isolate process-global auth env"
-)]
-async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
-    let _guard = lock_env();
-    let _env_guard = crate::storage::lock_test_env();
-    let dir = TempDir::new().expect("temp dir");
-    let keys = [
-        "JCODE_HOME",
-        "ANTHROPIC_API_KEY",
-        "JCODE_RUNTIME_PROVIDER",
-        "JCODE_ACTIVE_PROVIDER",
-        "JCODE_INITIAL_PROVIDER_EXPLICIT",
-        "JCODE_PROVIDER_PROFILE_NAME",
-        "JCODE_PROVIDER_PROFILE_ACTIVE",
-        "JCODE_NAMED_PROVIDER_PROFILE",
-    ];
-    let saved: Vec<(&str, Option<String>)> = keys
-        .iter()
-        .map(|key| (*key, std::env::var(key).ok()))
-        .collect();
-
-    crate::env::set_var("JCODE_HOME", dir.path());
-    crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-api-test");
-    for key in [
-        "JCODE_RUNTIME_PROVIDER",
-        "JCODE_ACTIVE_PROVIDER",
-        "JCODE_INITIAL_PROVIDER_EXPLICIT",
-        "JCODE_PROVIDER_PROFILE_NAME",
-        "JCODE_PROVIDER_PROFILE_ACTIVE",
-        "JCODE_NAMED_PROVIDER_PROFILE",
-    ] {
-        crate::env::remove_var(key);
-    }
-    std::fs::write(
-        dir.path().join("auth.json"),
-        serde_json::json!({
-            "anthropic_accounts": [{
-                "label": "primary",
-                "access": "oauth-access-token",
-                "refresh": "oauth-refresh-token",
-                "expires": chrono::Utc::now().timestamp_millis() + 3_600_000,
-                "scopes": ["user:inference"]
-            }],
-            "active_anthropic_account": "primary"
-        })
-        .to_string(),
-    )
-    .expect("write competing OAuth credentials");
-    crate::config::invalidate_config_cache();
-    crate::auth::AuthStatus::invalidate_cache();
-
-    let provider = init_provider_for_validation("anthropic-api", Some("claude-haiku-4-5"))
-        .await
-        .expect("explicit Anthropic API provider should initialize");
-
-    assert_eq!(provider.active_auth_method_label(), Some("API key"));
-    assert_eq!(provider.model(), "claude-haiku-4-5");
-    assert_eq!(
-        std::env::var("JCODE_RUNTIME_PROVIDER").ok().as_deref(),
-        Some("claude-api")
-    );
-
-    for (key, value) in saved {
-        if let Some(value) = value {
-            crate::env::set_var(key, value);
-        } else {
-            crate::env::remove_var(key);
-        }
-    }
-    crate::config::invalidate_config_cache();
-    crate::auth::AuthStatus::invalidate_cache();
 }
 
 #[test]
@@ -336,19 +251,15 @@ fn test_server_bootstrap_login_selection_preserves_order() {
     let providers = provider_catalog::server_bootstrap_login_providers();
     assert_eq!(
         resolve_login_selection("1", &providers).map(|provider| provider.id),
-        Some("claude")
-    );
-    assert_eq!(
-        resolve_login_selection("2", &providers).map(|provider| provider.id),
-        Some("anthropic-api")
-    );
-    assert_eq!(
-        resolve_login_selection("4", &providers).map(|provider| provider.id),
         Some("jcode")
     );
     assert_eq!(
-        resolve_login_selection("5", &providers).map(|provider| provider.id),
-        Some("openrouter")
+        resolve_login_selection("2", &providers).map(|provider| provider.id),
+        Some("lmstudio")
+    );
+    assert_eq!(
+        resolve_login_selection("3", &providers).map(|provider| provider.id),
+        Some("ollama")
     );
 }
 
@@ -357,99 +268,16 @@ fn test_auto_init_login_selection_preserves_order() {
     let providers = provider_catalog::auto_init_login_providers();
     assert_eq!(
         resolve_login_selection("1", &providers).map(|provider| provider.id),
-        Some("claude")
+        Some("jcode")
     );
     assert_eq!(
         resolve_login_selection("2", &providers).map(|provider| provider.id),
-        Some("anthropic-api")
+        Some("lmstudio")
     );
     assert_eq!(
-        resolve_login_selection("4", &providers).map(|provider| provider.id),
-        Some("jcode")
-    );
-    assert_eq!(
-        resolve_login_selection("5", &providers).map(|provider| provider.id),
-        Some("openrouter")
-    );
-    assert_eq!(
-        resolve_login_selection("7", &providers).map(|provider| provider.id),
+        resolve_login_selection("3", &providers).map(|provider| provider.id),
         Some("ollama")
     );
-    assert_eq!(
-        resolve_login_selection("8", &providers).map(|provider| provider.id),
-        Some("gemini-api")
-    );
-    assert_eq!(
-        resolve_login_selection("9", &providers).map(|provider| provider.id),
-        Some("openai-api")
-    );
-}
-
-#[test]
-fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
-    let _guard = lock_env();
-    let _env_guard = crate::storage::lock_test_env();
-    // Sandbox JCODE_HOME: with the real home, persisted auth/credential state
-    // (e.g. a pinned anthropic api-key route) re-pins JCODE_RUNTIME_PROVIDER
-    // during MultiProvider construction and breaks the assertions below.
-    let dir = TempDir::new().expect("temp dir");
-    let saved_env: Vec<(&str, Option<String>)> = [
-        "JCODE_HOME",
-        "JCODE_PROVIDER_PROFILE_NAME",
-        "JCODE_PROVIDER_PROFILE_ACTIVE",
-        "JCODE_NAMED_PROVIDER_PROFILE",
-    ]
-    .iter()
-    .map(|key| (*key, std::env::var(key).ok()))
-    .collect();
-    crate::env::set_var("JCODE_HOME", dir.path());
-    crate::subscription_catalog::clear_runtime_env();
-    crate::env::remove_var("JCODE_OPENROUTER_MODEL");
-    crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
-    crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
-    crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
-    crate::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
-    crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
-    crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
-
-    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let provider = runtime
-        .block_on(init_provider("jcode", None))
-        .expect("init jcode provider");
-
-    assert_eq!(provider.name(), "Jcode Subscription");
-    assert!(crate::subscription_catalog::is_runtime_mode_enabled());
-    assert_eq!(
-        std::env::var("JCODE_OPENROUTER_MODEL").ok().as_deref(),
-        Some(crate::subscription_catalog::default_model().id)
-    );
-    assert_eq!(
-        std::env::var("JCODE_ACTIVE_PROVIDER").ok().as_deref(),
-        Some("openrouter")
-    );
-    assert_eq!(
-        std::env::var("JCODE_RUNTIME_PROVIDER").ok().as_deref(),
-        Some("jcode")
-    );
-    assert_eq!(
-        std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT")
-            .ok()
-            .as_deref(),
-        Some("1")
-    );
-
-    crate::subscription_catalog::clear_runtime_env();
-    crate::env::remove_var("JCODE_OPENROUTER_MODEL");
-    crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
-    crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
-    crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
-    for (key, value) in saved_env {
-        if let Some(value) = value {
-            crate::env::set_var(key, value);
-        } else {
-            crate::env::remove_var(key);
-        }
-    }
 }
 
 #[test]
@@ -548,51 +376,6 @@ fn parse_external_auth_review_selection_supports_all_and_deduped_indices() {
     );
     assert!(parse_external_auth_review_selection("4", 3).is_err());
     assert!(parse_external_auth_review_selection("nope", 3).is_err());
-}
-
-#[test]
-fn parse_login_provider_selection_supports_skip_and_names() {
-    let providers = provider_catalog::cli_login_providers();
-
-    assert!(
-        parse_login_provider_selection_input("", &providers)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        parse_login_provider_selection_input("skip", &providers)
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        parse_login_provider_selection_input("claude", &providers)
-            .unwrap()
-            .map(|provider| provider.id),
-        Some("claude")
-    );
-    let first_provider = providers[0].id;
-    assert_eq!(
-        parse_login_provider_selection_input("1", &providers)
-            .unwrap()
-            .map(|provider| provider.id),
-        Some(first_provider)
-    );
-    assert!(parse_login_provider_selection_input("not-a-provider", &providers).is_err());
-}
-
-#[test]
-fn login_provider_menu_shows_autodetected_auth_and_skip() {
-    let providers = vec![
-        provider_catalog::JCODE_LOGIN_PROVIDER,
-        provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
-    ];
-    let status = auth::AuthStatus::default();
-
-    let menu = render_login_provider_selection_menu("Choose a provider:", &providers, &status);
-    assert!(menu.contains("Autodetected auth:"));
-    assert!(menu.contains("[configured"));
-    assert!(menu.contains("[not configured"));
-    assert!(menu.contains("Skip: press Enter"));
 }
 
 #[test]
@@ -1054,7 +837,7 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
     };
     let message = err.to_string();
     assert!(
-        message.contains("No credentials configured"),
+        message.contains("No configured providers found"),
         "unexpected error: {message}"
     );
     assert!(

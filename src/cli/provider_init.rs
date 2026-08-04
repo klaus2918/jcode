@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::io::{self, Write};
 use std::sync::Arc;
 
 use crate::auth;
@@ -8,15 +7,13 @@ use crate::provider::Provider;
 use crate::provider_catalog::{
     LoginProviderDescriptor, LoginProviderTarget, OpenAiCompatibleProfile,
     apply_openai_compatible_profile_env, force_apply_openai_compatible_profile_env,
-    is_safe_env_file_name, is_safe_env_key_name, resolve_login_selection,
+    is_safe_env_file_name, is_safe_env_key_name,
     resolve_openai_compatible_profile,
 };
 use crate::tool;
 
-use super::login::run_login_provider;
 use super::output;
 
-pub(crate) use crate::external_auth::maybe_run_external_auth_auto_import_flow;
 use crate::external_auth::{
     can_prompt_for_external_auth, external_auth_blocked_message, prompt_to_trust_external_auth,
 };
@@ -37,8 +34,6 @@ pub enum ResolvedProviderInput {
     Login(LoginProviderDescriptor),
     /// 用户配置 `[providers.<name>]` 命中的命名 profile。
     NamedProfile(String),
-    /// 已废弃的 Claude Code CLI 子进程传输（兼容入口）。
-    ClaudeSubprocess,
 }
 
 /// 按字符串解析 `--provider` 输入。
@@ -53,9 +48,6 @@ pub fn resolve_provider_input(input: &str) -> Result<ResolvedProviderInput> {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
         return Ok(ResolvedProviderInput::Auto);
-    }
-    if trimmed.eq_ignore_ascii_case(CLAUDE_SUBPROCESS_ID) {
-        return Ok(ResolvedProviderInput::ClaudeSubprocess);
     }
     if let Some(provider) = crate::provider_catalog::resolve_login_provider(trimmed) {
         return Ok(ResolvedProviderInput::Login(provider));
@@ -77,165 +69,6 @@ pub fn is_auto_provider_input(input: &str) -> bool {
     trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto")
 }
 
-pub fn prompt_login_provider_selection(
-    providers: &[LoginProviderDescriptor],
-    heading: &str,
-) -> Result<LoginProviderDescriptor> {
-    prompt_login_provider_selection_optional(providers, heading)?.ok_or_else(|| {
-        anyhow::anyhow!("Login skipped. Run `jcode login` when you're ready to authenticate.")
-    })
-}
-
-pub fn prompt_login_provider_selection_optional(
-    providers: &[LoginProviderDescriptor],
-    heading: &str,
-) -> Result<Option<LoginProviderDescriptor>> {
-    let status = auth::AuthStatus::check_fast();
-    eprint!(
-        "{}",
-        render_login_provider_selection_menu(heading, providers, &status)
-    );
-    eprint!(
-        "\nEnter 1-{}, provider name, or Enter=skip: ",
-        providers.len()
-    );
-    io::stderr().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    parse_login_provider_selection_input(&input, providers)
-}
-
-pub fn parse_login_provider_selection_input(
-    input: &str,
-    providers: &[LoginProviderDescriptor],
-) -> Result<Option<LoginProviderDescriptor>> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-
-    let normalized = trimmed.to_ascii_lowercase();
-    if matches!(
-        normalized.as_str(),
-        "s" | "skip" | "q" | "quit" | "cancel" | "none"
-    ) {
-        return Ok(None);
-    }
-
-    resolve_login_selection(trimmed, providers)
-        .map(Some)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Invalid choice '{}'. Enter 1-{}, a provider name, or 'skip'.",
-                trimmed,
-                providers.len()
-            )
-        })
-}
-
-pub fn render_login_provider_selection_menu(
-    heading: &str,
-    providers: &[LoginProviderDescriptor],
-    status: &auth::AuthStatus,
-) -> String {
-    use std::fmt::Write as _;
-
-    let mut out = String::new();
-    let _ = writeln!(out, "{heading}");
-    let _ = writeln!(out);
-
-    let detected = providers
-        .iter()
-        .copied()
-        .filter_map(|provider| {
-            let assessment = status.assessment_for_provider(provider);
-            (assessment.state != auth::AuthState::NotConfigured).then(|| {
-                format!(
-                    "  - {}: {}",
-                    provider.display_name,
-                    login_provider_detection_detail(provider, &assessment)
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-
-    if detected.is_empty() {
-        let _ = writeln!(out, "Autodetected auth: none found yet.");
-    } else {
-        let _ = writeln!(out, "Autodetected auth:");
-        for line in detected {
-            let _ = writeln!(out, "{line}");
-        }
-    }
-
-    let _ = writeln!(out);
-    for (index, provider) in providers.iter().copied().enumerate() {
-        let assessment = status.assessment_for_provider(provider);
-        let _ = writeln!(
-            out,
-            "  {}. {:<22} [{:<15}] - {}",
-            index + 1,
-            provider.display_name,
-            login_provider_state_badge(provider, assessment.state),
-            provider.menu_detail
-        );
-    }
-
-    let recommended = providers
-        .iter()
-        .filter(|provider| provider.recommended)
-        .map(|provider| provider.display_name)
-        .collect::<Vec<_>>();
-    if !recommended.is_empty() {
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "  Recommended if you have a subscription: {}.",
-            recommended.join(", ")
-        );
-    }
-
-    let _ = writeln!(out);
-    let _ = writeln!(out, "  Skip: press Enter, or type `skip`.");
-    out
-}
-
-fn login_provider_state_badge(
-    provider: LoginProviderDescriptor,
-    state: auth::AuthState,
-) -> &'static str {
-    match state {
-        auth::AuthState::Available => {
-            if matches!(provider.target, LoginProviderTarget::AutoImport) {
-                "detected"
-            } else {
-                "configured"
-            }
-        }
-        auth::AuthState::Expired => "needs attention",
-        auth::AuthState::NotConfigured => "not configured",
-    }
-}
-
-fn login_provider_detection_detail(
-    provider: LoginProviderDescriptor,
-    assessment: &auth::ProviderAuthAssessment,
-) -> String {
-    match assessment.state {
-        auth::AuthState::Available => {
-            let prefix = if matches!(provider.target, LoginProviderTarget::AutoImport) {
-                "detected"
-            } else {
-                "configured"
-            };
-            format!("{}: {}", prefix, assessment.method_detail)
-        }
-        auth::AuthState::Expired => format!("needs attention: {}", assessment.method_detail),
-        auth::AuthState::NotConfigured => "not configured".to_string(),
-    }
-}
-
 struct AutoProviderAvailability {
     auth_status: auth::AuthStatus,
     has_claude: bool,
@@ -247,36 +80,6 @@ impl AutoProviderAvailability {
     fn has_any_provider(&self) -> bool {
         self.has_claude || self.has_openai || self.has_openrouter
     }
-}
-
-fn maybe_enable_config_default_provider_for_auto() -> Result<bool> {
-    let cfg = crate::config::config();
-    let Some(default_provider) = cfg
-        .provider
-        .default_provider
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(false);
-    };
-
-    if let Some(profile) =
-        crate::provider_catalog::resolve_openai_compatible_profile_selection(default_provider)
-    {
-        apply_openai_compatible_profile_env(Some(profile));
-        return Ok(provider::openrouter::has_credentials());
-    }
-
-    if cfg.providers.contains_key(default_provider) {
-        crate::provider_catalog::apply_named_provider_profile_env_from_config(
-            default_provider,
-            cfg,
-        )?;
-        return Ok(provider::openrouter::has_credentials());
-    }
-
-    Ok(false)
 }
 
 async fn detect_auto_provider_flags() -> AutoProviderAvailability {
@@ -303,19 +106,9 @@ fn provider_label_for_api_key_env(env_key: &str) -> String {
         .unwrap_or_else(|| env_key.to_string())
 }
 
-fn provider_login_hint_for_api_key_env(env_key: &str) -> String {
-    if env_key == "OPENROUTER_API_KEY" {
-        return "jcode login --provider openrouter".to_string();
-    }
 
-    crate::provider_catalog::openai_compatible_profiles()
-        .iter()
-        .find_map(|profile| {
-            let resolved = resolve_openai_compatible_profile(*profile);
-            (resolved.api_key_env == env_key)
-                .then(|| format!("jcode login --provider {}", resolved.id))
-        })
-        .unwrap_or_else(|| "jcode login".to_string())
+fn provider_login_hint_for_api_key_env(_env_key: &str) -> String {
+    "jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>".to_string()
 }
 
 fn ensure_external_api_key_auth_allowed_for_explicit_choice(env_key: &str) -> Result<()> {
@@ -388,239 +181,6 @@ fn direct_env_file_contains_key(env_key: &str, env_file: &str) -> bool {
     })
 }
 
-fn maybe_enable_external_api_key_auth_for_auto(has_other_provider: bool) -> Result<bool> {
-    if provider::openrouter::has_credentials() {
-        return Ok(true);
-    }
-    if has_other_provider {
-        return Ok(false);
-    }
-
-    for (env_key, _) in crate::provider_catalog::openrouter_like_api_key_sources() {
-        let Some(source) = auth::external::preferred_unconsented_api_key_source_for_env(&env_key)
-        else {
-            continue;
-        };
-        let path = source.path()?;
-        let provider_name = provider_label_for_api_key_env(&env_key);
-        let login_hint = provider_login_hint_for_api_key_env(&env_key);
-        if !can_prompt_for_external_auth() {
-            crate::logging::warn(&external_auth_blocked_message(
-                &provider_name,
-                source.display_name(),
-                &path,
-                &login_hint,
-            ));
-            return Ok(false);
-        }
-        if prompt_to_trust_external_auth(&provider_name, source.display_name(), &path)? {
-            auth::external::trust_external_auth_source(source)?;
-            return Ok(provider::openrouter::has_credentials());
-        }
-        return Ok(false);
-    }
-
-    Ok(false)
-}
-
-fn maybe_prompt_for_generic_oauth_source(
-    provider_name: &str,
-    source: Option<auth::external::ExternalAuthSource>,
-    login_hint: &str,
-    auto: bool,
-    validation: impl Fn() -> bool,
-) -> Result<bool> {
-    let Some(source) = source else {
-        return Ok(false);
-    };
-    let path = source.path()?;
-    if !can_prompt_for_external_auth() {
-        if auto {
-            crate::logging::warn(&external_auth_blocked_message(
-                provider_name,
-                source.display_name(),
-                &path,
-                login_hint,
-            ));
-            return Ok(false);
-        }
-        anyhow::bail!(external_auth_blocked_message(
-            provider_name,
-            source.display_name(),
-            &path,
-            login_hint,
-        ));
-    }
-    if prompt_to_trust_external_auth(provider_name, source.display_name(), &path)? {
-        auth::external::trust_external_auth_source(source)?;
-        return Ok(if auto { validation() } else { true });
-    }
-    Ok(false)
-}
-
-fn ensure_openai_auth_allowed_for_explicit_choice() -> Result<()> {
-    if auth::codex::load_credentials().is_ok() {
-        return Ok(());
-    }
-
-    if maybe_prompt_for_generic_oauth_source(
-        "OpenAI/Codex",
-        auth::external::preferred_unconsented_openai_oauth_source(),
-        "jcode login --provider openai",
-        false,
-        || auth::codex::load_credentials().is_ok(),
-    )? {
-        return Ok(());
-    }
-
-    if !auth::codex::has_unconsented_legacy_credentials() {
-        return Ok(());
-    }
-
-    let path = auth::codex::legacy_auth_file_path()?;
-
-    if !can_prompt_for_external_auth() {
-        anyhow::bail!(external_auth_blocked_message(
-            "OpenAI/Codex",
-            "Codex",
-            &path,
-            "jcode login --provider openai"
-        ));
-    }
-
-    if prompt_to_trust_external_auth("OpenAI/Codex", "Codex", &path)? {
-        auth::codex::trust_legacy_auth_for_future_use()?;
-        return Ok(());
-    }
-
-    anyhow::bail!(
-        "Skipped trusting existing ~/.codex/auth.json credentials. Run `jcode login --provider openai` to authenticate jcode directly."
-    )
-}
-
-fn maybe_enable_legacy_codex_auth_for_auto(has_other_provider: bool) -> Result<bool> {
-    if auth::codex::load_credentials().is_ok() {
-        return Ok(true);
-    }
-
-    if let Some(source) = auth::external::preferred_unconsented_openai_oauth_source() {
-        if has_other_provider {
-            return Ok(false);
-        }
-        return maybe_prompt_for_generic_oauth_source(
-            "OpenAI/Codex",
-            Some(source),
-            "jcode login --provider openai",
-            true,
-            || auth::codex::load_credentials().is_ok(),
-        );
-    }
-
-    if !auth::codex::has_unconsented_legacy_credentials() {
-        return Ok(false);
-    }
-
-    if has_other_provider {
-        return Ok(false);
-    }
-
-    let path = auth::codex::legacy_auth_file_path()?;
-
-    if !can_prompt_for_external_auth() {
-        crate::logging::warn(&external_auth_blocked_message(
-            "OpenAI/Codex",
-            "Codex",
-            &path,
-            "jcode login --provider openai",
-        ));
-        return Ok(false);
-    }
-
-    if prompt_to_trust_external_auth("OpenAI/Codex", "Codex", &path)? {
-        auth::codex::trust_legacy_auth_for_future_use()?;
-        return Ok(auth::codex::load_credentials().is_ok());
-    }
-
-    Ok(false)
-}
-
-fn ensure_claude_auth_allowed_for_explicit_choice() -> Result<()> {
-    if auth::claude::load_credentials().is_ok() {
-        return Ok(());
-    }
-
-    if maybe_prompt_for_generic_oauth_source(
-        "Claude",
-        auth::external::preferred_unconsented_anthropic_oauth_source(),
-        "jcode login --provider claude",
-        false,
-        || auth::claude::load_credentials().is_ok(),
-    )? {
-        return Ok(());
-    }
-
-    let Some(source) = auth::claude::has_unconsented_external_auth() else {
-        return Ok(());
-    };
-    let path = source.path()?;
-    if !can_prompt_for_external_auth() {
-        anyhow::bail!(external_auth_blocked_message(
-            "Claude",
-            source.display_name(),
-            &path,
-            "jcode login --provider claude"
-        ));
-    }
-    if prompt_to_trust_external_auth("Claude", source.display_name(), &path)? {
-        auth::claude::trust_external_auth_source(source)?;
-        return Ok(());
-    }
-    anyhow::bail!(
-        "Skipped trusting external Claude credentials. Run `jcode login --provider claude` to authenticate jcode directly."
-    )
-}
-
-fn maybe_enable_claude_auth_for_auto(has_other_provider: bool) -> Result<bool> {
-    if auth::claude::load_credentials().is_ok() {
-        return Ok(true);
-    }
-
-    if let Some(source) = auth::external::preferred_unconsented_anthropic_oauth_source() {
-        if has_other_provider {
-            return Ok(false);
-        }
-        return maybe_prompt_for_generic_oauth_source(
-            "Claude",
-            Some(source),
-            "jcode login --provider claude",
-            true,
-            || auth::claude::load_credentials().is_ok(),
-        );
-    }
-
-    let Some(source) = auth::claude::has_unconsented_external_auth() else {
-        return Ok(false);
-    };
-    if has_other_provider {
-        return Ok(false);
-    }
-    let path = source.path()?;
-    if !can_prompt_for_external_auth() {
-        crate::logging::warn(&external_auth_blocked_message(
-            "Claude",
-            source.display_name(),
-            &path,
-            "jcode login --provider claude",
-        ));
-        return Ok(false);
-    }
-    if prompt_to_trust_external_auth("Claude", source.display_name(), &path)? {
-        auth::claude::trust_external_auth_source(source)?;
-        return Ok(auth::claude::load_credentials().is_ok());
-    }
-    Ok(false)
-}
-
 pub fn select_initial_model_provider(provider_key: &str) {
     crate::provider::activation::select_initial_runtime_provider_key(provider_key);
 }
@@ -681,76 +241,6 @@ fn resolved_profile_default_model(profile: OpenAiCompatibleProfile) -> Option<St
     resolve_openai_compatible_profile(profile).default_model
 }
 
-pub async fn login_and_bootstrap_provider(
-    provider: LoginProviderDescriptor,
-    account_label: Option<&str>,
-) -> Result<Arc<dyn provider::Provider>> {
-    run_login_provider(
-        provider,
-        account_label,
-        crate::cli::login::LoginOptions::default(),
-    )
-    .await?;
-    eprintln!();
-
-    let runtime: Arc<dyn provider::Provider> = match provider.target {
-        LoginProviderTarget::AutoImport => {
-            disable_subscription_runtime_mode();
-            Arc::new(provider::MultiProvider::new())
-        }
-        LoginProviderTarget::Jcode => Arc::new(provider::jcode::JcodeProvider::new()),
-        LoginProviderTarget::Claude | LoginProviderTarget::ClaudeApiKey => {
-            disable_subscription_runtime_mode();
-            Arc::new(provider::MultiProvider::new())
-        }
-        LoginProviderTarget::OpenAi => {
-            disable_subscription_runtime_mode();
-            Arc::new(provider::MultiProvider::with_preference(true))
-        }
-        LoginProviderTarget::OpenAiApiKey => {
-            disable_subscription_runtime_mode();
-            select_initial_model_provider("openai");
-            Arc::new(provider::MultiProvider::with_preference(true))
-        }
-        LoginProviderTarget::OpenRouter => {
-            disable_subscription_runtime_mode();
-            Arc::new(provider::MultiProvider::new())
-        }
-        LoginProviderTarget::Bedrock => {
-            disable_subscription_runtime_mode();
-            select_initial_model_provider("bedrock");
-            Arc::new(provider::MultiProvider::new())
-        }
-        LoginProviderTarget::Azure => {
-            disable_subscription_runtime_mode();
-            let model = crate::provider::activation::apply_azure_openai_runtime()?;
-            let multi = provider::MultiProvider::new();
-            if let Some(model) = model {
-                let _ = multi.set_model(&model);
-            }
-            Arc::new(multi)
-        }
-        LoginProviderTarget::OpenAiCompatible(profile) => {
-            disable_subscription_runtime_mode();
-            apply_openai_compatible_profile_env(Some(profile));
-            let multi = provider::MultiProvider::new();
-            let resolved = resolve_openai_compatible_profile(profile);
-            crate::provider::activation::apply_openai_compatible_runtime(
-                resolved.default_model.clone(),
-            )?;
-            if let Some(model) = resolved.default_model.as_deref() {
-                let _ = multi.set_model(model);
-            }
-            Arc::new(multi)
-        }
-        LoginProviderTarget::Google => {
-            anyhow::bail!("Google login cannot be used as a model provider bootstrap");
-        }
-    };
-
-    Ok(runtime)
-}
-
 pub fn save_named_api_key(env_file: &str, key_name: &str, key: &str) -> Result<()> {
     if !is_safe_env_key_name(key_name) {
         anyhow::bail!("Invalid API key variable name: {}", key_name);
@@ -771,28 +261,27 @@ pub async fn init_provider(
     choice: &str,
     model: Option<&str>,
 ) -> Result<Arc<dyn provider::Provider>> {
-    init_provider_with_options(choice, model, true, true).await
+    init_provider_with_options(choice, model, true).await
 }
 
 pub async fn init_provider_quiet(
     choice: &str,
     model: Option<&str>,
 ) -> Result<Arc<dyn provider::Provider>> {
-    init_provider_with_options(choice, model, false, true).await
+    init_provider_with_options(choice, model, false).await
 }
 
 pub async fn init_provider_for_validation(
     choice: &str,
     model: Option<&str>,
 ) -> Result<Arc<dyn provider::Provider>> {
-    init_provider_with_options(choice, model, false, false).await
+    init_provider_with_options(choice, model, false).await
 }
 
 async fn init_provider_with_options(
     choice: &str,
     model: Option<&str>,
     show_init_messages: bool,
-    allow_login_bootstrap: bool,
 ) -> Result<Arc<dyn provider::Provider>> {
     // Provider construction resolves concrete runtimes through the base
     // crate's external-runtime registry (composition-root pattern). The
@@ -830,96 +319,14 @@ async fn init_provider_with_options(
 
     let provider: Arc<dyn provider::Provider> = match &resolved {
         ResolvedProviderInput::Login(desc) => match desc.target {
-            LoginProviderTarget::Jcode => {
-                init_notice("Using Jcode subscription provider");
-                Arc::new(provider::jcode::JcodeProvider::new())
-            }
-            LoginProviderTarget::Claude => {
-                disable_subscription_runtime_mode();
-                ensure_claude_auth_allowed_for_explicit_choice()?;
-                init_notice("Using Claude as the initial provider (use /model to switch)");
-                select_initial_model_provider("claude");
-                Arc::new(provider::MultiProvider::with_preference_fast(false))
-            }
-            LoginProviderTarget::ClaudeApiKey => {
-                disable_subscription_runtime_mode();
-                ensure_external_api_key_auth_allowed_for_explicit_choice("ANTHROPIC_API_KEY")?;
-                init_notice(
-                    "Using Anthropic API key as the initial provider (use /model to switch)",
-                );
-                select_initial_model_provider("claude");
-                Arc::new(provider::MultiProvider::with_preference_fast(false))
-            }
-            LoginProviderTarget::OpenAi => {
-                disable_subscription_runtime_mode();
-                ensure_openai_auth_allowed_for_explicit_choice()?;
-                init_notice("Using OpenAI as the initial provider (use /model to switch)");
-                select_initial_model_provider("openai");
-                Arc::new(provider::MultiProvider::with_preference_fast(true))
-            }
-            LoginProviderTarget::OpenAiApiKey => {
-                disable_subscription_runtime_mode();
-                ensure_external_api_key_auth_allowed_for_explicit_choice("OPENAI_API_KEY")?;
-                init_notice("Using OpenAI API key as the initial provider (use /model to switch)");
-                select_initial_model_provider("openai");
-                Arc::new(provider::MultiProvider::with_preference_fast(true))
-            }
-            LoginProviderTarget::OpenRouter => {
-                disable_subscription_runtime_mode();
-                ensure_external_api_key_auth_allowed_for_explicit_choice("OPENROUTER_API_KEY")?;
-                init_notice("Using OpenRouter as the initial provider (use /model to switch)");
-                select_initial_model_provider("openrouter");
-                Arc::new(provider::MultiProvider::new_fast())
-            }
-            LoginProviderTarget::Bedrock => {
-                disable_subscription_runtime_mode();
-                init_notice("Using AWS Bedrock as the initial provider (use /model to switch)");
-                select_initial_model_provider("bedrock");
-                Arc::new(provider::MultiProvider::new_fast())
-            }
-            LoginProviderTarget::Azure => {
-                disable_subscription_runtime_mode();
-                let model = crate::provider::activation::apply_azure_openai_runtime()?;
-                init_notice("Using Azure OpenAI as the initial provider (use /model to switch)");
-                let multi = provider::MultiProvider::new_fast();
-                if let Some(model) = model {
-                    let _ = multi.set_model(&model);
-                }
-                Arc::new(multi)
-            }
-            LoginProviderTarget::Google => {
-                disable_subscription_runtime_mode();
-                init_notice(
-                    "Note: Google/Gmail is not a model provider. Using auto-detect for model provider.",
-                );
-                init_notice(
-                    "Gmail credentials can be configured with `jcode login google`; the gmail tool is enabled by default in the full tool profile.",
-                );
-                clear_initial_model_provider();
-                Arc::new(provider::MultiProvider::new_fast())
-            }
             LoginProviderTarget::OpenAiCompatible(profile) => {
                 init_openai_compatible_runtime(Some(profile), None, &init_notice)?
             }
-            LoginProviderTarget::AutoImport => {
-                anyhow::bail!(
-                    "auto-import is a login-menu action, not a model provider; use `jcode login` instead"
-                )
-            }
+            _ => anyhow::bail!(
+                "login provider `{}` is no longer a model provider; configure it via `jcode provider add`",
+                desc.id
+            ),
         },
-        ResolvedProviderInput::ClaudeSubprocess => {
-            disable_subscription_runtime_mode();
-            ensure_claude_auth_allowed_for_explicit_choice()?;
-            crate::logging::warn(
-                "Using --provider claude-subprocess is deprecated and will be removed. Prefer `--provider claude`.",
-            );
-            crate::env::set_var("JCODE_USE_CLAUDE_CLI", "1");
-            init_notice(
-                "Using deprecated Claude subprocess transport as the initial provider (legacy compatibility mode)",
-            );
-            select_initial_model_provider("claude");
-            Arc::new(provider::MultiProvider::with_preference_fast(false))
-        }
         ResolvedProviderInput::NamedProfile(name) => {
             crate::provider_catalog::apply_named_provider_profile_env_from_config(
                 name,
@@ -935,68 +342,36 @@ async fn init_provider_with_options(
             let auto_detect_start = std::time::Instant::now();
             let mut availability = detect_auto_provider_flags().await;
 
-            let reviewed_external_auth = if !availability.has_any_provider() {
-                maybe_run_external_auth_auto_import_flow().await?.is_some()
-            } else {
-                false
-            };
-
-            if reviewed_external_auth {
-                availability = detect_auto_provider_flags().await;
-            }
+            // resonix 化：`[provider] default_provider` 命中的命名配置 profile
+            // 优先于 API key 探测。纯配置（本地 ollama、无 key 端点）也能用
+            // `auto` 启动，配置是唯一模型接入方式。
+            let cfg = crate::config::config();
+            let config_default = cfg
+                .provider
+                .default_provider
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .filter(|name| cfg.providers.contains_key(*name))
+                .map(str::to_string);
 
             let auto_detect_ms = auto_detect_start.elapsed().as_millis();
+            crate::logging::info(&format!(
+                "[TIMING] auto_provider_bootstrap: detect={}ms, config_default={}, final_has_any={}",
+                auto_detect_ms,
+                config_default.as_deref().unwrap_or(""),
+                availability.has_any_provider()
+            ));
 
-            if !availability.has_any_provider() {
-                let supplemental_start = std::time::Instant::now();
-                let mut has_claude = availability.has_claude;
-                let mut has_openai = availability.has_openai;
-                let mut has_openrouter = availability.has_openrouter;
-                let mut has_other_provider = has_claude || has_openai || has_openrouter;
-
-                if !has_openai {
-                    has_openai = maybe_enable_legacy_codex_auth_for_auto(has_other_provider)?;
-                }
-                has_other_provider = has_openai || has_claude || has_openrouter;
-
-                if !has_claude {
-                    has_claude =
-                        maybe_enable_claude_auth_for_auto(has_other_provider && !has_claude)?;
-                }
-
-                if !has_openrouter {
-                    has_openrouter = maybe_enable_config_default_provider_for_auto()?;
-                }
-
-                has_other_provider = has_openai || has_claude || has_openrouter;
-
-                if !has_openrouter {
-                    has_openrouter = maybe_enable_external_api_key_auth_for_auto(
-                        has_other_provider && !has_openrouter,
-                    )?;
-                }
-
-                availability = AutoProviderAvailability {
-                    auth_status: auth::AuthStatus::check_fast(),
-                    has_claude,
-                    has_openai,
-                    has_openrouter,
-                };
-                crate::logging::info(&format!(
-                    "[TIMING] auto_provider_bootstrap: detect={}ms, external_import={}, supplemental={}ms, final_has_any={}",
-                    auto_detect_ms,
-                    reviewed_external_auth,
-                    supplemental_start.elapsed().as_millis(),
-                    availability.has_any_provider()
-                ));
-            } else {
-                crate::logging::info(&format!(
-                    "[TIMING] auto_provider_bootstrap: detect={}ms, external_import={}, supplemental=skipped, final_has_any=true",
-                    auto_detect_ms, reviewed_external_auth
-                ));
-            }
-
-            if availability.has_any_provider() {
+            if let Some(profile_name) = config_default {
+                crate::provider_catalog::apply_named_provider_profile_env_from_config(
+                    &profile_name,
+                    cfg,
+                )?;
+                crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
+                crate::env::set_var("JCODE_PROVIDER_PROFILE_NAME", &profile_name);
+                init_openai_compatible_runtime(None, Some(&profile_name), &init_notice)?
+            } else if availability.has_any_provider() {
                 let multi = provider::MultiProvider::from_auth_status(availability.auth_status);
                 init_notice(&format!(
                     "Using {} (use /model to switch models)",
@@ -1005,38 +380,9 @@ async fn init_provider_with_options(
                 crate::env::set_var("JCODE_ACTIVE_PROVIDER", multi.name().to_lowercase());
                 Arc::new(multi)
             } else {
-                let non_interactive = std::env::var("JCODE_NON_INTERACTIVE").is_ok();
-                // Deferred-auth bootstrap: the interactive TUI server is spawned
-                // headless (JCODE_NON_INTERACTIVE) but the user logs in *inside*
-                // the TUI on a fresh install. Rather than bail, boot an empty
-                // MultiProvider with no configured credentials yet. The TUI's
-                // `/login` flow then activates a provider via the normal
-                // auth-changed path (MultiProvider::on_auth_changed hot-inits the
-                // newly logged-in provider). Only the actual TUI server opts in
-                // via JCODE_DEFERRED_AUTH_BOOTSTRAP, so `jcode run` and other
-                // genuinely headless callers still fail loudly.
-                if std::env::var_os("JCODE_DEFERRED_AUTH_BOOTSTRAP").is_some() {
-                    crate::logging::info(
-                        "No credentials configured; booting deferred-auth MultiProvider for in-TUI onboarding login",
-                    );
-                    let multi = provider::MultiProvider::from_auth_status(availability.auth_status);
-                    crate::env::set_var("JCODE_ACTIVE_PROVIDER", multi.name().to_lowercase());
-                    Arc::new(multi)
-                } else if non_interactive {
-                    anyhow::bail!(
-                        "No credentials configured. Run 'jcode login' or set ANTHROPIC_API_KEY to authenticate."
-                    );
-                } else if !allow_login_bootstrap {
-                    anyhow::bail!(
-                        "No credentials configured for provider auto-detection; automatic login/bootstrap is disabled during validation."
-                    );
-                } else {
-                    let provider_desc = prompt_login_provider_selection(
-                        &crate::provider_catalog::auto_init_login_providers(),
-                        "No credentials found. Let's log in!\n\nChoose a provider:",
-                    )?;
-                    Box::pin(login_and_bootstrap_provider(provider_desc, None)).await?
-                }
+                anyhow::bail!(
+                    "No configured providers found. Add a model provider first:\n  jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>"
+                );
             }
         }
     };

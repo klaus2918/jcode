@@ -14,7 +14,6 @@ mod provider_setup;
 mod report_info;
 mod restart;
 
-pub(crate) use super::auth_test::run_post_login_validation;
 #[cfg(test)]
 pub(crate) use super::auth_test::{
     AuthTestChoicePlan, AuthTestTarget, ResolvedAuthTestTarget, auth_test_choice_plan,
