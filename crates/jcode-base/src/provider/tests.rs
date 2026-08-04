@@ -1046,6 +1046,182 @@ include!("tests/issue_534_profile_preservation.rs");
 include!("tests/fallback_failover.rs");
 include!("tests/catalog_subscription.rs");
 
+/// Regression: a resonix-style `[[providers]]` array entry (the config style
+/// the user migrates to, mirroring Reasonix) must support in-session model
+/// switching. The named profile runtime is installed at startup from
+/// `default_provider` + `default_model`, and both the bare model id and the
+/// `<profile>:<model>` picker spec must resolve to the same runtime so
+/// `available_models_for_switching()` lists the configured models.
+#[test]
+fn resonix_array_profile_supports_model_switching_and_lists_configured_models() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            std::fs::write(
+                std::path::PathBuf::from(jcode_home).join("config.toml"),
+                r#"
+[provider]
+default_model = "deepseek-v4-flash"
+default_provider = "self-deepseek"
+model_picker_providers = ["self-deepseek"]
+
+[[providers]]
+name = "self-deepseek"
+type = "openai-compatible"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 1000000
+models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+"#,
+            )
+            .expect("write test config.toml");
+            crate::env::set_var("DEEPSEEK_API_KEY", "sk-test-deepseek");
+            crate::config::invalidate_config_cache();
+
+            let template = MultiProvider::new_fast();
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            assert_eq!(
+                ProviderRegistry::new(&template).active_compatible_profile_id().as_deref(),
+                Some("self-deepseek")
+            );
+
+            let switching = template.available_models_for_switching();
+            assert!(
+                !switching.is_empty(),
+                "template switching models must not be empty: {switching:?}"
+            );
+            assert!(
+                switching.iter().any(|m| m == "deepseek-v4-flash")
+                    && switching.iter().any(|m| m == "deepseek-v4-pro"),
+                "template switching models should list the configured pair: {switching:?}"
+            );
+
+            // What the server agent actually uses: a session fork of the
+            // template. This is the path that produced "Model switching is not
+            // available for this provider." for the user.
+            let session = template.fork_for_new_session();
+            assert_eq!(session.model(), "deepseek-v4-flash");
+            let switching = session.available_models_for_switching();
+            assert!(
+                !switching.is_empty(),
+                "session-fork switching models must not be empty: {switching:?}"
+            );
+            assert!(
+                switching.iter().any(|m| m == "deepseek-v4-flash")
+                    && switching.iter().any(|m| m == "deepseek-v4-pro"),
+                "session-fork switching models should list the configured pair: {switching:?}"
+            );
+
+            // In-session switch to the other configured model (bare id).
+            session
+                .set_model("deepseek-v4-pro")
+                .expect("bare in-session switch should succeed");
+            assert_eq!(session.model(), "deepseek-v4-pro");
+
+            // Switch back via the picker's prefixed route spec.
+            session
+                .set_model("self-deepseek:deepseek-v4-flash")
+                .expect("prefixed in-session switch should succeed");
+            assert_eq!(session.model(), "deepseek-v4-flash");
+
+            // The route catalog (model picker list) must be limited to the
+            // configured provider by the allowlist, and must contain both
+            // configured models.
+            let routes = session.model_routes();
+            let route_models: Vec<&str> = routes
+                .iter()
+                .map(|route| route.model.as_str())
+                .collect();
+            assert!(
+                routes.iter().any(|r| r.model == "deepseek-v4-flash")
+                    && routes.iter().any(|r| r.model == "deepseek-v4-pro"),
+                "routes should contain the configured models: {route_models:?}"
+            );
+            // With `model_picker_providers = ["self-deepseek"]` the picker must
+            // not advertise unrelated built-in providers (Claude/OpenAI/etc.).
+            for builtin in [
+                "claude-sonnet-4",
+                "gpt-5.5",
+                "openrouter/owl-alpha",
+            ] {
+                assert!(
+                    !routes.iter().any(|r| r.model == builtin),
+                    "allowlist must hide built-in model '{builtin}': {route_models:?}"
+                );
+            }
+            let switching = session.available_models_for_switching();
+            for builtin in ["claude-sonnet-4", "gpt-5.5"] {
+                assert!(
+                    !switching.iter().any(|m| m == builtin),
+                    "switching list must hide built-in model '{builtin}': {switching:?}"
+                );
+            }
+        });
+    });
+}
+
+/// The configured named profile must keep the model list and in-session
+/// switching usable even when the API key is missing (fresh machine, unset
+/// env var, different environment than the one where the key exists). A
+/// missing key must not collapse the switching list to empty, which surfaces
+/// as the confusing "Model switching is not available for this provider."
+/// error. Requests themselves may still fail with a clear missing-key error.
+#[test]
+fn resonix_array_profile_lists_models_even_without_api_key() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            std::fs::write(
+                std::path::PathBuf::from(jcode_home).join("config.toml"),
+                r#"
+[provider]
+default_model = "deepseek-v4-flash"
+default_provider = "self-deepseek"
+model_picker_providers = ["self-deepseek"]
+
+[[providers]]
+name = "self-deepseek"
+type = "openai-compatible"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 1000000
+models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+"#,
+            )
+            .expect("write test config.toml");
+            // Deliberately do NOT set DEEPSEEK_API_KEY: the env var is unset,
+            // like a fresh machine before the user exports it.
+            crate::env::remove_var("DEEPSEEK_API_KEY");
+            crate::config::invalidate_config_cache();
+
+            let template = MultiProvider::new_fast();
+            let switching = template.available_models_for_switching();
+            assert!(
+                !switching.is_empty(),
+                "switching models must not be empty without an API key: {switching:?}"
+            );
+            assert!(
+                switching.iter().any(|m| m == "deepseek-v4-flash")
+                    && switching.iter().any(|m| m == "deepseek-v4-pro"),
+                "switching should still list the configured pair without a key: {switching:?}"
+            );
+
+            let session = template.fork_for_new_session();
+            let switching = session.available_models_for_switching();
+            assert!(
+                !switching.is_empty(),
+                "session-fork switching must not be empty without an API key: {switching:?}"
+            );
+        });
+    });
+}
+
 /// Rendering the route catalog must never schedule network work.
 ///
 /// Regression guard for the "spawning a session refetches every provider

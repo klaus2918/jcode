@@ -450,6 +450,13 @@ enum ProviderAuth {
     None {
         label: String,
     },
+    /// Credential-requiring named profile constructed while the API key was
+    /// absent (unset env var / missing env file). Construction succeeds so the
+    /// provider is installed and its configured models stay switchable; the
+    /// first request surfaces the missing-key error through `apply`.
+    Missing {
+        label: String,
+    },
 }
 
 impl ProviderAuth {
@@ -464,6 +471,9 @@ impl ProviderAuth {
                 Ok(req.bearer_auth(token))
             }
             Self::None { .. } => Ok(req),
+            Self::Missing { label } => {
+                anyhow::bail!("{} not found in environment", label)
+            }
         }
     }
 
@@ -473,6 +483,7 @@ impl ProviderAuth {
             Self::HeaderValue { label, .. } => label,
             Self::AzureEntra { label } => label,
             Self::None { label } => label,
+            Self::Missing { label } => label,
         }
     }
 }
@@ -1402,22 +1413,29 @@ impl OpenRouterProvider {
             jcode_base::config::NamedProviderAuth::None => ProviderAuth::None {
                 label: "local endpoint (no auth)".to_string(),
             },
-            jcode_base::config::NamedProviderAuth::Bearer => ProviderAuth::AuthorizationBearer {
-                token: key
-                    .ok_or_else(|| anyhow::anyhow!("{} not found in environment", key_label))?,
-                label: key_label,
+            jcode_base::config::NamedProviderAuth::Bearer => match key {
+                Some(token) => ProviderAuth::AuthorizationBearer {
+                    token,
+                    label: key_label.clone(),
+                },
+                // Missing key must not fail construction: the profile still
+                // installs so its configured models stay visible/switchable,
+                // and the first request reports the missing key clearly.
+                None => ProviderAuth::Missing { label: key_label },
             },
-            jcode_base::config::NamedProviderAuth::Header => ProviderAuth::HeaderValue {
-                header_name: HeaderName::from_bytes(
-                    profile
-                        .auth_header
-                        .as_deref()
-                        .unwrap_or("api-key")
-                        .as_bytes(),
-                )?,
-                value: key
-                    .ok_or_else(|| anyhow::anyhow!("{} not found in environment", key_label))?,
-                label: key_label,
+            jcode_base::config::NamedProviderAuth::Header => match key {
+                Some(value) => ProviderAuth::HeaderValue {
+                    header_name: HeaderName::from_bytes(
+                        profile
+                            .auth_header
+                            .as_deref()
+                            .unwrap_or("api-key")
+                            .as_bytes(),
+                    )?,
+                    value,
+                    label: key_label,
+                },
+                None => ProviderAuth::Missing { label: key_label },
             },
         };
         let model = profile

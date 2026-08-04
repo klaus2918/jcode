@@ -844,7 +844,7 @@ impl App {
                 suggestions.push(("/auth doctor".into(), "Diagnose provider auth issues"));
             }
             suggestions.extend(
-                crate::provider_catalog::tui_login_providers()
+                crate::provider_catalog::tui_login_providers_filtered()
                     .iter()
                     .map(|provider| (format!("{} {}", base, provider.id), provider.menu_detail)),
             );

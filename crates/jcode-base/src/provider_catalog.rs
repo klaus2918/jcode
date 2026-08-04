@@ -999,6 +999,69 @@ fn dedup_sources(sources: Vec<(String, String)>) -> Vec<(String, String)> {
     deduped
 }
 
+/// Filter a login-provider list by `provider.model_picker_providers`.
+///
+/// In the config-driven (Reasonix-aligned) model, `model_picker_providers`
+/// declares the only providers the user works with. When it is set, `/login`
+/// should not advertise unrelated built-in providers (Anthropic/OpenRouter/
+/// OpenAI/OAuth accounts the user never configured) -- it should offer only:
+/// - the generic `openai-compatible` entry (how a named profile gets its API
+///   key configured), and
+/// - any built-in login provider that the allowlist explicitly names.
+/// A missing/empty allowlist leaves the list unchanged (default behavior).
+pub fn filter_login_providers_by_allowlist(
+    providers: Vec<LoginProviderDescriptor>,
+) -> Vec<LoginProviderDescriptor> {
+    let Some(allowlist) = crate::config::config()
+        .provider
+        .model_picker_providers
+        .as_deref()
+    else {
+        return providers;
+    };
+    if allowlist.iter().all(|entry| entry.trim().is_empty()) {
+        return providers;
+    }
+
+    providers
+        .into_iter()
+        .filter(|provider| {
+            // The generic custom-endpoint entry is always relevant: it is how
+            // any named profile's API key/base gets configured.
+            if matches!(
+                provider.target,
+                LoginProviderTarget::OpenAiCompatible(profile)
+                    if profile.id == OPENAI_COMPAT_PROFILE.id
+            ) {
+                return true;
+            }
+            // The allowlist may name built-in providers by label/id/alias
+            // ("openai", "claude-api", "openrouter", ...). Match the same
+            // vocabulary the picker uses.
+            allowlist.iter().any(|entry| {
+                let entry = entry.trim();
+                !entry.is_empty()
+                    && (provider.id.eq_ignore_ascii_case(entry)
+                        || provider.display_name.eq_ignore_ascii_case(entry)
+                        || provider
+                            .aliases
+                            .iter()
+                            .any(|alias| alias.eq_ignore_ascii_case(entry)))
+            })
+        })
+        .collect()
+}
+
+/// TUI `/login` list filtered by `model_picker_providers`.
+pub fn tui_login_providers_filtered() -> Vec<LoginProviderDescriptor> {
+    filter_login_providers_by_allowlist(tui_login_providers())
+}
+
+/// CLI `login --provider auto` list filtered by `model_picker_providers`.
+pub fn cli_login_providers_filtered() -> Vec<LoginProviderDescriptor> {
+    filter_login_providers_by_allowlist(cli_login_providers())
+}
+
 #[cfg(test)]
 #[path = "provider_catalog_tests.rs"]
 mod provider_catalog_tests;

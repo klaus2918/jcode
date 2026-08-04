@@ -75,7 +75,7 @@ impl App {
 
     fn open_auth_provider_picker_inline(&mut self, logout: bool) {
         let status = crate::auth::AuthStatus::check_fast();
-        let providers = crate::provider_catalog::tui_login_providers();
+        let providers = crate::provider_catalog::tui_login_providers_filtered();
         let mut models = providers
             .into_iter()
             .filter(|provider| {
