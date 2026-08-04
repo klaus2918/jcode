@@ -98,7 +98,12 @@ fn test_session_context_includes_time_timezone_and_system_info() {
     let context = build_session_context(None);
     assert!(context.contains("# Session Context"));
     assert!(context.contains("Time: "));
-    assert!(context.contains("Timezone: UTC"));
+    // Timezone reflects the machine's local UTC offset (e.g. UTC+08:00), never
+    // a hard-coded value, so the agent reasons with the user's real clock.
+    assert!(
+        context.contains("Timezone: UTC+") || context.contains("Timezone: UTC-"),
+        "session context should report a local UTC offset: {context}"
+    );
     assert!(context.contains("OS: "));
     assert!(context.contains("Architecture: "));
     assert!(context.contains("Jcode version: "));
@@ -111,7 +116,7 @@ fn test_split_prompt_does_not_inject_session_context_per_turn() {
     let (split, _info) = build_system_prompt_split(None, &[], false, None, None);
     assert!(!split.dynamic_part.contains("# Session Context"));
     assert!(!split.dynamic_part.contains("Time: "));
-    assert!(!split.dynamic_part.contains("Timezone: UTC"));
+    assert!(!split.dynamic_part.contains("Timezone:"));
 }
 
 #[test]
