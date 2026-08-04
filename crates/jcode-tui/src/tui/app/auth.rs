@@ -208,7 +208,7 @@ impl App {
             crate::auth::AuthState::Expired => "needs attention",
             crate::auth::AuthState::NotConfigured => "not configured",
         };
-        let providers = crate::provider_catalog::auth_status_login_providers();
+        let providers = crate::provider_catalog::auth_status_login_providers_filtered();
         let mut rows: Vec<[String; 5]> = vec![[
             "Provider".to_string(),
             "Status".to_string(),

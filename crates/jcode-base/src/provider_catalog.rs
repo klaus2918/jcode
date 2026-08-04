@@ -1062,6 +1062,15 @@ pub fn cli_login_providers_filtered() -> Vec<LoginProviderDescriptor> {
     filter_login_providers_by_allowlist(cli_login_providers())
 }
 
+/// Auth-status/diagnostic provider list filtered by `model_picker_providers`.
+///
+/// In config-driven mode only the configured provider (plus the generic
+/// openai-compatible entry) is relevant, so `/auth` / `auth doctor` /
+/// provider reports do not advertise unconfigured built-in providers.
+pub fn auth_status_login_providers_filtered() -> Vec<LoginProviderDescriptor> {
+    filter_login_providers_by_allowlist(auth_status_login_providers())
+}
+
 #[cfg(test)]
 #[path = "provider_catalog_tests.rs"]
 mod provider_catalog_tests;
