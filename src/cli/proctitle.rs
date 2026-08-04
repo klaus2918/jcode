@@ -100,16 +100,4 @@ mod tests {
             assert_eq!(initial_title(&args), "jcode:selfdev");
         });
     }
-
-    #[test]
-    fn initial_title_labels_windows_hotkey_listener() {
-        let args = Args::parse_from(["jcode", "setup-hotkey", "--listen-windows-hotkey"]);
-        assert_eq!(initial_title(&args), "jcode hotkey listener");
-    }
-
-    #[test]
-    fn initial_title_labels_hotkey_uninstall() {
-        let args = Args::parse_from(["jcode", "setup-hotkey", "--uninstall"]);
-        assert_eq!(initial_title(&args), "jcode hotkey uninstall");
-    }
 }

@@ -671,22 +671,16 @@ mod tests {
                 })
         );
 
-        crate::cli::login::run_login(
-            "openai-compatible",
-            None,
-            crate::cli::login::LoginOptions {
-                no_validate: true,
-                openai_compatible_api_base: Some("https://api.example.com/v1".to_string()),
-                openai_compatible_api_key: Some("test-cerebras-cli-key".to_string()),
-                ..Default::default()
-            },
+        crate::provider_catalog::save_env_value_to_env_file(
+            &resolved.api_key_env,
+            crate::provider_catalog::OPENAI_COMPAT_PROFILE.env_file,
+            Some("test-cerebras-cli-key"),
         )
-        .await
-        .expect("CLI login should save openai-compatible key in sandbox");
+        .expect("save openai-compatible key in sandbox");
 
         assert!(
             env_file.exists(),
-            "CLI login should create provider env file"
+            "saving the provider key should create the env file"
         );
         assert_eq!(
             crate::provider_catalog::load_api_key_from_env_or_config(

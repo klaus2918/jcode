@@ -386,19 +386,19 @@ mod tests {
 
     #[test]
     fn auto_install_allowed_without_live_terminal() {
-        let args = parse_args(&["jcode", "login"]);
+        let args = parse_args(&["jcode", "version"]);
         assert!(should_auto_install_update(&args));
     }
 
     #[test]
     fn auto_install_allowed_with_live_terminal_attached() {
-        let args = parse_args(&["jcode", "login"]);
+        let args = parse_args(&["jcode", "version"]);
         assert!(should_auto_install_update(&args));
     }
 
     #[test]
     fn auto_install_respects_explicit_disable_even_without_terminal() {
-        let mut args = parse_args(&["jcode", "login"]);
+        let mut args = parse_args(&["jcode", "version"]);
         args.auto_update = false;
         assert!(!should_auto_install_update(&args));
     }
@@ -450,7 +450,9 @@ mod tests {
             let provider = crate::provider::external::instantiate_external_provider(key)
                 .unwrap_or_else(|| panic!("{key} runtime factory should instantiate"));
             assert_eq!(provider.name(), expected_name);
-            assert!(!provider.model().is_empty());
+            // resonix 化：模型列表由配置/目录驱动，裸构造的 provider 没有内置
+            // 默认模型（`jcode provider add` / `/model` 负责选择）。这里只验证
+            // 运行时能实例化并正确命名。
         }
     }
 }

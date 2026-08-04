@@ -70,11 +70,19 @@ async fn pending_restore_returns_false_for_unarmed_snapshot() {
 async fn pending_restore_does_not_auto_restore_recent_crash_without_snapshot() {
     let _guard = TestEnvGuard::new().expect("setup test env");
 
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("exit 0")
-        .spawn()
-        .expect("spawn child");
+    // Spawn a short-lived child process to obtain a dead pid. Windows has no
+    // `sh`, so use the platform-native no-op command.
+    let mut child = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .spawn()
+    } else {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+    }
+    .expect("spawn child");
     let dead_pid = child.id();
     let _ = child.wait().expect("wait for child");
 

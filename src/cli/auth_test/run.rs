@@ -75,12 +75,6 @@ async fn maybe_run_auth_test_smoke_for_choice(
     }
 }
 
-pub(crate) async fn run_post_login_validation(
-    provider: crate::provider_catalog::LoginProviderDescriptor,
-) -> Result<()> {
-    run_post_login_validation_inner(provider, true).await
-}
-
 pub(crate) async fn run_post_login_validation_quiet(
     provider: crate::provider_catalog::LoginProviderDescriptor,
 ) -> Result<()> {
@@ -410,7 +404,7 @@ fn print_context_audit_reports(reports: &[AuthTestContextAuditReport]) {
 pub async fn run_auth_test_command(
     choice: &str,
     model: Option<&str>,
-    login: bool,
+    _login: bool,
     all_configured: bool,
     no_smoke: bool,
     no_tool_smoke: bool,
@@ -429,7 +423,6 @@ pub async fn run_auth_test_command(
                 run_auth_test_target(
                     target,
                     model,
-                    login,
                     !no_smoke,
                     !no_tool_smoke,
                     provider_smoke_prompt,
@@ -442,18 +435,6 @@ pub async fn run_auth_test_command(
                     choice.clone(),
                     generic_credential_paths_for_provider(provider),
                 );
-                if login {
-                    match super::login::run_login(
-                        &choice,
-                        None,
-                        super::login::LoginOptions::default(),
-                    )
-                    .await
-                    {
-                        Ok(()) => report.push_step("login", true, "Login flow completed."),
-                        Err(err) => report.push_step("login", false, err.to_string()),
-                    }
-                }
                 populate_generic_auth_test_report(
                     provider,
                     &choice,
@@ -505,7 +486,7 @@ pub(crate) fn resolve_auth_test_targets(
         let targets = configured_auth_test_targets(&status);
         if targets.is_empty() {
             anyhow::bail!(
-                "No configured supported auth providers found. Run `jcode login --provider <provider>` first, or choose an explicit --provider."
+                "No configured supported auth providers found. Add one via `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>`, or choose an explicit --provider."
             );
         }
         return Ok(targets);
@@ -534,7 +515,6 @@ pub(crate) fn configured_auth_test_targets(
 async fn run_auth_test_target(
     target: AuthTestTarget,
     model: Option<&str>,
-    login: bool,
     run_smoke: bool,
     run_tool_smoke: bool,
     provider_smoke_prompt: &str,
@@ -542,18 +522,6 @@ async fn run_auth_test_target(
 ) -> AuthTestProviderReport {
     let mut report = AuthTestProviderReport::new(target);
 
-    if login {
-        match super::login::run_login(
-            target.provider_id(),
-            None,
-            super::login::LoginOptions::default(),
-        )
-        .await
-        {
-            Ok(()) => report.push_step("login", true, "Login flow completed."),
-            Err(err) => report.push_step("login", false, err.to_string()),
-        }
-    }
 
     populate_auth_test_target_report(
         target,

@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    account, acp, commands, debug, hot_exec, login, output, provider_init, selfdev, terminal,
+    acp, commands, debug, hot_exec, output, provider_init, selfdev, terminal,
     tui_launch,
 };
 
