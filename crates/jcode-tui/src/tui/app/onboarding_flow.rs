@@ -18,7 +18,6 @@
 //! Session history is intentionally excluded from onboarding and remains
 //! available later through `/resume`.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How long we wait on a yes/no decision phase (login import, telemetry
@@ -28,6 +27,10 @@ use std::time::{Duration, Instant};
 pub(crate) const DECISION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Which external CLI an OAuth login was detected for.
+// Variants are constructed by the import/resume tooling (tests and the
+// session-picker loader); the lib's own onboarding no longer constructs them
+// after the provider removal, so allow dead_code for the lib build.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExternalCli {
     Codex,
@@ -452,98 +455,6 @@ impl OnboardingFlow {
 /// Detect whether an external Codex, Claude Code, Pi, or OpenCode OAuth login
 /// is present.
 ///
-/// Returns every detected CLI (sandbox-aware), so the caller can choose which
-/// one to offer (e.g. by most-recent activity). The order is Codex, Claude, Pi,
-/// then OpenCode, but callers should not treat that as a preference.
-pub(crate) fn detect_external_cli_oauths() -> Vec<ExternalCli> {
-    let mut found = Vec::new();
-    // Detection drives the first-run "continue where you left off" picker, whose
-    // only requirement is that resumable transcripts exist. We therefore treat a
-    // CLI as present when EITHER its OAuth login file exists OR it has written
-    // transcripts. The transcript fallback matters because some tools store
-    // credentials outside a plain JSON file (Claude Code and Cursor use the
-    // macOS keychain / a vscdb), so an auth-file-only check would silently hide
-    // sessions the user clearly has.
-    if external_oauth_present(&external_home_path(".codex/auth.json"))
-        || external_transcripts_present(&external_home_path(".codex/sessions"), "jsonl")
-    {
-        found.push(ExternalCli::Codex);
-    }
-    if external_oauth_present(&external_home_path(".claude/.credentials.json"))
-        || external_transcripts_present(&external_home_path(".claude/projects"), "jsonl")
-    {
-        found.push(ExternalCli::ClaudeCode);
-    }
-    if external_oauth_present(&external_home_path(".pi/agent/auth.json"))
-        || external_transcripts_present(&external_home_path(".pi/agent/sessions"), "jsonl")
-    {
-        found.push(ExternalCli::Pi);
-    }
-    if external_oauth_present(&external_home_path(".local/share/opencode/auth.json"))
-        || external_transcripts_present(
-            &external_home_path(".local/share/opencode/storage/session"),
-            "json",
-        )
-    {
-        found.push(ExternalCli::OpenCode);
-    }
-    found
-}
-
-/// Whether `root` contains at least one file with the given extension, searched
-/// shallowly-recursively. Cheap directory walk used for resume detection.
-fn external_transcripts_present(root: &std::path::Path, ext: &str) -> bool {
-    fn walk(dir: &std::path::Path, ext: &str, budget: &mut u32) -> bool {
-        if *budget == 0 {
-            return false;
-        }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            if *budget == 0 {
-                return false;
-            }
-            *budget -= 1;
-            let path = entry.path();
-            if path.is_dir() {
-                if walk(&path, ext, budget) {
-                    return true;
-                }
-            } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
-                return true;
-            }
-        }
-        false
-    }
-    if !root.exists() {
-        return false;
-    }
-    // Bound the walk so a pathological tree cannot stall onboarding.
-    let mut budget = 20_000u32;
-    walk(root, ext, &mut budget)
-}
-
-/// Resolve a path under the (sandbox-aware) external home so onboarding honors
-/// `JCODE_HOME`/external isolation, matching the import detectors.
-fn external_home_path(rel: &str) -> PathBuf {
-    crate::storage::user_home_path(rel)
-        .ok()
-        .or_else(|| home_dir().map(|home| home.join(rel)))
-        .unwrap_or_else(|| PathBuf::from(rel))
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-/// A credentials file counts as an OAuth login when it exists and is non-empty.
-fn external_oauth_present(path: &PathBuf) -> bool {
-    std::fs::metadata(path)
-        .map(|meta| meta.is_file() && meta.len() > 0)
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,40 +504,5 @@ mod tests {
             remaining >= DECISION_TIMEOUT.as_secs() - 2 && remaining <= DECISION_TIMEOUT.as_secs()
         );
         assert!(!flow.decision_timed_out());
-    }
-
-    #[test]
-    fn external_oauth_present_requires_nonempty_file() {
-        let dir = std::env::temp_dir().join(format!("jcode-onb-test-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let empty = dir.join("empty.json");
-        let full = dir.join("full.json");
-        std::fs::write(&empty, b"").unwrap();
-        std::fs::write(&full, b"{\"token\":\"x\"}").unwrap();
-        assert!(!external_oauth_present(&empty));
-        assert!(external_oauth_present(&full));
-        assert!(!external_oauth_present(&dir.join("missing.json")));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn external_transcripts_present_finds_nested_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "jcode-onb-transcripts-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let nested = dir.join("projects/demo/agent-transcripts/uuid");
-        std::fs::create_dir_all(&nested).unwrap();
-        // No matching files yet.
-        assert!(!external_transcripts_present(&dir, "jsonl"));
-        std::fs::write(nested.join("uuid.jsonl"), b"{}\n").unwrap();
-        assert!(external_transcripts_present(&dir, "jsonl"));
-        // A different extension should not match.
-        assert!(!external_transcripts_present(&dir, "json"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
