@@ -228,27 +228,10 @@ pub async fn run_live_openai_compatible_smoke(
 mod tests {
     use super::*;
     use jcode_base::provider_catalog::resolve_openai_compatible_profile;
-    use jcode_provider_metadata::{
-        GEMINI_OPENAI_COMPAT_PROFILE, OPENAI_NATIVE_OPENAI_COMPAT_PROFILE,
-    };
-
-    #[test]
-    fn gemini_openai_compat_strips_models_prefix_from_catalog_ids() {
-        let resolved = resolve_openai_compatible_profile(GEMINI_OPENAI_COMPAT_PROFILE);
-        assert_eq!(
-            normalize_openai_compatible_model_id(&resolved, "models/gemini-2.5-flash"),
-            "gemini-2.5-flash"
-        );
-        // Already-bare ids pass through unchanged.
-        assert_eq!(
-            normalize_openai_compatible_model_id(&resolved, "gemini-2.5-pro"),
-            "gemini-2.5-pro"
-        );
-    }
-
+    use jcode_provider_metadata::OPENAI_COMPAT_PROFILE;
     #[test]
     fn non_gemini_openai_compat_leaves_model_ids_untouched() {
-        let resolved = resolve_openai_compatible_profile(OPENAI_NATIVE_OPENAI_COMPAT_PROFILE);
+        let resolved = resolve_openai_compatible_profile(OPENAI_COMPAT_PROFILE);
         // A leading `models/` segment on a non-Gemini host is not stripped.
         assert_eq!(
             normalize_openai_compatible_model_id(&resolved, "models/gpt-5.1"),

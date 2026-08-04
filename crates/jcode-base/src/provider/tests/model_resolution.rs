@@ -119,62 +119,6 @@ fn test_available_models_display_uses_route_models_and_filters_placeholder_rows(
 }
 
 #[test]
-fn test_cerebras_model_routes_are_profile_scoped_and_unique() {
-    with_clean_provider_test_env(|| {
-        with_env_var("GEMINI_API_KEY", "test-gemini-key", || {
-            crate::provider_catalog::force_apply_openai_compatible_profile_env(
-                crate::provider_catalog::openai_compatible_profile_by_id("gemini-api"),
-            );
-            let openrouter =
-                test_openrouter_runtime().expect("Cerebras direct provider should initialize");
-            let provider = MultiProvider {
-                claude: RwLock::new(None),
-                anthropic: RwLock::new(None),
-                openai: RwLock::new(None),
-                bedrock: RwLock::new(None),
-                openrouter: RwLock::new(Some(openrouter)),
-                openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
-                active_openai_compatible_profile: RwLock::new(None),
-                active: RwLock::new(ActiveProvider::OpenRouter),
-                startup_notices: RwLock::new(Vec::new()),
-                initial_provider: Some(ActiveProvider::OpenRouter),
-                routes_memo: std::sync::Mutex::new(None),
-                post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            };
-
-            let routes = provider.model_routes();
-            // Assert against the profile's current static model list so this
-            // test tracks catalog updates instead of hardcoding a model that
-            // Cerebras may stop serving (the original fixture pinned
-            // `qwen-3-235b-a22b-instruct-2507`, which rotted when the static
-            // coverage was refreshed).
-            let static_models = crate::provider_catalog::openai_compatible_profile_static_models(
-                crate::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
-            );
-            let probe_model = static_models
-                .first()
-                .expect("Gemini API profile should have static models")
-                .clone();
-            let probe_routes = routes
-                .iter()
-                .filter(|route| route.provider == "Gemini API" && route.model == probe_model)
-                .collect::<Vec<_>>();
-            assert_eq!(
-                probe_routes.len(),
-                1,
-                "Gemini API direct route should not appear twice in provider routes: {routes:?}"
-            );
-            assert_eq!(probe_routes[0].api_method, "openai-compatible:gemini-api");
-            assert!(probe_routes[0].available);
-            assert!(
-                !routes.iter().any(|route| {
-                    route.provider == "Gemini API" && route.api_method == "openai-compatible"
-                }),
-                "generic Gemini API OpenAI-compatible route should be collapsed into the profile-scoped route: {routes:?}"
-            );
-        })
-    });
-}
 
 #[test]
 fn test_direct_chutes_ignores_legacy_openrouter_catalog_cache() {

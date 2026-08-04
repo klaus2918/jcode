@@ -230,12 +230,13 @@ impl App {
     }
 
     /// Start the default first-run login when no external logins were detected.
-    /// We point brand-new users straight at OpenAI (ChatGPT) rather than the full
-    /// provider picker, since that is the most common first login. The provider
-    /// picker is still reachable via `/login`.
+    /// Config-driven (Reasonix-aligned) mode points users at the generic
+    /// OpenAI-compatible endpoint setup, which is how any provider is wired via
+    /// `[[providers]]` + an API key. The provider picker stays reachable via
+    /// `/login`.
     pub(super) fn onboarding_start_default_login(&mut self) {
-        self.start_login_provider(crate::provider_catalog::OPENAI_LOGIN_PROVIDER);
-        self.set_status_notice("Login: opening OpenAI sign-in (or type /login for others)");
+        self.start_login_provider(crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER);
+        self.set_status_notice("Login: configuring an OpenAI-compatible endpoint (or type /login for others)");
     }
 
     /// Advance out of a login phase once credentials are available. Prompt and

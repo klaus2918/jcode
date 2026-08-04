@@ -142,20 +142,6 @@ pub async fn run_login(
     account_label: Option<&str>,
     options: LoginOptions,
 ) -> Result<()> {
-    if choice
-        .trim()
-        .eq_ignore_ascii_case(super::provider_init::CLAUDE_SUBPROCESS_ID)
-    {
-        eprintln!(
-            "Warning: Claude subprocess transport is deprecated and will be removed. Direct Anthropic API is already the default for `--provider claude`."
-        );
-        return run_login_provider(
-            crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
-            account_label,
-            options,
-        )
-        .await;
-    }
     if let Some(provider) = crate::provider_catalog::resolve_login_provider(choice) {
         return run_login_provider(provider, account_label, options).await;
     }

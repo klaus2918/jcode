@@ -70,22 +70,6 @@ fn matrix_login_provider_aliases_resolve_to_canonical_ids() {
 
 #[test]
 fn auth_issue_profile_metadata_matches_direct_provider_endpoints() {
-    assert_eq!(
-        GEMINI_OPENAI_COMPAT_PROFILE.api_base,
-        "https://generativelanguage.googleapis.com/v1beta/openai"
-    );
-    assert_eq!(
-        GEMINI_OPENAI_COMPAT_PROFILE.default_model,
-        Some("gemini-2.5-flash")
-    );
-    assert_eq!(
-        OPENROUTER_OPENAI_COMPAT_PROFILE.api_base,
-        "https://openrouter.ai/api/v1"
-    );
-    assert_eq!(
-        ANTHROPIC_OPENAI_COMPAT_PROFILE.api_base,
-        "https://api.anthropic.com/v1"
-    );
     assert!(!OPENAI_COMPAT_PROFILE.setup_url.contains("opencode.ai"));
 }
 

@@ -902,7 +902,7 @@ mod tests {
             " Login ",
             vec![LoginPickerItem::new(
                 1,
-                crate::provider_catalog::OPENAI_LOGIN_PROVIDER,
+                crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
                 AuthState::Available,
                 "OAuth credentials configured",
             )],
@@ -940,13 +940,13 @@ mod tests {
             vec![
                 LoginPickerItem::new(
                     1,
-                    crate::provider_catalog::OPENAI_LOGIN_PROVIDER,
+                    crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
                     AuthState::NotConfigured,
                     "not configured",
                 ),
                 LoginPickerItem::new(
                     2,
-                    crate::provider_catalog::CLAUDE_LOGIN_PROVIDER,
+                    crate::provider_catalog::OLLAMA_LOGIN_PROVIDER,
                     AuthState::Available,
                     "OAuth configured",
                 ),
@@ -972,7 +972,7 @@ mod tests {
 
         assert_eq!(
             picker.selected_item().map(|item| item.provider.id),
-            Some("claude")
+            Some("ollama")
         );
     }
 

@@ -3,66 +3,6 @@ use super::{
     LoginProviderSurfaceOrder, LoginProviderTarget, OpenAiCompatibleProfile,
 };
 
-// OpenRouter also has a dedicated provider implementation elsewhere, but it
-// speaks the standard OpenAI-compatible /api/v1 endpoint, so it can be driven
-// by `provider-doctor` / `provider-test-coverage` like any other
-// OpenAI-compatible provider. `default_model` is None so the doctor selects the
-// live catalog's first model unless `--model` is passed.
-pub const OPENROUTER_OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
-    id: "openrouter",
-    display_name: "OpenRouter",
-    api_base: "https://openrouter.ai/api/v1",
-    api_key_env: "OPENROUTER_API_KEY",
-    env_file: "openrouter.env",
-    setup_url: "https://openrouter.ai/keys",
-    default_model: None,
-    requires_api_key: true,
-};
-
-// Anthropic and OpenAI also expose OpenAI-compatible `/v1/chat/completions`
-// endpoints, so they can be driven by `provider-doctor` /
-// `provider-test-coverage` as OpenAI-compatible profiles. These profile ids
-// alias the native login-provider ids (`anthropic-api`, `openai-api`); auth
-// activation deliberately routes them through the native runtime, while the
-// live HTTP probes hit these hosts (Anthropic needs `x-api-key` +
-// `anthropic-version`, handled in the probe layer). `default_model` is None so
-// the doctor selects from the live catalog unless `--model` is passed.
-pub const ANTHROPIC_OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
-    id: "anthropic-api",
-    display_name: "Anthropic API",
-    api_base: "https://api.anthropic.com/v1",
-    api_key_env: "ANTHROPIC_API_KEY",
-    env_file: "anthropic.env",
-    setup_url: "https://docs.anthropic.com/en/api/openai-sdk",
-    default_model: None,
-    requires_api_key: true,
-};
-
-pub const OPENAI_NATIVE_OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
-    id: "openai-api",
-    display_name: "OpenAI API",
-    api_base: "https://api.openai.com/v1",
-    api_key_env: "OPENAI_API_KEY",
-    env_file: "openai.env",
-    setup_url: "https://platform.openai.com/api-keys",
-    default_model: None,
-    requires_api_key: true,
-};
-
-pub const GEMINI_OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
-    id: "gemini-api",
-    display_name: "Gemini API",
-    // Google's official OpenAI-compatible surface for the Gemini Developer API.
-    // The `/models` endpoint here returns `models/`-prefixed ids, which the live
-    // probe layer normalizes back to bare model names.
-    api_base: "https://generativelanguage.googleapis.com/v1beta/openai",
-    api_key_env: "GEMINI_API_KEY",
-    env_file: "gemini.env",
-    setup_url: "https://ai.google.dev/gemini-api/docs/openai",
-    default_model: Some("gemini-2.5-flash"),
-    requires_api_key: true,
-};
-
 pub const LMSTUDIO_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "lmstudio",
     display_name: "LM Studio",
@@ -96,41 +36,11 @@ pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfi
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 7] = [
-    OPENROUTER_OPENAI_COMPAT_PROFILE,
-    ANTHROPIC_OPENAI_COMPAT_PROFILE,
-    OPENAI_NATIVE_OPENAI_COMPAT_PROFILE,
-    GEMINI_OPENAI_COMPAT_PROFILE,
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 3] = [
     LMSTUDIO_PROFILE,
     OLLAMA_PROFILE,
     OPENAI_COMPAT_PROFILE,
 ];
-
-pub const CLAUDE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "claude",
-    display_name: "Anthropic/Claude",
-    auth_kind: LoginProviderAuthKind::OAuth,
-    auth_state_key: LoginProviderAuthStateKey::Anthropic,
-    auth_status_method: "OAuth",
-    aliases: &["anthropic"],
-    menu_detail: "requires Claude Pro or Max subscription",
-    recommended: true,
-    target: LoginProviderTarget::Claude,
-    order: LoginProviderSurfaceOrder::new(Some(1), Some(1), Some(1), Some(1), Some(1)),
-};
-
-pub const ANTHROPIC_API_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "anthropic-api",
-    display_name: "Anthropic API",
-    auth_kind: LoginProviderAuthKind::ApiKey,
-    auth_state_key: LoginProviderAuthStateKey::Anthropic,
-    auth_status_method: "API key",
-    aliases: &["claude-api", "anthropic-key", "claude-key"],
-    menu_detail: "direct Anthropic Messages API",
-    recommended: false,
-    target: LoginProviderTarget::ClaudeApiKey,
-    order: LoginProviderSurfaceOrder::new(Some(2), Some(2), Some(2), Some(2), Some(2)),
-};
 
 pub const AUTO_IMPORT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "auto-import",
@@ -156,76 +66,6 @@ pub const JCODE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescripto
     recommended: false,
     target: LoginProviderTarget::Jcode,
     order: LoginProviderSurfaceOrder::new(Some(3), Some(3), Some(3), Some(3), Some(3)),
-};
-
-pub const OPENAI_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "openai",
-    display_name: "OpenAI",
-    auth_kind: LoginProviderAuthKind::OAuth,
-    auth_state_key: LoginProviderAuthStateKey::OpenAi,
-    auth_status_method: "OAuth",
-    aliases: &[],
-    menu_detail: "requires ChatGPT Plus or Pro subscription",
-    recommended: true,
-    target: LoginProviderTarget::OpenAi,
-    order: LoginProviderSurfaceOrder::new(Some(2), Some(2), Some(2), Some(2), Some(2)),
-};
-
-pub const OPENAI_API_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "openai-api",
-    display_name: "OpenAI API",
-    auth_kind: LoginProviderAuthKind::ApiKey,
-    auth_state_key: LoginProviderAuthStateKey::OpenAi,
-    auth_status_method: "API key",
-    aliases: &[
-        "openai-key",
-        "openai-apikey",
-        "openai-platform",
-        "platform-openai",
-    ],
-    menu_detail: "native OpenAI API key, pay-per-token",
-    recommended: false,
-    target: LoginProviderTarget::OpenAiApiKey,
-    order: LoginProviderSurfaceOrder::new(Some(99), Some(99), Some(99), Some(99), Some(99)),
-};
-
-pub const OPENROUTER_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "openrouter",
-    display_name: "OpenRouter",
-    auth_kind: LoginProviderAuthKind::ApiKey,
-    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
-    auth_status_method: "API key",
-    aliases: &[],
-    menu_detail: "API key, pay-per-token, 200+ models",
-    recommended: false,
-    target: LoginProviderTarget::OpenRouter,
-    order: LoginProviderSurfaceOrder::new(Some(4), Some(3), Some(4), Some(3), Some(3)),
-};
-
-pub const BEDROCK_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "bedrock",
-    display_name: "AWS Bedrock",
-    auth_kind: LoginProviderAuthKind::ApiKey,
-    auth_state_key: LoginProviderAuthStateKey::Bedrock,
-    auth_status_method: "API key / AWS credentials",
-    aliases: &["aws-bedrock", "aws_bedrock"],
-    menu_detail: "Bedrock API key or AWS credentials, pay-per-token",
-    recommended: false,
-    target: LoginProviderTarget::Bedrock,
-    order: LoginProviderSurfaceOrder::new(Some(5), Some(4), None, None, Some(4)),
-};
-
-pub const AZURE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "azure",
-    display_name: "Azure OpenAI",
-    auth_kind: LoginProviderAuthKind::Hybrid,
-    auth_state_key: LoginProviderAuthStateKey::Azure,
-    auth_status_method: "Entra ID / API key",
-    aliases: &["azure-openai", "azure_openai", "aoai"],
-    menu_detail: "Microsoft Entra ID or Azure OpenAI API key",
-    recommended: false,
-    target: LoginProviderTarget::Azure,
-    order: LoginProviderSurfaceOrder::new(Some(5), Some(5), None, None, Some(4)),
 };
 
 pub const LMSTUDIO_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
@@ -267,50 +107,16 @@ pub const OPENAI_COMPAT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderD
     order: LoginProviderSurfaceOrder::new(Some(10), Some(9), None, None, Some(9)),
 };
 
-pub const GEMINI_API_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "gemini-api",
-    display_name: "Gemini API",
-    auth_kind: LoginProviderAuthKind::ApiKey,
-    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
-    auth_status_method: "API key",
-    aliases: &[
-        "gemini-key",
-        "gemini-apikey",
-        "google-ai-studio",
-        "ai-studio",
-    ],
-    menu_detail: "Google AI Studio Developer API key (OpenAI-compatible)",
-    recommended: false,
-    target: LoginProviderTarget::OpenAiCompatible(GEMINI_OPENAI_COMPAT_PROFILE),
-    order: LoginProviderSurfaceOrder::new(Some(38), Some(38), Some(38), Some(38), Some(38)),
-};
-
-pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "google",
-    display_name: "Google/Gmail",
-    auth_kind: LoginProviderAuthKind::OAuth,
-    auth_state_key: LoginProviderAuthStateKey::Google,
-    auth_status_method: "OAuth",
-    aliases: &["gmail"],
-    menu_detail: "read, draft, and send emails",
-    recommended: false,
-    target: LoginProviderTarget::Google,
-    order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
-};
-
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 14] = [
+// Config-driven (Reasonix-aligned) login surface. Built-in third-party /
+// first-party vendors (Claude/OpenAI/OpenRouter/Bedrock/Azure/Google/Gemini)
+// are intentionally absent: models are connected via `[[providers]]` config
+// entries and an `openai-compatible` endpoint, not interactive login. The
+// generic openai-compatible entry, local endpoints (LM Studio / Ollama),
+// external-auth import, and the jcode subscription remain.
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 5] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
-    CLAUDE_LOGIN_PROVIDER,
-    ANTHROPIC_API_LOGIN_PROVIDER,
-    OPENAI_LOGIN_PROVIDER,
-    OPENAI_API_LOGIN_PROVIDER,
     JCODE_LOGIN_PROVIDER,
-    OPENROUTER_LOGIN_PROVIDER,
-    BEDROCK_LOGIN_PROVIDER,
-    AZURE_LOGIN_PROVIDER,
     LMSTUDIO_LOGIN_PROVIDER,
     OLLAMA_LOGIN_PROVIDER,
     OPENAI_COMPAT_LOGIN_PROVIDER,
-    GEMINI_API_LOGIN_PROVIDER,
-    GOOGLE_LOGIN_PROVIDER,
 ];

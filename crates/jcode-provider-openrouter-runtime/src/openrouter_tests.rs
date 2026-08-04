@@ -714,45 +714,6 @@ fn kimi_for_coding_tool_call_message_includes_reasoning_content() {
 }
 
 #[test]
-fn gemini_api_profile_exposes_static_models_before_catalog_refresh() {
-    let models = jcode_base::provider_catalog::openai_compatible_profile_static_models(
-        jcode_provider_metadata::GEMINI_OPENAI_COMPAT_PROFILE,
-    );
-    assert!(models.iter().any(|model| model == "gemini-2.5-flash"));
-    assert!(models.iter().any(|model| model == "gemini-2.5-pro"));
-}
-
-#[test]
-fn gemini_api_profile_exposes_live_chat_models_before_catalog_refresh() {
-    assert_eq!(
-        jcode_provider_metadata::GEMINI_OPENAI_COMPAT_PROFILE.default_model,
-        Some("gemini-2.5-flash")
-    );
-    let models = jcode_base::provider_catalog::openai_compatible_profile_static_models(
-        jcode_provider_metadata::GEMINI_OPENAI_COMPAT_PROFILE,
-    );
-    assert!(models.iter().any(|model| model == "gemini-2.5-flash"));
-    assert!(models.iter().any(|model| model == "gemini-2.5-pro"));
-}
-
-#[test]
-fn openai_compatible_profiles_with_unverified_live_catalogs_have_static_fallbacks() {
-    let cases = [(
-        jcode_provider_metadata::GEMINI_OPENAI_COMPAT_PROFILE,
-        "gemini-2.5-flash",
-    )];
-
-    for (profile, expected_model) in cases {
-        let models = jcode_base::provider_catalog::openai_compatible_profile_static_models(profile);
-        assert!(
-            models.iter().any(|model| model == expected_model),
-            "{} should expose static fallback model {expected_model}; got {models:?}",
-            profile.id
-        );
-    }
-}
-
-#[test]
 fn comtegra_profile_uses_endpoint_default_max_tokens() {
     let _lock = ENV_LOCK.lock();
     let _override = EnvVarGuard::remove("JCODE_OPENROUTER_MAX_TOKENS");
@@ -971,18 +932,18 @@ fn autodetected_profile_seeds_default_model_and_cache_namespace() {
     let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
     let _env = isolate_openrouter_autodetect_env();
 
-    let zai = jcode_base::provider_catalog::resolve_openai_compatible_profile(
-        jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
+    let compat = jcode_base::provider_catalog::resolve_openai_compatible_profile(
+        jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
     );
-    write_test_api_key(&temp, &zai.env_file, &zai.api_key_env, "test-zai-key");
+    write_test_api_key(&temp, &compat.env_file, &compat.api_key_env, "test-compat-key");
 
     let provider = OpenRouterProvider::new().expect("provider");
-    assert_eq!(provider.model.blocking_read().clone(), "gemini-2.5-flash");
+    assert_eq!(provider.model.blocking_read().clone(), "openai-compatible");
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE")
             .ok()
             .as_deref(),
-        Some("zai")
+        Some("openai-compatible")
     );
 }
 
@@ -2246,14 +2207,14 @@ fn runtime_display_name_for_profile_runtime_instance() {
     let _home = EnvVarGuard::set("HOME", temp.path());
     let _appdata = EnvVarGuard::set("APPDATA", temp.path().join("AppData").join("Roaming"));
     let _env = isolate_openrouter_autodetect_env();
-    let _key = EnvVarGuard::set("GEMINI_API_KEY", "nim-test-key");
+    let _key = EnvVarGuard::set("OPENAI_COMPAT_API_KEY", "compat-test-key");
 
-    let nim = OpenRouterProvider::new_openai_compatible_profile_runtime(
-        jcode_base::provider_catalog::GEMINI_OPENAI_COMPAT_PROFILE,
+    let compat = OpenRouterProvider::new_openai_compatible_profile_runtime(
+        jcode_base::provider_catalog::OPENAI_COMPAT_PROFILE,
     )
-    .expect("build nvidia-nim runtime");
-    assert_eq!(nim.runtime_display_name(), "Gemini API");
-    assert_eq!(Provider::name(&nim), "openrouter");
+    .expect("build openai-compatible runtime");
+    assert_eq!(compat.runtime_display_name(), "OpenAI-compatible");
+    assert_eq!(Provider::name(&compat), "openrouter");
 }
 
 #[test]
