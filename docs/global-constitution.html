@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>全局宪法配置图</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  body { margin: 20px; background: #fff; font-family: sans-serif; }
+  .zoom-controls { margin-bottom: 16px; }
+  .zoom-controls button { font-size: 18px; padding: 6px 14px; margin-right: 8px; cursor: pointer; }
+  #graphWrap { border: 1px dashed #ccc; padding: 20px; }
+  .mermaid svg { max-width: none !important; }
+</style>
+</head>
+<body>
+<div class="zoom-controls">
+  <button onclick="zoom(1.25)">放大 +</button>
+  <button onclick="zoom(0.8)">缩小 -</button>
+  <button onclick="zoom(1)">复位</button>
+  <button onclick="fit()">适应窗口</button>
+</div>
+<div id="graphWrap">
+<div class="mermaid">
+flowchart TB
+    S(["会话启动<br/>构建系统提示词"]) --> Q{是否设置<br/>JCODE_HOME?}
+    Q -- "是" --> R["根数据目录 = $JCODE_HOME"]
+    Q -- "否" --> H["根数据目录 = 主目录/.jcode"]
+    R --> A["全局宪法<br/>$JCODE_HOME/external/AGENTS.md"]
+    H --> B["全局宪法<br/>主目录/AGENTS.md"]
+    A --> V(["新会话加载"])
+    B --> V
+    V --> I["/info 验证<br/>global ~/AGENTS.md"]
+</div>
+</div>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'base', flowchart: { useMaxWidth: false } });
+  function zoom(f) {
+    const svg = document.querySelector('.mermaid svg');
+    if (!svg) return;
+    const cur = parseFloat(svg.style.width) || svg.getBoundingClientRect().width;
+    svg.style.width = (cur * f) + 'px';
+  }
+  function fit() {
+    const svg = document.querySelector('.mermaid svg');
+    if (!svg) return;
+    const wrap = document.getElementById('graphWrap');
+    svg.style.width = (wrap.clientWidth - 40) + 'px';
+  }
+  window.addEventListener('load', fit);
+</script>
+</body>
+</html>
