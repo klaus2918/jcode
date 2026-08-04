@@ -3,10 +3,10 @@ use crate::auth::{AuthState, AuthStatus};
 use super::pricing::cheapness_for_route;
 use super::registry::ProviderRegistry;
 use super::{
-    ALL_OPENAI_MODELS, AccountModelAvailabilityState, ModelRoute, MultiProvider,
-    Provider, anthropic_api_key_route_availability, anthropic_oauth_route_availability, bedrock,
-    build_anthropic_oauth_route, build_openai_api_key_route,
-    build_openai_oauth_route, build_openrouter_auto_route, build_openrouter_endpoint_route,
+    ALL_OPENAI_MODELS, AccountModelAvailabilityState, ModelRoute, MultiProvider, Provider,
+    anthropic_api_key_route_availability, anthropic_oauth_route_availability, bedrock,
+    build_anthropic_oauth_route, build_openai_api_key_route, build_openai_oauth_route,
+    build_openrouter_auto_route, build_openrouter_endpoint_route,
     build_openrouter_fallback_provider_route, configured_standard_openrouter_profile_routes,
     dedupe_model_routes, direct_openai_compatible_profile_routes,
     format_account_model_availability_detail, is_listable_model_name, known_anthropic_model_ids,
@@ -1163,10 +1163,34 @@ mod tests {
             let temp = tempfile::tempdir().expect("tempdir");
             let vars = vec![
                 ("JCODE_HOME", std::env::var_os("JCODE_HOME")),
-                ("GEMINI_API_KEY", std::env::var_os("GEMINI_API_KEY")),
+                (
+                    "JCODE_NAMED_PROVIDER_PROFILE",
+                    std::env::var_os("JCODE_NAMED_PROVIDER_PROFILE"),
+                ),
+                (
+                    "JCODE_PROVIDER_PROFILE_ACTIVE",
+                    std::env::var_os("JCODE_PROVIDER_PROFILE_ACTIVE"),
+                ),
+                (
+                    "OPENAI_COMPAT_LOCAL_ENABLED",
+                    std::env::var_os("OPENAI_COMPAT_LOCAL_ENABLED"),
+                ),
+                (
+                    "JCODE_OPENAI_COMPAT_API_BASE",
+                    std::env::var_os("JCODE_OPENAI_COMPAT_API_BASE"),
+                ),
+                (
+                    "JCODE_OPENAI_COMPAT_API_KEY_NAME",
+                    std::env::var_os("JCODE_OPENAI_COMPAT_API_KEY_NAME"),
+                ),
+                ("OLLAMA_API_KEY", std::env::var_os("OLLAMA_API_KEY")),
             ];
             crate::env::set_var("JCODE_HOME", temp.path());
-            crate::env::set_var("GEMINI_API_KEY", "sk-test-gemini");
+            for (key, _) in &vars {
+                if *key != "JCODE_HOME" {
+                    crate::env::remove_var(key);
+                }
+            }
             Self {
                 vars,
                 _temp: temp,
@@ -1270,21 +1294,17 @@ mod tests {
     #[test]
     fn remote_compatible_route_uses_live_cache_and_does_not_mark_fallback() {
         let guard = EnvGuard::new();
-        guard.save_compatible_cache(
-            "ollama",
-            "http://localhost:11434/v1",
-            &["llama-3.1-8b"],
-        );
+        guard.save_compatible_cache("ollama", "http://localhost:11434/v1", &["llama-3.1-8b"]);
+        // Ollama is a local optional-key profile; give it a key so the route
+        // walker treats it as configured regardless of sibling-test env state.
+        crate::env::set_var("OLLAMA_API_KEY", "sk-test-ollama");
 
         let route = remote_openai_compatible_route_for_model("llama-3.1-8b")
             .expect("live-cache-only Ollama model should be routed");
 
         assert_eq!(route.provider, "Ollama");
         assert_eq!(route.api_method, "openai-compatible:ollama");
-        assert_eq!(
-            route.detail,
-            "http://localhost:11434/v1"
-        );
+        assert_eq!(route.detail, "http://localhost:11434/v1");
         assert!(!route.detail.contains("fallback"));
     }
 

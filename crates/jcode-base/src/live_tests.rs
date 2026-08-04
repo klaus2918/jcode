@@ -2795,18 +2795,18 @@ mod tests {
         // evict the older passing evidence during dedup, or the pair silently
         // drops out of READY even though it genuinely passed everything.
         let mut passing = coverage_entry(
-            "anthropic-api",
-            "Anthropic API",
-            Some("claude-opus-4-8"),
+            "openai-compatible",
+            "OpenAI-compatible",
+            Some("gpt-4o"),
             strict_statuses(&[]),
         );
         passing.recorded_at = Utc::now() - Duration::hours(2);
 
         // Newer run: identical checkpoint id set, but API stages skipped.
         let mut skipped = coverage_entry(
-            "anthropic-api",
-            "Anthropic API",
-            Some("claude-opus-4-8"),
+            "openai-compatible",
+            "OpenAI-compatible",
+            Some("gpt-4o"),
             strict_statuses(&[
                 (
                     checkpoints::NON_STREAMING_CHAT_COMPLETION,
@@ -2837,14 +2837,8 @@ mod tests {
         skipped.recorded_at = Utc::now();
 
         let mut latest = BTreeMap::new();
-        latest.insert(
-            "anthropic-api::claude-opus-4-8::passing".to_string(),
-            passing,
-        );
-        latest.insert(
-            "anthropic-api::claude-opus-4-8::skipped".to_string(),
-            skipped,
-        );
+        latest.insert("openai-compatible::gpt-4o::passing".to_string(), passing);
+        latest.insert("openai-compatible::gpt-4o::skipped".to_string(), skipped);
         let coverage = LiveVerificationCoverage {
             schema_version: SCHEMA_VERSION,
             updated_at: Utc::now(),
@@ -2858,26 +2852,26 @@ mod tests {
             summary.covered_provider_model_pairs, 1,
             "the passing full-tier run must still promote the pair to READY"
         );
-        assert_eq!(summary.covered_pairs[0].provider_id, "anthropic-api");
-        assert_eq!(summary.covered_pairs[0].model, "claude-opus-4-8");
+        assert_eq!(summary.covered_pairs[0].provider_id, "openai-compatible");
+        assert_eq!(summary.covered_pairs[0].model, "gpt-4o");
 
-        // And the monitoring roster reflects it as READY with the OAuth/API-key
-        // auth method recorded (anthropic-api is the direct API-key path).
+        // And the monitoring roster reflects it as READY with the auth method
+        // recorded (openai-compatible is the generic API-key path).
         let entry = summary
             .provider_roster
             .iter()
-            .find(|e| e.provider_id == "anthropic-api")
-            .expect("anthropic-api should appear in the provider roster");
+            .find(|e| e.provider_id == "openai-compatible")
+            .expect("openai-compatible should appear in the provider roster");
         assert_eq!(entry.status, "READY");
-        assert_eq!(entry.auth_method, "API key");
+        assert_eq!(entry.auth_method, "API key / CLI");
 
-        // The native OAuth Claude provider is labeled distinctly from the API one.
-        let claude = summary
+        // The local Ollama provider is labeled distinctly from the generic one.
+        let ollama = summary
             .provider_roster
             .iter()
-            .find(|e| e.provider_id == "claude")
-            .expect("claude should appear in the provider roster");
-        assert_eq!(claude.auth_method, "OAuth");
+            .find(|e| e.provider_id == "ollama")
+            .expect("ollama should appear in the provider roster");
+        assert_eq!(ollama.auth_method, "local endpoint");
     }
 
     #[test]

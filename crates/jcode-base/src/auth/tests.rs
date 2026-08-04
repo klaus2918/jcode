@@ -478,7 +478,8 @@ fn openrouter_like_status_is_provider_specific() {
     assert_eq!(compat_assessment.state, AuthState::NotConfigured);
     assert_eq!(
         ollama_assessment.method_detail,
-        "API key (`OLLAMA_API_KEY`)".to_string()
+        "local endpoint (`http://localhost:11434/v1`) + optional API key (`OLLAMA_API_KEY`)"
+            .to_string()
     );
 
     restore_env_var("JCODE_HOME", prev_home);
@@ -488,7 +489,6 @@ fn openrouter_like_status_is_provider_specific() {
 }
 
 #[test]
-
 #[cfg(unix)]
 #[test]
 fn cursor_status_is_available_when_api_key_exists_without_cli() {

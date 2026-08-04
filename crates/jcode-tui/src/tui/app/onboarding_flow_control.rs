@@ -236,7 +236,9 @@ impl App {
     /// `/login`.
     pub(super) fn onboarding_start_default_login(&mut self) {
         self.start_login_provider(crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER);
-        self.set_status_notice("Login: configuring an OpenAI-compatible endpoint (or type /login for others)");
+        self.set_status_notice(
+            "Login: configuring an OpenAI-compatible endpoint (or type /login for others)",
+        );
     }
 
     /// Advance out of a login phase once credentials are available. Prompt and
@@ -511,9 +513,9 @@ impl App {
                 return false;
             };
             if !review.choosing {
-                // Summary mode: three pills, "Continue" (preselected),
-                // "Import less", and "Telemetry settings". Left/Right (and
-                // Tab) move between them; Enter/Space commit the focused one.
+                // Summary mode: two pills, "Continue" (preselected) and
+                // "Import less". Left/Right (and Tab) move between them;
+                // Enter/Space commit the focused one.
                 match code {
                     KeyCode::Left
                     | KeyCode::Up

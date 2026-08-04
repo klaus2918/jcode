@@ -141,8 +141,7 @@ fn continue_pill_line(focused: bool, align: Alignment) -> Line<'static> {
 }
 
 /// The summary-screen action row: "Continue" (imports everything, preselected)
-/// next to "Import less" (opens the per-login checkbox list) and "Telemetry
-/// settings" (opens the telemetry sub-page).
+/// next to "Import less" (opens the per-login checkbox list).
 fn import_summary_pills_line(
     focused: crate::tui::ImportSummaryPill,
     align: Alignment,
