@@ -168,7 +168,7 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
         }
         "add" | "login" => {
             return Some(Ok(AccountCommand::Add {
-                provider_id: "claude".to_string(),
+                provider_id: "openai-compatible".to_string(),
                 label: (!remainder.is_empty()).then(|| remainder.to_string()),
             }));
         }
@@ -177,7 +177,7 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
                 return Some(Err("Usage: /account remove <label>".to_string()));
             }
             return Some(Ok(AccountCommand::Remove {
-                provider_id: "claude".to_string(),
+                provider_id: "openai-compatible".to_string(),
                 label: remainder.to_string(),
             }));
         }
