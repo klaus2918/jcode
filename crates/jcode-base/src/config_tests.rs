@@ -60,6 +60,133 @@ fn resonix_style_top_level_providers_array_table_parses() {
 }
 
 #[test]
+fn resonix_array_config_survives_save() {
+    // `Config::save()` serializes the whole struct. The `providers` map has a
+    // custom `serialize_with` so a resonix-style `[[providers]]` array is
+    // written back in the same array-of-tables style, not the legacy
+    // `[providers.<name>]` tables.
+    let toml_str = r#"
+        [[providers]]
+        name = "deepseek"
+        kind = "openai"
+        base_url = "https://api.deepseek.com"
+        model = "deepseek-v4-flash"
+        api_key_env = "DEEPSEEK_API_KEY"
+        context_window = 1000000
+    "#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let rendered = toml::to_string_pretty(&config).unwrap();
+    assert!(
+        rendered.contains("[[providers]]"),
+        "save() should keep the resonix array style, got:\n{}",
+        rendered
+    );
+    assert!(
+        !rendered.contains("[providers.deepseek]"),
+        "save() must not rewrite back to table style, got:\n{}",
+        rendered
+    );
+}
+
+#[test]
+fn resonix_array_config_round_trips_losslessly() {
+    // Parse a resonix-style array, serialize, and re-parse: the provider must
+    // be identical, and the output must stay in array style.
+    let toml_str = r#"
+        [[providers]]
+        name = "self-deepseek"
+        kind = "openai"
+        base_url = "https://api.deepseek.com"
+        model = "deepseek-v4-flash"
+        api_key_env = "DEEPSEEK_API_KEY"
+        context_window = 1000000
+        models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+    "#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let rendered = toml::to_string_pretty(&config).unwrap();
+    let reparsed: Config = toml::from_str(&rendered).unwrap();
+
+    let original = config.providers.get("self-deepseek").expect("original");
+    let round = reparsed.providers.get("self-deepseek").expect("round-trip");
+    assert_eq!(original.base_url, round.base_url);
+    assert_eq!(original.api_format, round.api_format);
+    assert_eq!(original.default_model, round.default_model);
+    assert_eq!(original.api_key_env, round.api_key_env);
+    assert_eq!(original.models.len(), 2);
+    assert_eq!(round.models.len(), 2);
+    assert_eq!(round.models[0].id, "deepseek-v4-flash");
+    assert_eq!(round.models[0].context_window, Some(1_000_000));
+    assert_eq!(round.models[1].id, "deepseek-v4-pro");
+    assert_eq!(round.models[1].context_window, Some(1_000_000));
+}
+
+#[test]
+fn resonix_array_config_round_trips_advanced_fields() {
+    // Provider entries with advanced fields (auth, proxy, requires_api_key,
+    // model_catalog, per-model capabilities) must survive a save round-trip.
+    let toml_str = r#"
+        [[providers]]
+        name = "my-anth-gw"
+        type = "openai-compatible"
+        kind = "anthropic"
+        base_url = "https://gateway.example.com/v1"
+        model = "claude-sonnet-4-6"
+        api_key_env = "MY_GATEWAY_KEY"
+        proxy = "http://127.0.0.1:7890"
+        auth = "header"
+        auth_header = "x-api-key"
+        requires_api_key = true
+        provider_routing = true
+        model_catalog = true
+        allow_provider_pinning = true
+
+        [[providers.models]]
+        id = "claude-sonnet-4-6"
+        context_window = 200000
+        vision = true
+        tools = true
+
+        [[providers.models]]
+        id = "claude-haiku-4-5"
+        context_window = 200000
+        supports_vision = false
+        supported_efforts = ["low", "high"]
+        default_effort = "low"
+    "#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    let rendered = toml::to_string_pretty(&config).unwrap();
+    assert!(
+        rendered.contains("[[providers]]"),
+        "advanced config should stay in array style, got:\n{}",
+        rendered
+    );
+    let reparsed: Config = toml::from_str(&rendered).unwrap();
+
+    let original = config.providers.get("my-anth-gw").expect("original");
+    let round = reparsed.providers.get("my-anth-gw").expect("round-trip");
+    assert_eq!(original.api_format, round.api_format);
+    assert_eq!(original.proxy, round.proxy);
+    assert_eq!(original.auth, round.auth);
+    assert_eq!(original.auth_header, round.auth_header);
+    assert_eq!(original.requires_api_key, round.requires_api_key);
+    assert_eq!(original.provider_routing, round.provider_routing);
+    assert_eq!(original.model_catalog, round.model_catalog);
+    assert_eq!(original.allow_provider_pinning, round.allow_provider_pinning);
+    assert_eq!(original.models.len(), round.models.len());
+    assert_eq!(round.models[0].id, "claude-sonnet-4-6");
+    assert_eq!(round.models[0].context_window, Some(200_000));
+    assert_eq!(round.models[0].vision, Some(true));
+    assert_eq!(round.models[0].tools, Some(true));
+    assert_eq!(round.models[1].id, "claude-haiku-4-5");
+    assert_eq!(round.models[1].vision, Some(false));
+    assert_eq!(
+        round.models[1].supported_efforts.as_deref(),
+        Some(&["low".to_string(), "high".to_string()][..])
+    );
+    assert_eq!(round.models[1].default_effort.as_deref(), Some("low"));
+}
+
+#[test]
 fn existing_providers_mapping_table_still_parses() {
     let toml_str = r#"
         [providers.my-gw]
