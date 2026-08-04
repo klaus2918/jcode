@@ -1084,7 +1084,9 @@ models = ["deepseek-v4-flash", "deepseek-v4-pro"]
             let template = MultiProvider::new_fast();
             assert_eq!(template.model(), "deepseek-v4-flash");
             assert_eq!(
-                ProviderRegistry::new(&template).active_compatible_profile_id().as_deref(),
+                ProviderRegistry::new(&template)
+                    .active_compatible_profile_id()
+                    .as_deref(),
                 Some("self-deepseek")
             );
 
@@ -1131,10 +1133,7 @@ models = ["deepseek-v4-flash", "deepseek-v4-pro"]
             // configured provider by the allowlist, and must contain both
             // configured models.
             let routes = session.model_routes();
-            let route_models: Vec<&str> = routes
-                .iter()
-                .map(|route| route.model.as_str())
-                .collect();
+            let route_models: Vec<&str> = routes.iter().map(|route| route.model.as_str()).collect();
             assert!(
                 routes.iter().any(|r| r.model == "deepseek-v4-flash")
                     && routes.iter().any(|r| r.model == "deepseek-v4-pro"),
@@ -1142,11 +1141,7 @@ models = ["deepseek-v4-flash", "deepseek-v4-pro"]
             );
             // With `model_picker_providers = ["self-deepseek"]` the picker must
             // not advertise unrelated built-in providers (Claude/OpenAI/etc.).
-            for builtin in [
-                "claude-sonnet-4",
-                "gpt-5.5",
-                "openrouter/owl-alpha",
-            ] {
+            for builtin in ["claude-sonnet-4", "gpt-5.5", "openrouter/owl-alpha"] {
                 assert!(
                     !routes.iter().any(|r| r.model == builtin),
                     "allowlist must hide built-in model '{builtin}': {route_models:?}"

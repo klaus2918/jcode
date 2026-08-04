@@ -743,8 +743,8 @@ impl OpenAIProvider {
             .trim()
             .to_string();
         if !jcode_base::provider::known_openai_model_ids()
-                .iter()
-                .any(|known| known == &model)
+            .iter()
+            .any(|known| known == &model)
         {
             jcode_base::logging::info(&format!(
                 "Warning: '{}' is not supported; falling back to '{}'",

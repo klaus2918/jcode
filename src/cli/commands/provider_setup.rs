@@ -624,9 +624,7 @@ fn providers_block_name(line: &str) -> Option<String> {
         return None;
     }
     let value = rest.trim_start().trim_start_matches('=').trim();
-    let unquoted = value
-        .strip_prefix('"')?
-        .strip_suffix('"')?;
+    let unquoted = value.strip_prefix('"')?.strip_suffix('"')?;
     Some(unquoted.to_string())
 }
 
@@ -917,10 +915,16 @@ context_window = 1000
 centered = true
 "#;
         let result = remove_named_provider_sections(content, "testgw");
-        assert!(result.contains("name = \"keep\""), "keep entry must survive");
+        assert!(
+            result.contains("name = \"keep\""),
+            "keep entry must survive"
+        );
         assert!(!result.contains("testgw"), "target entry must be removed");
         assert!(!result.contains("api_key_env = \"TESTGW_KEY\""));
-        assert!(result.contains("[display]"), "unrelated section must survive");
+        assert!(
+            result.contains("[display]"),
+            "unrelated section must survive"
+        );
         // Result must still parse as valid TOML with only `keep`.
         let parsed: Config = toml::from_str(&result).expect("valid config");
         assert!(parsed.providers.contains_key("keep"));

@@ -65,8 +65,8 @@ pub use jcode_provider_core::{
 };
 pub use jcode_provider_core::{ProviderFailoverPrompt, parse_failover_prompt_message};
 pub use route_builders::{
-    build_anthropic_oauth_route, build_openai_api_key_route,
-    build_openai_oauth_route, build_openrouter_auto_route, build_openrouter_endpoint_route,
+    build_anthropic_oauth_route, build_openai_api_key_route, build_openai_oauth_route,
+    build_openrouter_auto_route, build_openrouter_endpoint_route,
     build_openrouter_fallback_provider_route, is_listable_model_name,
     listable_model_names_from_routes, openrouter_catalog_model_id,
 };
@@ -1526,12 +1526,7 @@ fn provider_core_allowlist_filtered_routes(
     if allowlist.iter().all(|entry| entry.trim().is_empty()) {
         return routes;
     }
-    filter_model_routes_by_provider_allowlist(
-        routes,
-        Some(allowlist),
-        &provider.model(),
-        false,
-    )
+    filter_model_routes_by_provider_allowlist(routes, Some(allowlist), &provider.model(), false)
 }
 
 impl Default for MultiProvider {
@@ -1944,7 +1939,7 @@ impl Provider for MultiProvider {
                             jcode_provider_core::model_route_provider_matches_key(
                                 Some(&route.api_method),
                                 &route.provider,
-                                &active_key,
+                                active_key,
                             )
                         });
                     belongs || route.model == current

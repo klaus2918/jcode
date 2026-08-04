@@ -36,11 +36,8 @@ pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfi
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 3] = [
-    LMSTUDIO_PROFILE,
-    OLLAMA_PROFILE,
-    OPENAI_COMPAT_PROFILE,
-];
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 3] =
+    [LMSTUDIO_PROFILE, OLLAMA_PROFILE, OPENAI_COMPAT_PROFILE];
 
 pub const AUTO_IMPORT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "auto-import",
