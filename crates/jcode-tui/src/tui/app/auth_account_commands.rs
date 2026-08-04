@@ -1,6 +1,30 @@
 use super::*;
 
 pub(crate) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
+    // Config-driven (Reasonix-aligned) mode: `provider.model_picker_providers`
+    // declares the only providers in use, and each is wired via a
+    // `[[providers]]` config entry + environment key. There is no interactive
+    // login/logout to offer -- models are connected by configuration. Surface
+    // that instead of opening the built-in provider picker.
+    let config_driven = crate::config::config()
+        .provider
+        .model_picker_providers
+        .as_deref()
+        .is_some_and(|list| list.iter().any(|entry| !entry.trim().is_empty()));
+    if config_driven {
+        let bare = matches!(trimmed, "/login" | "/logout")
+            || trimmed.strip_prefix("/login ").is_some()
+            || trimmed.strip_prefix("/logout ").is_some();
+        if bare {
+            app.push_display_message(DisplayMessage::system(
+                "Model access is configured via config.toml [[providers]] entries. Add or edit a provider there (base URL, model list, api_key_env), then it appears in /model. Run `jcode provider add` for guided setup."
+                    .to_string(),
+            ));
+            app.set_status_notice("Config-driven provider access");
+            return true;
+        }
+    }
+
     if trimmed == "/auth" {
         app.show_auth_status();
         return true;
@@ -28,7 +52,7 @@ pub(crate) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
         .strip_prefix("/login ")
         .or_else(|| trimmed.strip_prefix("/auth "))
     {
-        let providers = crate::provider_catalog::tui_login_providers();
+        let providers = crate::provider_catalog::tui_login_providers_filtered();
         if let Some(provider) =
             crate::provider_catalog::resolve_login_selection(provider, &providers)
         {
@@ -53,7 +77,7 @@ pub(crate) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
             app.start_logout_all();
             return true;
         }
-        let providers = crate::provider_catalog::tui_login_providers();
+        let providers = crate::provider_catalog::tui_login_providers_filtered();
         if let Some(provider) =
             crate::provider_catalog::resolve_login_selection(provider, &providers)
         {

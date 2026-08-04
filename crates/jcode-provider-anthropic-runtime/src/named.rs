@@ -32,6 +32,13 @@ pub enum NamedAnthropicAuth {
         value: String,
         label: String,
     },
+    /// Credential-requiring named profile constructed while the API key was
+    /// absent. Construction succeeds so the provider is installed and its
+    /// configured models stay switchable; the first request reports the
+    /// missing key through `apply`.
+    Missing {
+        label: String,
+    },
 }
 
 impl NamedAnthropicAuth {
@@ -42,12 +49,16 @@ impl NamedAnthropicAuth {
             Self::Header {
                 header_name, value, ..
             } => Ok(req.header(header_name, value)),
+            Self::Missing { label } => anyhow::bail!("{} not found in environment", label),
         }
     }
 
     fn label(&self) -> &str {
         match self {
-            Self::None { label } | Self::Bearer { label, .. } | Self::Header { label, .. } => label,
+            Self::None { label }
+            | Self::Bearer { label, .. }
+            | Self::Header { label, .. }
+            | Self::Missing { label } => label,
         }
     }
 }
@@ -199,22 +210,26 @@ impl NamedAnthropicProvider {
             NamedProviderAuth::None => NamedAnthropicAuth::None {
                 label: "local endpoint (no auth)".to_string(),
             },
-            NamedProviderAuth::Bearer => NamedAnthropicAuth::Bearer {
-                token: key
-                    .ok_or_else(|| anyhow::anyhow!("{} not found in environment", key_label))?,
-                label: key_label,
+            NamedProviderAuth::Bearer => match key {
+                Some(token) => NamedAnthropicAuth::Bearer {
+                    token,
+                    label: key_label.clone(),
+                },
+                None => NamedAnthropicAuth::Missing { label: key_label },
             },
-            NamedProviderAuth::Header => NamedAnthropicAuth::Header {
-                header_name: HeaderName::from_bytes(
-                    profile
-                        .auth_header
-                        .as_deref()
-                        .unwrap_or("api-key")
-                        .as_bytes(),
-                )?,
-                value: key
-                    .ok_or_else(|| anyhow::anyhow!("{} not found in environment", key_label))?,
-                label: key_label,
+            NamedProviderAuth::Header => match key {
+                Some(value) => NamedAnthropicAuth::Header {
+                    header_name: HeaderName::from_bytes(
+                        profile
+                            .auth_header
+                            .as_deref()
+                            .unwrap_or("api-key")
+                            .as_bytes(),
+                    )?,
+                    value,
+                    label: key_label,
+                },
+                None => NamedAnthropicAuth::Missing { label: key_label },
             },
         };
 
@@ -710,7 +725,7 @@ impl Provider for NamedAnthropicProvider {
         let token = match &self.auth {
             NamedAnthropicAuth::Bearer { token, .. } => token.clone(),
             NamedAnthropicAuth::Header { value, .. } => value.clone(),
-            NamedAnthropicAuth::None { .. } => String::new(),
+            NamedAnthropicAuth::None { .. } | NamedAnthropicAuth::Missing { .. } => String::new(),
         };
         self.run_stream_with_retries(token, Value::Object(request_body), tx, model.clone());
 

@@ -473,8 +473,14 @@ impl MultiProvider {
         .map(|(tag, _)| *tag)
         .collect::<Vec<_>>()
         .join(",");
+        let allowlist = crate::config::config()
+            .provider
+            .model_picker_providers
+            .clone()
+            .unwrap_or_default()
+            .join(",");
         format!(
-            "{}|{}|{}|{:?}|{}|{}|{}",
+            "{}|{}|{}|{:?}|{}|{}|{}|{}",
             // Scope by home so sandboxes (tests, JCODE_HOME switches) never
             // share catalogs that were built from different credential files.
             std::env::var("JCODE_HOME").unwrap_or_default(),
@@ -484,6 +490,7 @@ impl MultiProvider {
             profile,
             configured,
             compat_profiles.join(","),
+            allowlist,
         )
     }
 
@@ -549,6 +556,14 @@ impl MultiProvider {
         }
 
         let routes = catalog_routes::multiprovider_model_routes(self);
+        // The `model_picker_providers` allowlist restricts which providers'
+        // models are offered in /model and available for in-session switching.
+        // Apply it here (the catalog root) so every surface that reads the
+        // memo -- server model-catalog snapshots, `available_models_display()`,
+        // `model_routes()`, picker cache seeds -- sees the same filtered set.
+        // The TUI picker re-applies it defensively; the memo key carries the
+        // allowlist so differently-filtered instances never share a build.
+        let routes = provider_core_allowlist_filtered_routes(self, routes);
         let entry = RoutesMemoEntry {
             built_at: std::time::Instant::now(),
             auth_generation,
@@ -1493,6 +1508,32 @@ impl MultiProvider {
     }
 }
 
+/// Apply the `model_picker_providers` allowlist to a route catalog at the
+/// catalog root. When the allowlist is configured, unrelated providers' routes
+/// are dropped so the picker, server catalog snapshot, and in-session switching
+/// lists all reflect only what the user configured.
+fn provider_core_allowlist_filtered_routes(
+    provider: &MultiProvider,
+    routes: Vec<ModelRoute>,
+) -> Vec<ModelRoute> {
+    let Some(allowlist) = crate::config::config()
+        .provider
+        .model_picker_providers
+        .as_deref()
+    else {
+        return routes;
+    };
+    if allowlist.iter().all(|entry| entry.trim().is_empty()) {
+        return routes;
+    }
+    filter_model_routes_by_provider_allowlist(
+        routes,
+        Some(allowlist),
+        &provider.model(),
+        false,
+    )
+}
+
 impl Default for MultiProvider {
     fn default() -> Self {
         Self::new()
@@ -1864,29 +1905,82 @@ impl Provider for MultiProvider {
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
-        match self.active_provider() {
-            ActiveProvider::Claude => {
-                if let Some(anthropic) = self.anthropic_provider() {
-                    anthropic.available_models_for_switching()
-                } else if let Some(claude) = self.claude_provider() {
-                    claude.available_models_for_switching()
-                } else {
-                    Vec::new()
+        // Cycle-model switching must respect the same `model_picker_providers`
+        // allowlist as /model, otherwise Ctrl+Tab cycles through providers the
+        // user configured out of the picker. Derive the cycle list from the
+        // allowlist-filtered route memo (the same catalog /model shows), scoped
+        // to the currently active provider so cycle stays on the active
+        // endpoint's models.
+        let allowlist = crate::config::config()
+            .provider
+            .model_picker_providers
+            .clone()
+            .unwrap_or_default();
+        let has_allowlist = !allowlist.iter().all(|entry| entry.trim().is_empty());
+        let current = self.model();
+        let active_key = Self::provider_key(self.active_provider());
+        let active_profile = self
+            .active_openai_compatible_profile
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let models = if has_allowlist {
+            // Allowlist path: reuse the already-filtered catalog so cycle and
+            // /model always agree, and scope to routes that belong to the
+            // active runtime (profile or provider key).
+            self.fresh_routes_memo_entry()
+                .routes
+                .iter()
+                .filter(|route| {
+                    let belongs = active_profile
+                        .as_deref()
+                        .map(|profile_id| {
+                            route
+                                .api_method
+                                .strip_prefix("openai-compatible:")
+                                .is_some_and(|id| id == profile_id)
+                        })
+                        .unwrap_or_else(|| {
+                            jcode_provider_core::model_route_provider_matches_key(
+                                Some(&route.api_method),
+                                &route.provider,
+                                &active_key,
+                            )
+                        });
+                    belongs || route.model == current
+                })
+                .map(|route| route.model.clone())
+                .collect::<Vec<_>>()
+        } else {
+            match self.active_provider() {
+                ActiveProvider::Claude => {
+                    if let Some(anthropic) = self.anthropic_provider() {
+                        anthropic.available_models_for_switching()
+                    } else if let Some(claude) = self.claude_provider() {
+                        claude.available_models_for_switching()
+                    } else {
+                        Vec::new()
+                    }
                 }
+                ActiveProvider::OpenAI => self
+                    .openai_provider()
+                    .map(|openai| openai.available_models_for_switching())
+                    .unwrap_or_default(),
+                ActiveProvider::Bedrock => self
+                    .bedrock_provider()
+                    .map(|bedrock| bedrock.available_models_for_switching())
+                    .unwrap_or_default(),
+                ActiveProvider::OpenRouter => self
+                    .active_openrouter_execution_provider()
+                    .map(|openrouter| openrouter.available_models_for_switching())
+                    .unwrap_or_default(),
             }
-            ActiveProvider::OpenAI => self
-                .openai_provider()
-                .map(|openai| openai.available_models_for_switching())
-                .unwrap_or_default(),
-            ActiveProvider::Bedrock => self
-                .bedrock_provider()
-                .map(|bedrock| bedrock.available_models_for_switching())
-                .unwrap_or_default(),
-            ActiveProvider::OpenRouter => self
-                .active_openrouter_execution_provider()
-                .map(|openrouter| openrouter.available_models_for_switching())
-                .unwrap_or_default(),
-        }
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        models
+            .into_iter()
+            .filter(|model| seen.insert(model.clone()))
+            .collect()
     }
 
     fn available_models_display(&self) -> Vec<String> {

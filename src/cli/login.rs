@@ -167,7 +167,7 @@ pub async fn run_login(
             );
         }
 
-        let providers = crate::provider_catalog::cli_login_providers();
+        let providers = crate::provider_catalog::cli_login_providers_filtered();
         if !io::stdin().is_terminal() {
             anyhow::bail!(
                 "`jcode login --provider auto` requires an interactive terminal. Use `jcode login --provider <provider>` in non-interactive mode."

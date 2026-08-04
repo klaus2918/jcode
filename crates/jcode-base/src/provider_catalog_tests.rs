@@ -1069,3 +1069,64 @@ fn open_weight_family_context_limits_match_published_windows() {
     // Unknown families stay unresolved so the dynamic cache/default can act.
     assert_eq!(f("some-unknown-model"), None);
 }
+
+#[test]
+fn login_provider_allowlist_hides_unconfigured_builtin_providers() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+    // Clean config: no allowlist. The full TUI login list must be unchanged.
+    std::fs::write(temp.path().join("config.toml"), "# empty\n").expect("write empty config");
+    crate::config::invalidate_config_cache();
+    let full = tui_login_providers();
+    let filtered_none = filter_login_providers_by_allowlist(tui_login_providers());
+    assert_eq!(
+        filtered_none.len(),
+        full.len(),
+        "missing allowlist must not change the login list"
+    );
+
+    // Now configure an allowlist pointing at a named profile.
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"
+[provider]
+model_picker_providers = ["self-deepseek"]
+"#,
+    )
+    .expect("write test config.toml");
+    crate::config::invalidate_config_cache();
+
+    let filtered = filter_login_providers_by_allowlist(tui_login_providers());
+    // The generic openai-compatible entry stays (how a named profile gets its
+    // API key/base configured).
+    assert!(
+        filtered.iter().any(|p| matches!(
+            p.target,
+            LoginProviderTarget::OpenAiCompatible(profile)
+                if profile.id == OPENAI_COMPAT_PROFILE.id
+        )),
+        "generic openai-compatible login entry must survive the allowlist: {filtered:?}"
+    );
+    // Unrelated built-in providers are hidden.
+    for hidden in ["claude", "anthropic-api", "openai", "openrouter", "bedrock", "azure"] {
+        assert!(
+            !filtered.iter().any(|p| p.id == hidden),
+            "allowlist must hide built-in login provider '{hidden}': {filtered:?}"
+        );
+    }
+    // Only OpenAI-compatible login entries remain.
+    assert!(
+        filtered
+            .iter()
+            .all(|p| matches!(p.target, LoginProviderTarget::OpenAiCompatible(_))),
+        "only OpenAI-compatible login entries should remain: {filtered:?}"
+    );
+
+    crate::env::remove_var("JCODE_HOME");
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    }
+    crate::config::invalidate_config_cache();
+}

@@ -566,6 +566,7 @@ fn test_account_picker_prompt_new_openai_label_cancel_clears_prompt() {
 
 #[test]
 fn test_login_command_opens_inline_login_picker() {
+    let _guard = crate::storage::lock_test_env();
     let mut app = create_test_app();
     app.input = "/login".to_string();
     app.submit_input();
@@ -576,6 +577,49 @@ fn test_login_command_opens_inline_login_picker() {
         .expect("/login should open inline login picker");
     assert_eq!(picker.kind, crate::tui::PickerKind::Login);
     assert!(app.pending_login.is_none());
+}
+
+#[test]
+fn test_login_command_in_config_driven_mode_shows_config_hint() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"
+[provider]
+model_picker_providers = ["self-deepseek"]
+"#,
+    )
+    .expect("write config.toml");
+    crate::config::invalidate_config_cache();
+
+    let mut app = create_test_app();
+    app.input = "/login".to_string();
+    app.submit_input();
+
+    // Config-driven mode must not open the built-in provider picker; it
+    // surfaces the config-driven access hint instead.
+    assert!(
+        app.inline_interactive_state.is_none(),
+        "/login must not open a picker in config-driven mode"
+    );
+    let last = app
+        .display_messages()
+        .last()
+        .expect("missing config-driven login hint");
+    assert!(
+        last.content.contains("config.toml") && last.content.contains("[[providers]]"),
+        "config-driven hint should mention config.toml [[providers]]: {:?}",
+        last.content
+    );
+
+    crate::env::remove_var("JCODE_HOME");
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    }
+    crate::config::invalidate_config_cache();
 }
 
 #[test]

@@ -1165,12 +1165,7 @@ fn test_openai_compatible_login_preserves_profile_for_runtime_activation() {
     app.start_login_provider(crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER);
 
     match app.pending_login {
-        Some(crate::tui::app::PendingLogin::ApiKeyProfile {
-            provider,
-            openai_compatible_profile: Some(profile),
-            ..
-        }) => {
-            assert_eq!(provider, "Z.AI");
+        Some(crate::tui::app::PendingLogin::OpenAiCompatibleApiBase { profile }) => {
             assert_eq!(
                 profile.id,
                 crate::provider_catalog::OPENAI_COMPAT_PROFILE.id
