@@ -582,24 +582,12 @@ mod tests {
                 None,
                 Some("claude-oauth"),
             ),
-            (
-                "gemini-api:gemini-2.5-pro",
-                "OpenRouter",
-                None,
-                Some("gemini-api"),
-            ),
             ("gpt-5.5", "OpenAI", Some("openai-api"), Some("openai-api")),
             (
                 "claude-opus-4-6",
                 "Anthropic",
                 Some("claude-api"),
                 Some("claude-api"),
-            ),
-            (
-                "gemini-2.5-pro",
-                "OpenRouter",
-                Some("gemini-api"),
-                Some("gemini-api"),
             ),
         ] {
             assert_eq!(
@@ -626,11 +614,6 @@ mod tests {
                 "claude-api:claude-opus-4-6",
             ),
             ("claude-opus-4-6", Some("claude"), "claude:claude-opus-4-6"),
-            (
-                "gemini-2.5-pro",
-                Some("gemini-api"),
-                "gemini-api:gemini-2.5-pro",
-            ),
             ("openai-api:gpt-5.5", Some("openai"), "openai-api:gpt-5.5"),
         ] {
             assert_eq!(

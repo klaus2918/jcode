@@ -127,32 +127,24 @@ fn test_parse_tailscale_dns_name_invalid_json() {
 fn configured_auth_test_targets_only_include_configured_supported_providers() {
     let _guard = crate::storage::lock_test_env();
 
-    let status = AuthStatus {
-        anthropic: ProviderAuth {
-            state: AuthState::Available,
-            has_oauth: true,
-            oauth_state: AuthState::Available,
-            has_api_key: false,
-        },
-        openai: AuthState::NotConfigured,
-        google: AuthState::Expired,
-        ..AuthStatus::default()
-    };
+    let status = AuthStatus::default();
 
     let targets = configured_auth_test_targets(&status);
 
-    assert!(targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Claude)));
-
     assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Openai)));
+    assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Claude)));
     assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Google)));
 }
 
 #[test]
 fn explicit_supported_provider_maps_to_single_auth_target() {
-    let targets = resolve_auth_test_targets("openai", false).expect("resolve target");
+    let targets = resolve_auth_test_targets("openai-compatible", false).expect("resolve target");
     assert_eq!(
         targets,
-        vec![ResolvedAuthTestTarget::Detailed(AuthTestTarget::Openai)]
+        vec![ResolvedAuthTestTarget::Generic {
+            provider: crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
+            choice: "openai-compatible".to_string(),
+        }]
     );
 }
 
@@ -505,53 +497,18 @@ fn run_auto_poke_followup_rechecks_completion_confidence_until_it_passes() {
 #[test]
 fn cli_provider_choice_filter_uses_typed_api_methods() {
     let routes = vec![
-        test_route("claude-opus-4-6", "Anthropic", "claude-oauth"),
-        test_route("claude-opus-4-6", "Anthropic", "claude-api"),
-        test_route("gpt-5.5", "OpenAI", "openai-oauth"),
-        test_route("gpt-5.5", "OpenAI", "openai-api-key"),
-        test_route("gpt-5.6-sol", "OpenAI", "openai-api-key"),
+        test_route("fixture-model", "OpenAI-compatible", "openai-compatible"),
+        test_route("llama-3.1-8b", "Ollama", "openai-compatible"),
         test_route("deepseek/deepseek-v4-pro", "auto", "openrouter"),
-        test_route("grok-code-fast-1", "Copilot", "copilot"),
     ];
 
+    // openai 已从注册表移除，resolve 返回 None → 过滤保持全量。
     let openai = filter_cli_model_routes_for_choice("openai", &routes);
-    assert_eq!(openai.len(), 1);
-    assert!(openai.iter().any(|route| matches!(
-        route.api_method_kind(),
-        crate::provider::ModelRouteApiMethod::OpenAIOAuth
-    )));
+    assert_eq!(openai.len(), routes.len());
 
-    let openai_api = filter_cli_model_routes_for_choice("openai-api", &routes);
-    assert_eq!(openai_api.len(), 2);
-    assert!(openai_api.iter().all(|route| matches!(
-        route.api_method_kind(),
-        crate::provider::ModelRouteApiMethod::OpenAIApiKey
-    )));
-
-    let claude = filter_cli_model_routes_for_choice("claude", &routes);
-    assert_eq!(claude.len(), 2);
-    assert!(
-        claude
-            .iter()
-            .all(|route| route.api_method_kind().is_anthropic_credential_route())
-    );
-
-    // anthropic-api 收窄到 anthropic 凭证路由（api-key 选择不应显示 OpenAI 路由）。
-    let anthropic_api = filter_cli_model_routes_for_choice("anthropic-api", &routes);
-    assert_eq!(anthropic_api.len(), 2);
-    assert!(
-        anthropic_api
-            .iter()
-            .all(|route| route.api_method_kind().is_anthropic_credential_route())
-    );
-    // alias（anthropic）与大小写变体（ANTHROPIC）归一化后同样命中 anthropic 分支。
-    let anthropic_alias = filter_cli_model_routes_for_choice("anthropic", &routes);
-    assert_eq!(anthropic_alias.len(), 2);
-    let anthropic_upper = filter_cli_model_routes_for_choice("ANTHROPIC", &routes);
-    assert_eq!(anthropic_upper.len(), 2);
-    // claude-subprocess 特判也归一化到 anthropic 分支。
-    let subprocess = filter_cli_model_routes_for_choice("claude-subprocess", &routes);
-    assert_eq!(subprocess.len(), 2);
+    // ollama 是保留的 OpenRouterLike provider；过滤按通用分支全保留。
+    let ollama = filter_cli_model_routes_for_choice("ollama", &routes);
+    assert_eq!(ollama.len(), routes.len());
 }
 
 #[test]
@@ -729,11 +686,9 @@ fn list_cli_providers_includes_auto_and_openai() {
     let providers = super::report_info::list_cli_providers();
     assert!(providers.iter().any(|provider| provider.id == "auto"));
     assert!(providers.iter().any(|provider| {
-        provider.id == "openai"
-            && provider.display_name == "OpenAI"
-            && provider.auth_kind.as_deref() == Some("OAuth")
+        provider.id == "openai-compatible"
+            && provider.display_name == "OpenAI-compatible"
     }));
-    assert!(providers.iter().any(|provider| provider.id == "bedrock"));
 }
 
 #[test]
