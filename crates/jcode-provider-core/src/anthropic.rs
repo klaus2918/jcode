@@ -416,7 +416,6 @@ pub fn anthropic_stainless_os() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ALL_CLAUDE_MODELS;
 
     #[test]
     fn model_suffix_helpers_require_explicit_1m_suffix() {
@@ -564,7 +563,13 @@ mod tests {
         // Regression guard: a per-model budget must never be *smaller* than the
         // flat 32K default jcode shipped before, or turns that used to fit would
         // start truncating.
-        for model in ALL_CLAUDE_MODELS {
+        // 零内置模型配置：用代表性模型族验证输出预算不缩水。
+        for model in [
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-haiku-4-5",
+            "claude-opus-4-8[1m]",
+        ] {
             assert!(
                 anthropic_max_output_tokens(model) >= 32_768,
                 "{model} regressed below the legacy 32K output budget"

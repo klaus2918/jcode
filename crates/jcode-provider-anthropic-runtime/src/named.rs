@@ -236,7 +236,7 @@ impl NamedAnthropicProvider {
         let model = profile
             .default_model
             .clone()
-            .unwrap_or_else(|| jcode_provider_core::DEFAULT_CLAUDE_MODEL.to_string());
+            .unwrap_or_default();
         let static_models = profile
             .models
             .iter()
@@ -508,7 +508,7 @@ impl NamedAnthropicProvider {
 
 impl Default for NamedAnthropicProvider {
     fn default() -> Self {
-        let model = jcode_provider_core::DEFAULT_CLAUDE_MODEL.to_string();
+        let model = String::new();
         Self {
             client: jcode_provider_core::shared_http_client(),
             model: Arc::new(std::sync::RwLock::new(model.clone())),
