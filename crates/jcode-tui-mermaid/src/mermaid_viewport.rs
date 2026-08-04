@@ -1169,7 +1169,6 @@ pub fn render_image_widget_fit_stable(
     centered: bool,
     draw_border: bool,
 ) -> bool {
-
     let buf_area = *buf.area();
     let area = area.intersection(buf_area);
     if area.width == 0 || area.height == 0 {
@@ -1310,7 +1309,6 @@ pub fn render_image_widget_viewport_precise(
     zoom_percent: u16,
     draw_border: bool,
 ) -> u16 {
-
     let buf_area = *buf.area();
     let area = area.intersection(buf_area);
 

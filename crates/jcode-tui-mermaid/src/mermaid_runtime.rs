@@ -840,10 +840,18 @@ mod tests {
 
     #[test]
     fn only_halfblocks_uses_the_user_facing_text_image_fallback() {
-        assert!(protocol_uses_text_image_fallback(Some(ProtocolType::Halfblocks)));
-        assert!(!protocol_uses_text_image_fallback(Some(ProtocolType::Kitty)));
-        assert!(!protocol_uses_text_image_fallback(Some(ProtocolType::Iterm2)));
-        assert!(!protocol_uses_text_image_fallback(Some(ProtocolType::Sixel)));
+        assert!(protocol_uses_text_image_fallback(Some(
+            ProtocolType::Halfblocks
+        )));
+        assert!(!protocol_uses_text_image_fallback(Some(
+            ProtocolType::Kitty
+        )));
+        assert!(!protocol_uses_text_image_fallback(Some(
+            ProtocolType::Iterm2
+        )));
+        assert!(!protocol_uses_text_image_fallback(Some(
+            ProtocolType::Sixel
+        )));
         assert!(!protocol_uses_text_image_fallback(None));
     }
 
@@ -852,7 +860,9 @@ mod tests {
         assert!(protocol_supports_native_images(Some(ProtocolType::Kitty)));
         assert!(protocol_supports_native_images(Some(ProtocolType::Iterm2)));
         assert!(protocol_supports_native_images(Some(ProtocolType::Sixel)));
-        assert!(!protocol_supports_native_images(Some(ProtocolType::Halfblocks)));
+        assert!(!protocol_supports_native_images(Some(
+            ProtocolType::Halfblocks
+        )));
         assert!(!protocol_supports_native_images(None));
     }
 

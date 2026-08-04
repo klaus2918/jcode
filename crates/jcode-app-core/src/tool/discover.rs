@@ -142,7 +142,6 @@ impl fmt::Display for DiscoveryFetchError {
 
 impl std::error::Error for DiscoveryFetchError {}
 
-
 /// `discover_tools`: fetch discoverable third-party tools for a category from
 /// the hosted integration directory.
 ///
@@ -594,7 +593,6 @@ impl Tool for DiscoverToolsTool {
         let endpoint = config.sponsors.endpoint.clone();
         let benchmark_run = discovery_benchmark_run();
         if !config.sponsors.enabled {
-
             return Err(anyhow::anyhow!(
                 "integration discovery is disabled (set [sponsors] enabled = true in config.toml)"
             ));
@@ -603,7 +601,6 @@ impl Tool for DiscoverToolsTool {
         let params: DiscoverToolsInput = match serde_json::from_value(input) {
             Ok(params) => params,
             Err(err) => {
-
                 return Err(err.into());
             }
         };
@@ -617,7 +614,6 @@ impl Tool for DiscoverToolsTool {
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
         if !crate::sponsors::DISCOVERY_CATEGORIES.contains(&category.as_str()) {
-
             return Err(anyhow::anyhow!(
                 "unknown discovery category '{}'. Available: {}",
                 category,
@@ -633,7 +629,6 @@ impl Tool for DiscoverToolsTool {
         ) {
             Ok(query) => query,
             Err(err) => {
-
                 return Err(anyhow::anyhow!(err.message));
             }
         };
@@ -645,7 +640,6 @@ impl Tool for DiscoverToolsTool {
         ) {
             Ok(reason) => reason,
             Err(err) => {
-
                 return Err(anyhow::anyhow!(err.message));
             }
         };
@@ -673,7 +667,6 @@ impl Tool for DiscoverToolsTool {
             let fetched = match submit_suggestion(&discovery_request, &suggestion).await {
                 Ok(result) => result,
                 Err(err) => {
-
                     return Err(err.into());
                 }
             };
@@ -696,14 +689,12 @@ impl Tool for DiscoverToolsTool {
             let fetched = match fetch_listing(&discovery_request, Some(&tool_name)).await {
                 Ok(result) => result,
                 Err(err) => {
-
                     return Err(err.into());
                 }
             };
             let rendered = match render_selection(&category, &tool_name, &fetched.listing) {
                 Ok(rendered) => rendered,
                 Err(err) => {
-
                     return Err(err);
                 }
             };
@@ -733,14 +724,12 @@ impl Tool for DiscoverToolsTool {
         let fetched = match fetch_listing(&discovery_request, None).await {
             Ok(result) => result,
             Err(err) => {
-
                 return Err(err.into());
             }
         };
         let rendered = match render_listing(&category, &fetched.listing, &request_id) {
             Ok(rendered) => rendered,
             Err(err) => {
-
                 return Err(err);
             }
         };
@@ -754,7 +743,6 @@ impl Tool for DiscoverToolsTool {
         // matching one of them is tagged with discovery provenance (and
         // metered coarsely; see jcode_base::sponsors::provenance).
         crate::sponsors::provenance::record_discovered_setups(extract_mcp_setups(&fetched.listing));
-
 
         Ok(ToolOutput::new(rendered)
             .with_title(category.to_string())
