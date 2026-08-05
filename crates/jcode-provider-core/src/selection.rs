@@ -139,7 +139,27 @@ pub fn explicit_model_provider_prefix(model: &str) -> Option<(ActiveProvider, &'
     } else if let Some(rest) = model.strip_prefix("openrouter:") {
         Some((ActiveProvider::OpenRouter, "openrouter:", rest))
     } else {
-        None
+        // resonix 对齐：`provider/model` 斜杠引用作为冒号前缀的别名。
+        // 仅当斜杠前的 token 是已知 provider 前缀时才路由，避免误拆
+        // OpenRouter 风格的含斜杠模型名（如 `anthropic/claude-sonnet-4`）。
+        let (prefix, rest) = model.split_once('/')?;
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return None;
+        }
+        match prefix {
+            "claude-api" => Some((ActiveProvider::Claude, "claude-api/", rest)),
+            "claude-oauth" => Some((ActiveProvider::Claude, "claude-oauth/", rest)),
+            "claude" => Some((ActiveProvider::Claude, "claude/", rest)),
+            "openai-api" => Some((ActiveProvider::OpenAI, "openai-api/", rest)),
+            "openai-oauth" => Some((ActiveProvider::OpenAI, "openai-oauth/", rest)),
+            "openai" => Some((ActiveProvider::OpenAI, "openai/", rest)),
+            "bedrock" => Some((ActiveProvider::Bedrock, "bedrock/", rest)),
+            "openrouter" => Some((ActiveProvider::OpenRouter, "openrouter/", rest)),
+            // `anthropic/...` 等厂商前缀是 OpenRouter 的 vendor/model 模型名，
+            // 不当作 provider 路由，避免误伤（冒号别名仍可用 `anthropic:`）。
+            _ => None,
+        }
     }
 }
 
@@ -534,5 +554,44 @@ mod tests {
         let sequence = fallback_sequence(ActiveProvider::OpenRouter);
         assert_eq!(sequence.first(), Some(&ActiveProvider::OpenRouter));
         assert!(sequence.contains(&ActiveProvider::Claude));
+    }
+
+    #[test]
+    fn explicit_prefix_accepts_slash_refs_as_resonix_alias() {
+        // `provider/model` 斜杠引用对齐 resonix，与冒号前缀等价。
+        let slash = explicit_model_provider_prefix("claude/claude-sonnet-4-6");
+        let colon = explicit_model_provider_prefix("claude:claude-sonnet-4-6");
+        assert_eq!(slash.map(|(p, _, m)| (p, m)), colon.map(|(p, _, m)| (p, m)));
+        assert_eq!(slash.map(|(p, _, _)| p), Some(ActiveProvider::Claude));
+
+        assert_eq!(
+            explicit_model_provider_prefix("openai/gpt-5.5").map(|(p, _, m)| (p, m)),
+            Some((ActiveProvider::OpenAI, "gpt-5.5"))
+        );
+        assert_eq!(
+            explicit_model_provider_prefix("openrouter/deepseek/deepseek-chat")
+                .map(|(p, _, m)| (p, m)),
+            Some((ActiveProvider::OpenRouter, "deepseek/deepseek-chat"))
+        );
+        assert_eq!(
+            explicit_model_provider_prefix("bedrock/claude-3-5-sonnet").map(|(p, _, _)| p),
+            Some(ActiveProvider::Bedrock)
+        );
+    }
+
+    #[test]
+    fn explicit_prefix_slash_does_not_misroute_openrouter_model_names() {
+        // OpenRouter 模型名本身含 `/`（`anthropic/claude-sonnet-4`），
+        // `anthropic/` 不是已知 provider 前缀，必须原样保留，不能被路由。
+        assert_eq!(explicit_model_provider_prefix("anthropic/claude-sonnet-4"), None);
+        assert_eq!(
+            explicit_model_provider_prefix("openrouter/anthropic/claude-sonnet-4")
+                .map(|(p, _, m)| (p, m)),
+            Some((ActiveProvider::OpenRouter, "anthropic/claude-sonnet-4"))
+        );
+        // 未知前缀也不路由。
+        assert_eq!(explicit_model_provider_prefix("unknown-vendor/model"), None);
+        // 空模型名不路由。
+        assert_eq!(explicit_model_provider_prefix("claude/"), None);
     }
 }
