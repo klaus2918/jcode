@@ -1,15 +1,9 @@
 #![cfg_attr(test, allow(clippy::clone_on_copy))]
+#![cfg_attr(test, allow(dead_code))] // 登录/账户测试删除后，剩余测试辅助暂未全部清理
 include!("tests/support_failover/part_01.rs");
 include!("tests/support_failover/part_02.rs");
-include!("tests/commands_accounts_01/part_01.rs");
-include!("tests/commands_accounts_01/part_02.rs");
-include!("tests/commands_accounts_02/part_01.rs");
-include!("tests/commands_accounts_02/part_02.rs");
 include!("tests/state_model_poke_01/part_01.rs");
 include!("tests/state_model_poke_01/part_02.rs");
-include!("tests/state_model_poke_02/part_01.rs");
-include!("tests/state_model_poke_02/part_02.rs");
-include!("tests/state_model_poke_03.rs");
 include!("tests/remote_startup_input_01/part_01.rs");
 include!("tests/remote_startup_input_01/part_02.rs");
 include!("tests/remote_startup_input_02/part_01.rs");
@@ -25,7 +19,6 @@ include!("tests/remote_events_reload_02/part_01.rs");
 include!("tests/remote_events_reload_02/part_02.rs");
 include!("tests/remote_events_reload_03/part_01.rs");
 include!("tests/remote_events_reload_03/part_02.rs");
-include!("tests/remote_events_reload_04.rs");
 include!("tests/remote_events_reload_05.rs");
 include!("tests/swarm_plan_no_inline_graph.rs");
 include!("tests/remote_model_picker_hotkeys.rs");
@@ -44,14 +37,11 @@ include!("tests/reasoning_region.rs");
 include!("tests/smoothness_benchmark.rs");
 include!("tests/hotkey_feedback_e2e.rs");
 include!("tests/todo_card.rs");
-include!("tests/issue_496_input_routing.rs");
 include!("tests/issue_544_paste_enter.rs");
 include!("tests/terminal_setup_command.rs");
 include!("tests/issue_497_copy_ctrl_c.rs");
 include!("tests/spinner_slash_commands.rs");
-include!("tests/command_suggestions_cache.rs");
 include!("tests/skill_invocation_multi_word.rs");
-include!("tests/prompt_history_cross_session.rs");
 #[test]
 fn kv_cache_signature_prefix_match_allows_appended_messages() {
     let baseline_messages = vec![

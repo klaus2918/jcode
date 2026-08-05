@@ -1,7 +1,7 @@
 use super::*;
 use crate::tui::session_picker::{self, OverlayAction, PickerResult, ResumeTarget, SessionPicker};
 use crate::tui::{
-    AccountPickerAction, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
+    InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
     PickerOption,
 };
 use serde::{Deserialize, Serialize};
@@ -2066,20 +2066,6 @@ impl App {
                         self.cursor_pos = 0;
                         return Ok(true);
                     }
-                    // `/login` + immediate Enter should not silently launch the
-                    // first provider's login flow. Without a filter or an
-                    // explicit selection there is no clear user choice yet, so
-                    // activate the picker and let them pick deliberately.
-                    if picker.kind == PickerKind::Login
-                        && picker.filter.is_empty()
-                        && picker.selected == 0
-                    {
-                        picker.preview = false;
-                        picker.column = 0;
-                        self.input.clear();
-                        self.cursor_pos = 0;
-                        return Ok(true);
-                    }
                     picker.preview = false;
                     if picker.kind == PickerKind::Usage {
                         picker.column = 0;
@@ -2102,61 +2088,6 @@ impl App {
                 Ok(true)
             }
             _ => Ok(false),
-        }
-    }
-
-    fn handle_account_picker_selection(&mut self, action: AccountPickerAction) {
-        match action {
-            AccountPickerAction::Switch { provider_id, label } => {
-                if self.is_remote {
-                    self.pending_account_picker_action = Some(AccountPickerAction::Switch {
-                        provider_id: provider_id.clone(),
-                        label: label.clone(),
-                    });
-                    self.set_status_notice(format!("Account → {} ({})", label, provider_id));
-                    return;
-                }
-
-                match provider_id.as_str() {
-                    "claude" => self.switch_account(&label),
-                    "openai" => self.switch_openai_account(&label),
-                    _ => self.push_display_message(DisplayMessage::error(format!(
-                        "Provider `{}` does not support account switching.",
-                        provider_id
-                    ))),
-                }
-            }
-            AccountPickerAction::Add { provider_id } => match provider_id.as_str() {
-                "claude" => match crate::auth::claude::next_account_label() {
-                    Ok(label) => self.start_claude_login_for_account(&label),
-                    Err(e) => self.push_display_message(DisplayMessage::error(format!(
-                        "Failed to prepare Claude account: {}",
-                        e
-                    ))),
-                },
-                "openai" => match crate::auth::codex::next_account_label() {
-                    Ok(label) => self.start_openai_login_for_account(&label),
-                    Err(e) => self.push_display_message(DisplayMessage::error(format!(
-                        "Failed to prepare OpenAI account: {}",
-                        e
-                    ))),
-                },
-                _ => self.push_display_message(DisplayMessage::error(format!(
-                    "Provider `{}` does not support multiple accounts.",
-                    provider_id
-                ))),
-            },
-            AccountPickerAction::Replace { provider_id, label } => match provider_id.as_str() {
-                "claude" => self.start_claude_login_for_account(&label),
-                "openai" => self.start_openai_login_for_account(&label),
-                _ => self.push_display_message(DisplayMessage::error(format!(
-                    "Provider `{}` does not support account replacement.",
-                    provider_id
-                ))),
-            },
-            AccountPickerAction::OpenCenter { provider_filter } => {
-                self.open_account_center(provider_filter.as_deref())
-            }
         }
     }
 
@@ -2979,14 +2910,8 @@ impl App {
                 self.inline_interactive_state = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                let vim_nav = self
-                    .inline_interactive_state
-                    .as_ref()
-                    .map(|picker| picker.uses_compact_navigation())
-                    .unwrap_or(false);
                 if matches!(code, KeyCode::Char('k'))
                     && !modifiers.contains(KeyModifiers::CONTROL)
-                    && !vim_nav
                 {
                     if let Some(ref mut picker) = self.inline_interactive_state {
                         picker.filter.push('k');
@@ -3004,14 +2929,8 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let vim_nav = self
-                    .inline_interactive_state
-                    .as_ref()
-                    .map(|picker| picker.uses_compact_navigation())
-                    .unwrap_or(false);
                 if matches!(code, KeyCode::Char('j'))
                     && !modifiers.contains(KeyModifiers::CONTROL)
-                    && !vim_nav
                 {
                     if let Some(ref mut picker) = self.inline_interactive_state {
                         picker.filter.push('j');
@@ -3032,9 +2951,6 @@ impl App {
             }
             KeyCode::Right => {
                 if let Some(ref mut picker) = self.inline_interactive_state {
-                    if picker.uses_compact_navigation() {
-                        return Ok(());
-                    }
                     if picker.column < picker.max_navigable_column()
                         && let Some(&idx) = picker.filtered.get(picker.selected)
                         && (picker.entries[idx].options.len() > 1 || picker.column > 0)
@@ -3054,9 +2970,6 @@ impl App {
                     return Ok(());
                 }
                 if let Some(ref mut picker) = self.inline_interactive_state {
-                    if picker.uses_compact_navigation() {
-                        return Ok(());
-                    }
                     if picker.column > 0 {
                         picker.column -= 1;
                     }
@@ -3064,9 +2977,6 @@ impl App {
             }
             KeyCode::Left => {
                 if let Some(ref mut picker) = self.inline_interactive_state {
-                    if picker.uses_compact_navigation() {
-                        return Ok(());
-                    }
                     if picker.column > 0 {
                         picker.column -= 1;
                     }
@@ -3074,9 +2984,6 @@ impl App {
             }
             KeyCode::Tab => {
                 if let Some(ref mut picker) = self.inline_interactive_state {
-                    if picker.uses_compact_navigation() {
-                        return Ok(());
-                    }
                     if picker.column == 0 && !picker.filter.is_empty() {
                         Self::tab_complete_inline_interactive_filter(picker);
                     } else if picker.column < picker.max_navigable_column()
@@ -3215,22 +3122,6 @@ impl App {
                 }
 
                 match entry.action {
-                    PickerAction::Account(selection) => {
-                        self.inline_interactive_state = None;
-                        self.handle_account_picker_selection(selection);
-                    }
-                    PickerAction::Login(provider) => {
-                        self.inline_interactive_state = None;
-                        self.start_login_provider(provider);
-                    }
-                    PickerAction::Logout(provider) => {
-                        self.inline_interactive_state = None;
-                        self.start_logout_provider(provider);
-                    }
-                    PickerAction::LogoutAll => {
-                        self.inline_interactive_state = None;
-                        self.start_logout_all();
-                    }
                     PickerAction::Usage {
                         title,
                         subtitle,

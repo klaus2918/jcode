@@ -402,136 +402,6 @@ fn import_review_decision_timer_counts_down_and_times_out() {
 }
 
 #[test]
-fn login_phase_enter_opens_login_picker() {
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        // Force the no-detected-imports case so this test exercises the manual
-        // login fallback regardless of any external logins on the host. (The
-        // import walkthrough has its own dedicated tests.)
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
-        }
-        assert!(app.inline_interactive_state.is_none());
-        // Enter from the welcome screen opens the interactive login picker.
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(app.inline_interactive_state.is_some());
-        // With a picker already open, Enter is no longer consumed by onboarding
-        // so the picker can commit the selection.
-        assert!(!app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-    });
-}
-
-#[test]
-fn pending_login_entry_is_not_intercepted_by_onboarding_login_phase() {
-    // Regression for the OpenRouter (and any API-key provider) login loop:
-    // after selecting a provider during onboarding, the Login phase stays
-    // active while the user types their API key. Pressing Enter to submit the
-    // key must NOT be intercepted by the onboarding welcome-screen handler
-    // (which would re-open the provider picker), and key characters must not be
-    // swallowed as Yes/No navigation.
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
-        }
-        // Simulate having chosen openai-compatible: the picker closed and a pending
-        // API-key login prompt is now active.
-        app.inline_interactive_state = None;
-        app.start_login_provider(
-            crate::provider_catalog::resolve_login_provider("openai-compatible").unwrap(),
-        );
-        assert!(app.pending_login.is_some());
-        assert!(app.inline_interactive_state.is_none());
-
-        // Enter must fall through to the normal input/pending-login handler
-        // instead of re-opening the provider picker.
-        assert!(!app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(app.inline_interactive_state.is_none());
-        // Letters that double as Yes/No navigation must also fall through.
-        assert!(!app.handle_onboarding_continue_prompt_key(KeyCode::Char('y')));
-        assert!(!app.handle_onboarding_continue_prompt_key(KeyCode::Char('n')));
-    });
-}
-
-#[test]
-fn openrouter_key_typed_through_full_key_path_does_not_reopen_picker() {
-    // End-to-end regression for the OpenRouter login loop, driven through the
-    // real production key dispatch (`handle_key`) instead of calling the
-    // onboarding helper directly. This reproduces exactly what the user does:
-    // they are mid-onboarding (Login phase still active), a pending API-key
-    // login prompt is showing, and they type a key like "sk-or-..." then press
-    // Enter. Before the fix, the onboarding welcome handler intercepted the
-    // typed characters (y/n/h/l/j/k as Yes/No nav) and Enter (re-opening the
-    // provider picker), creating the infinite loop. Now every keystroke must
-    // flow to the input buffer and Enter must submit the key.
-    use crossterm::event::{KeyCode, KeyModifiers};
-
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
-        }
-        // Simulate having chosen OpenRouter from the picker: the picker is closed
-        // and a pending API-key login prompt is active.
-        app.inline_interactive_state = None;
-        app.start_login_provider(
-            crate::provider_catalog::resolve_login_provider("openrouter").unwrap(),
-        );
-        assert!(app.pending_login.is_some());
-        assert!(app.inline_interactive_state.is_none());
-
-        // Type a fake key. It deliberately contains characters that doubled as
-        // Yes/No navigation in the buggy code path (k, n, l, y) to prove they
-        // are no longer swallowed.
-        let key = "sk-or-key-no-loop";
-        for ch in key.chars() {
-            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
-            // The picker must never re-open while typing.
-            assert!(
-                app.inline_interactive_state.is_none(),
-                "picker re-opened while typing '{ch}'"
-            );
-        }
-        assert_eq!(app.input, key, "every typed character must reach the input buffer");
-
-        // Pressing Enter submits the key to the pending-login handler instead of
-        // re-opening the provider picker (the old loop).
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(
-            app.pending_login.is_none(),
-            "Enter must consume the pending login, not bounce back to the picker"
-        );
-        assert!(
-            app.inline_interactive_state.is_none(),
-            "Enter must not re-open the provider picker"
-        );
-        assert!(app.input.is_empty(), "input buffer should clear after submit");
-
-        // Crucially: the key must actually be *persisted*, not just "not loop".
-        // It is written to $JCODE_HOME/config/jcode/openrouter.env and exported
-        // to OPENROUTER_API_KEY so the provider can authenticate.
-        let env_file = crate::storage::app_config_dir().unwrap().join("openrouter.env");
-        let contents = std::fs::read_to_string(&env_file)
-            .unwrap_or_else(|e| panic!("openrouter.env should exist at {env_file:?}: {e}"));
-        assert!(
-            contents.contains(&format!("OPENROUTER_API_KEY={key}")),
-            "saved env file must contain the typed key, got:\n{contents}"
-        );
-        assert_eq!(
-            std::env::var("OPENROUTER_API_KEY").ok().as_deref(),
-            Some(key),
-            "key must be exported to the process env for immediate use"
-        );
-    });
-}
-
-#[test]
 fn import_failure_resets_login_to_manual_prompt() {
     use crate::external_auth::ExternalAuthReviewCandidate;
     use crate::tui::app::onboarding_flow::ImportReview;
@@ -558,10 +428,11 @@ fn import_failure_resets_login_to_manual_prompt() {
             app.onboarding_phase(),
             Some(OnboardingPhase::Login { import: None })
         ));
-        // Still in Login: Enter opens the manual login picker so the user can
-        // recover.
+        // Still in Login: Enter shows the provider config guidance and finishes
+        // onboarding (resonix: no manual login picker remains).
         assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(app.inline_interactive_state.is_some());
+        assert!(app.inline_interactive_state.is_none());
+        assert!(app.onboarding_phase().is_none());
     });
 }
 
@@ -595,9 +466,11 @@ fn import_review_decline_all_falls_back_to_manual_login() {
             app.onboarding_phase(),
             Some(OnboardingPhase::Login { import: None })
         ));
-        // Still in Login: Enter now opens the manual login picker.
+        // Still in Login: Enter shows the provider config guidance and finishes
+        // onboarding (resonix: no manual login picker remains).
         assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(app.inline_interactive_state.is_some());
+        assert!(app.inline_interactive_state.is_none());
+        assert!(app.onboarding_phase().is_none());
     });
 }
 
@@ -1320,9 +1193,11 @@ fn import_failure_h_key_prepares_agent_repair_brief() {
         let on_disk = std::fs::read_to_string(&brief_path).expect("read brief file");
         assert!(on_disk.contains("jcode auth-test --provider openai --json"), "{on_disk}");
         assert!(brief.contains(&brief_path.display().to_string()), "brief cites its own path");
-        // Staying on the recovery screen, Enter still opens the provider picker.
+        // Staying on the recovery screen, Enter shows the provider config
+        // guidance and finishes onboarding (resonix: no picker remains).
         assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(app.inline_interactive_state.is_some());
+        assert!(app.inline_interactive_state.is_none());
+        assert!(app.onboarding_phase().is_none());
     });
 }
 

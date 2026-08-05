@@ -2645,32 +2645,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some(picker_cell) = app.login_picker_overlay() {
-        let mut picker = picker_cell.borrow_mut();
-        picker.render(frame);
-        finalize_frame_metrics(
-            app,
-            total_start,
-            Duration::ZERO,
-            total_start.elapsed(),
-            None,
-        );
-        return;
-    }
-
-    if let Some(picker_cell) = app.account_picker_overlay() {
-        let mut picker = picker_cell.borrow_mut();
-        picker.render(frame);
-        finalize_frame_metrics(
-            app,
-            total_start,
-            Duration::ZERO,
-            total_start.elapsed(),
-            None,
-        );
-        return;
-    }
-
     // Initialize visual debug capture if enabled
     let mut debug_capture = if visual_debug::is_enabled() {
         Some(FrameCaptureBuilder::new(area.width, area.height))

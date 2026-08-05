@@ -572,6 +572,7 @@ pub(super) fn fast_mode_default_message(default_enabled: bool, default_label: &s
     )
 }
 
+#[allow(dead_code)] // 登录流程已删，保留工具函数
 pub(super) fn mask_email(email: &str) -> String {
     let trimmed = email.trim();
     let Some((local, domain)) = trimmed.split_once('@') else {

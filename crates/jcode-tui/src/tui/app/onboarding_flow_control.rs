@@ -229,16 +229,17 @@ impl App {
         }
     }
 
-    /// Start the default first-run login when no external logins were detected.
-    /// Config-driven (Reasonix-aligned) mode points users at the generic
-    /// OpenAI-compatible endpoint setup, which is how any provider is wired via
-    /// `[[providers]]` + an API key. The provider picker stays reachable via
-    /// `/login`.
+    /// Start the default first-run provider setup.
+    /// Config-driven (Reasonix-aligned) mode: models are connected via
+    /// `[[providers]]` config entries + a unified `~/.jcode/.env`, so the
+    /// guided flow points at `jcode provider add` instead of interactive login.
     pub(super) fn onboarding_start_default_login(&mut self) {
-        self.start_login_provider(crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER);
-        self.set_status_notice(
-            "Login: configuring an OpenAI-compatible endpoint (or type /login for others)",
-        );
+        self.push_display_message(DisplayMessage::system(
+            "Model access is configured, not logged in. Run `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>` to connect a provider, then pick it in /model."
+                .to_string(),
+        ));
+        self.set_status_notice("Configure a provider: jcode provider add");
+        self.onboarding_after_login();
     }
 
     /// Advance out of a login phase once credentials are available. Prompt and
@@ -338,7 +339,7 @@ impl App {
         // picker (the reported "pick provider -> enter key -> asks again" loop)
         // and characters like h/l/j/k/y/n would be eaten as navigation. Let the
         // normal input path handle everything until the pending entry resolves.
-        if self.pending_login.is_some() || self.pending_account_input.is_some() {
+        if self.pending_ssh_remote_name.is_some() {
             return false;
         }
         // Universal escape hatch. From any guided pre-ready phase, Esc always
@@ -351,8 +352,6 @@ impl App {
             && self.inline_interactive_state.is_none()
             && self.session_picker_overlay.is_none()
             && self.session_picker_overlay.is_none()
-            && self.login_picker_overlay.is_none()
-            && self.account_picker_overlay.is_none()
             && matches!(
                 self.onboarding_phase(),
                 Some(
@@ -384,7 +383,14 @@ impl App {
                             // Clear the failure notice now that the user is acting
                             // on it, so a later retry starts from a clean screen.
                             self.onboarding_import_error = None;
-                            self.show_interactive_login();
+                            self.push_display_message(DisplayMessage::system(
+                                "No providers configured. Run `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>` to connect one."
+                                    .to_string(),
+                            ));
+                            self.set_status_notice("Configure a provider: jcode provider add");
+                            // resonix 化：没有交互式登录 picker 可打开，直接结束
+                            // onboarding 到正常会话屏幕，配置引导由消息承担。
+                            self.onboarding_finish();
                             true
                         }
                         // On the failure screen, H hands the fix to a coding
@@ -758,7 +764,7 @@ impl App {
                     return;
                 }
             };
-            // Auto-import bypasses the manual `pending_login` path, so record
+            // Auto-import bypasses the manual login-input path, so record
             // `auth_success` here for each imported provider. Without this the
             // onboarding activation funnel undercounts every imported login
             // (the happy path of the guided first-run flow).

@@ -1204,8 +1204,6 @@ impl App {
     /// before consulting the input buffer.
     pub(super) fn command_suggestions_signature(&self) -> CommandSuggestionsSignature {
         CommandSuggestionsSignature {
-            pending_login: self.pending_login.is_some(),
-            pending_account_input: self.pending_account_input.is_some(),
             pending_ssh_remote_name: self.pending_ssh_remote_name.is_some(),
             inline_preview_kind: self
                 .inline_interactive_state
@@ -1220,15 +1218,12 @@ impl App {
         &self,
         signature: &CommandSuggestionsSignature,
     ) -> Vec<(String, &'static str)> {
-        // While an interactive prompt is waiting for typed input (API key,
-        // OAuth callback, account label, SSH target), the composer is an
-        // answer box, not a command line. Rendering the full command palette
-        // there is misleading (issue #496): the only command those prompts
-        // advertise is /cancel, so suggest exactly that and nothing else.
-        if signature.pending_login
-            || signature.pending_account_input
-            || signature.pending_ssh_remote_name
-        {
+        // While an interactive prompt is waiting for typed input (SSH target),
+        // the composer is an answer box, not a command line. Rendering the
+        // full command palette there is misleading (issue #496): the only
+        // command those prompts advertise is /cancel, so suggest exactly that
+        // and nothing else.
+        if signature.pending_ssh_remote_name {
             let input = self.input.trim_start();
             let typed = input.trim_end();
             if !typed.is_empty() && typed.starts_with('/') && "/cancel".starts_with(typed) {
@@ -1247,7 +1242,6 @@ impl App {
                 crate::tui::PickerKind::Model => {
                     input.starts_with("/model") || input.starts_with("/models")
                 }
-                crate::tui::PickerKind::Login => input.starts_with("/login"),
                 _ => false,
             };
             if suppress {

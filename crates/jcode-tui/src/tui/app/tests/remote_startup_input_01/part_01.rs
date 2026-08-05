@@ -1161,3 +1161,54 @@ fn test_detailed_catalog_replaces_placeholder_routes_after_names_only_update() {
         );
     });
 }
+
+fn configure_test_remote_models(app: &mut App) {
+    app.is_remote = true;
+    app.remote_provider_model = Some("gpt-5.3-codex".to_string());
+    app.remote_available_entries = vec!["gpt-5.3-codex".to_string(), "gpt-5.2-codex".to_string()];
+}
+
+
+fn configure_test_remote_models_with_openai_recommendations(app: &mut App) {
+    app.is_remote = true;
+    app.remote_provider_model = Some("gpt-5.2".to_string());
+    app.remote_available_entries = vec![
+        "gpt-5.2".to_string(),
+        "gpt-5.5".to_string(),
+        "gpt-5.4".to_string(),
+        "gpt-5.4-pro".to_string(),
+        "gpt-5.3-codex-spark".to_string(),
+        "gpt-5.3-codex".to_string(),
+        "claude-opus-4-8".to_string(),
+    ];
+    app.remote_model_options = app
+        .remote_available_entries
+        .iter()
+        .filter(|model| model.as_str() != "claude-opus-4-8")
+        .cloned()
+        .map(|model| crate::provider::ModelRoute { capability: None,
+            model,
+            provider: "OpenAI".to_string(),
+            api_method: "openai-oauth".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        })
+        .collect();
+    app.remote_model_options.push(crate::provider::ModelRoute { capability: None,
+        model: "claude-opus-4-8".to_string(),
+        provider: "Anthropic".to_string(),
+        api_method: "claude-oauth".to_string(),
+        available: true,
+        detail: String::new(),
+        cheapness: None,
+    });
+    app.remote_model_options.push(crate::provider::ModelRoute { capability: None,
+        model: "claude-opus-4-8".to_string(),
+        provider: "Anthropic".to_string(),
+        api_method: "claude-api".to_string(),
+        available: true,
+        detail: String::new(),
+        cheapness: None,
+    });
+}

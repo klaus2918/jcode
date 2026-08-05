@@ -208,12 +208,10 @@ impl App {
     /// Record a submitted prompt into the persistent history. Only new
     /// content is stored: resubmitting an existing prompt moves it to the
     /// most-recent slot instead of adding a duplicate. No-op for empty/huge
-    /// prompts and while a login/account/ssh input interception is pending
+    /// prompts and while an ssh input interception is pending
     /// (those inputs can contain secrets).
     pub(super) fn record_prompt_history(&mut self, text: &str) {
-        if self.pending_login.is_some()
-            || self.pending_account_input.is_some()
-            || self.pending_ssh_remote_name.is_some()
+        if self.pending_ssh_remote_name.is_some()
         {
             return;
         }

@@ -453,16 +453,6 @@ impl crate::tui::TuiState for TestState {
     fn session_picker_overlay(&self) -> Option<&std::cell::RefCell<session_picker::SessionPicker>> {
         None
     }
-    fn login_picker_overlay(
-        &self,
-    ) -> Option<&std::cell::RefCell<crate::tui::login_picker::LoginPicker>> {
-        None
-    }
-    fn account_picker_overlay(
-        &self,
-    ) -> Option<&std::cell::RefCell<crate::tui::account_picker::AccountPicker>> {
-        None
-    }
     fn usage_overlay(
         &self,
     ) -> Option<&std::cell::RefCell<crate::tui::usage_overlay::UsageOverlay>> {

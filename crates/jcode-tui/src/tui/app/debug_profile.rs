@@ -258,16 +258,6 @@ impl App {
             .as_ref()
             .map(|overlay| overlay.borrow().debug_memory_profile())
             .unwrap_or_else(|| serde_json::json!({"present": false, "total_estimate_bytes": 0}));
-        let login_picker = self
-            .login_picker_overlay
-            .as_ref()
-            .map(|overlay| overlay.borrow().debug_memory_profile())
-            .unwrap_or_else(|| serde_json::json!({"present": false, "total_estimate_bytes": 0}));
-        let account_picker = self
-            .account_picker_overlay
-            .as_ref()
-            .map(|overlay| overlay.borrow().debug_memory_profile())
-            .unwrap_or_else(|| serde_json::json!({"present": false, "total_estimate_bytes": 0}));
         let usage_overlay = self
             .usage_overlay
             .as_ref()
@@ -432,8 +422,6 @@ impl App {
             "debug_trace_events_bytes": debug_trace_events_bytes,
             "string_state_bytes": string_state_bytes,
             "session_picker_bytes": nested_usize(&session_picker, &["total_estimate_bytes"]),
-            "login_picker_bytes": nested_usize(&login_picker, &["total_estimate_bytes"]),
-            "account_picker_bytes": nested_usize(&account_picker, &["total_estimate_bytes"]),
             "usage_overlay_bytes": nested_usize(&usage_overlay, &["total_estimate_bytes"]),
             "inline_view_bytes": nested_usize(&inline_view, &["total_estimate_bytes"]),
             "inline_interactive_bytes": nested_usize(&inline_interactive, &["total_estimate_bytes"]),
@@ -500,8 +488,6 @@ impl App {
             },
             "overlays": {
                 "session_picker": session_picker,
-                "login_picker": login_picker,
-                "account_picker": account_picker,
                 "usage_overlay": usage_overlay,
             },
             "inline": {

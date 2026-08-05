@@ -631,7 +631,7 @@ fn node_props(n: GraphNode) -> NodeProps {
         LoginOpenAi => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
         // Import review auto-commits the highlighted choice on DECISION_TIMEOUT.
         LoginImport => NodeProps { is_decision: true, has_default: true, is_ready: false, is_terminal: false },
-        // Recovery fallback: a single Enter opens the provider picker.
+        // Recovery fallback: a single Enter shows config guidance and finishes.
         LoginRecovery => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
         // Transient: auto-advances, the user never chooses here.
         ModelSelect => NodeProps { is_decision: false, has_default: true, is_ready: false, is_terminal: false },
@@ -670,8 +670,9 @@ fn flow_edges() -> Vec<Edge> {
         // failed/declined import drops to the recovery fallback.
         Edge { from: LoginImport, to: StartChoice, keystrokes: 1 },
         Edge { from: LoginImport, to: LoginRecovery, keystrokes: 1 },
-        // Recovery: Enter opens the provider picker, ending at suggestions.
-        Edge { from: LoginRecovery, to: StartChoice, keystrokes: 1 },
+        // Recovery: Enter shows the config guidance and finishes onboarding
+        // (resonix: no interactive login picker remains).
+        Edge { from: LoginRecovery, to: Done, keystrokes: 1 },
         // Transient model-select auto-advances with no keystroke.
         Edge { from: ModelSelect, to: StartChoice, keystrokes: 0 },
         // The two actions either enter the normal blank-session suggestions or
@@ -1366,7 +1367,8 @@ fn tier8_metrics() -> Tier8Metrics {
     };
 
     // Recovery depth: from the recovery Login{import:None} screen, a single
-    // Enter re-opens the provider picker (an actionable login state).
+    // Enter shows the provider config guidance and finishes onboarding
+    // (resonix: no interactive login picker remains).
     let error_recovery_depth = {
         let mut app = create_test_app();
         app.onboarding_flow = None;
@@ -1375,7 +1377,7 @@ fn tier8_metrics() -> Tier8Metrics {
             flow.phase = OnboardingPhase::Login { import: None };
         }
         if app.handle_onboarding_continue_prompt_key(KeyCode::Enter)
-            && app.inline_interactive_state.is_some()
+            && app.onboarding_phase().is_none()
         {
             1
         } else {
@@ -2207,8 +2209,8 @@ fn onboarding_eval_fidelity_real_transitions() {
             "decline must reach a terminal (Done) phase"
         );
 
-        // Edge: recovery Login{import:None} + Enter -> opens the provider picker
-        // (1 keystroke decision, as the table assumes for manual login).
+        // Edge: recovery Login{import:None} + Enter -> shows config guidance
+        // and finishes onboarding (resonix: no provider picker remains).
         let mut app = create_test_app();
         app.onboarding_flow = None;
         app.begin_onboarding_flow_at_login();
@@ -2217,8 +2219,12 @@ fn onboarding_eval_fidelity_real_transitions() {
         }
         assert!(app.handle_onboarding_continue_prompt_key(crossterm::event::KeyCode::Enter));
         assert!(
-            app.inline_interactive_state.is_some(),
-            "recovery Login + Enter must open the provider picker"
+            app.inline_interactive_state.is_none(),
+            "recovery Login + Enter must not open the (removed) provider picker"
+        );
+        assert!(
+            app.onboarding_phase().is_none(),
+            "recovery Login + Enter must finish onboarding"
         );
     });
 }

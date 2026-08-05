@@ -202,41 +202,6 @@ async fn handle_remote_rewind_command(
     Ok(true)
 }
 
-impl App {
-    pub(super) async fn handle_account_picker_command_remote(
-        &mut self,
-        remote: &mut RemoteConnection,
-        command: crate::tui::account_picker::AccountPickerCommand,
-    ) -> Result<()> {
-        match command {
-            crate::tui::account_picker::AccountPickerCommand::OpenAccountCenter {
-                provider_filter,
-            } => self.open_account_center(provider_filter.as_deref()),
-            crate::tui::account_picker::AccountPickerCommand::OpenAddReplaceFlow {
-                provider_filter,
-            } => self.open_account_add_replace_flow(provider_filter.as_deref()),
-            crate::tui::account_picker::AccountPickerCommand::SubmitInput(input) => {
-                crate::tui::app::auth::handle_account_command_remote(self, &input, remote).await?;
-            }
-            crate::tui::account_picker::AccountPickerCommand::PromptValue {
-                prompt,
-                command_prefix,
-                empty_value,
-                status_notice,
-            } => self.prompt_account_value(prompt, command_prefix, empty_value, status_notice),
-            crate::tui::account_picker::AccountPickerCommand::PromptNew { provider } => {
-                self.prompt_new_account_label(provider)
-            }
-            other => {
-                if let Some(command) = crate::tui::app::auth::account_command_from_picker(&other) {
-                    crate::tui::app::auth::execute_account_command_remote(self, command, remote)
-                        .await?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
 
 pub(in crate::tui::app) async fn handle_remote_key(
     app: &mut App,
@@ -304,18 +269,6 @@ async fn handle_remote_key_internal(
 
     if app.session_picker_overlay.is_some() {
         return app.handle_session_picker_key(code, modifiers);
-    }
-
-    if app.login_picker_overlay.is_some() {
-        return app.handle_login_picker_key(code, modifiers);
-    }
-
-    if app.account_picker_overlay.is_some() {
-        if let Some(command) = app.next_account_picker_action(code, modifiers)? {
-            app.handle_account_picker_command_remote(remote, command)
-                .await?;
-        }
-        return Ok(());
     }
 
     if let Some(ref picker) = app.inline_interactive_state
@@ -1385,12 +1338,6 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if crate::tui::app::auth::handle_account_command_remote(app, trimmed, remote)
-                    .await?
-                {
-                    return Ok(());
-                }
-
                 if trimmed == "/autoreview" || trimmed == "/autoreview status" {
                     app.push_display_message(DisplayMessage::system(
                         app_mod::commands::autoreview_status_message(app),
@@ -2096,13 +2043,6 @@ async fn handle_remote_key_internal(
                         return Ok(());
                     };
                     remote.set_compaction_mode(mode).await?;
-                    return Ok(());
-                }
-
-                if app.pending_login.is_some() {
-                    app.input = trimmed.to_string();
-                    app.cursor_pos = app.input.len();
-                    app.submit_input();
                     return Ok(());
                 }
 
