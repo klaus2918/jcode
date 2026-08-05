@@ -36,7 +36,7 @@ fn push_esc_skip_hint(lines: &mut Vec<Line<'static>>, align: Alignment) {
     lines.push(Line::from(""));
     lines.push(
         Line::from(Span::styled(
-            "Esc to skip onboarding (log in later with /login).",
+            "Esc to skip onboarding (connect a provider later with `jcode provider add`).",
             Style::default().fg(dim_color()),
         ))
         .alignment(align),
@@ -396,7 +396,7 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
                 None => {
                     lines.push(
                         Line::from(Span::styled(
-                            "First, log in to get started.",
+                            "First, connect a model provider.",
                             Style::default()
                                 .fg(welcome_accent())
                                 .add_modifier(Modifier::BOLD),
@@ -405,7 +405,7 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
                     );
                     lines.push(
                         Line::from(Span::styled(
-                            "Press Enter to pick who to log in with (OpenAI, Anthropic, and more).",
+                            "Press Enter to see how to configure a provider (jcode provider add).",
                             Style::default().fg(dim_color()),
                         ))
                         .alignment(align),
@@ -467,7 +467,7 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
         OnboardingWelcomeKind::LoginOpenAi { yes_highlighted } => {
             lines.push(
                 Line::from(Span::styled(
-                    "Log in to OpenAI?",
+                    "Configure a model provider?",
                     Style::default()
                         .fg(welcome_accent())
                         .add_modifier(Modifier::BOLD),

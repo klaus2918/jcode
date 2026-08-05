@@ -12,7 +12,7 @@
 //!   - Never while onboarding is active, never for users who already hold
 //!     jcode account credentials, never in replay/test runtimes.
 //!
-//! `/subscribe` renders the full pitch and points at `/login jcode`.
+//! `/subscribe` renders the full pitch and points at the jcode dashboard.
 
 use super::{App, AppRuntimeMode, DisplayMessage};
 use std::path::PathBuf;
@@ -165,7 +165,7 @@ pub(super) fn subscribe_pitch_markdown() -> String {
         ));
     }
 
-    message.push_str("\nStart: /login jcode (browser approval, no keys in the terminal)\n");
+    message.push_str("\nStart: subscribe at the jcode dashboard, then set the router key in ~/.jcode/.env\n");
     message.push_str("Details anytime: /subscription");
     message
 }
@@ -257,7 +257,7 @@ impl App {
     /// Render the `/subscribe` pitch into the transcript.
     pub(super) fn show_subscribe_pitch(&mut self) {
         self.push_display_message(DisplayMessage::system(subscribe_pitch_markdown()));
-        self.set_status_notice("Subscribe: /login jcode to start");
+        self.set_status_notice("Subscribe at the jcode dashboard");
     }
 }
 
@@ -350,7 +350,7 @@ mod tests {
         let pitch = subscribe_pitch_markdown();
         assert!(pitch.contains("Get more tokens"));
         assert!(pitch.contains("open source"));
-        assert!(pitch.contains("/login jcode"));
+        assert!(pitch.contains("jcode dashboard"));
         assert!(pitch.contains("/subscription"));
         // Every launched tier appears with its retail price.
         for tier in crate::subscription_catalog::JcodeTier::ALL.iter().copied() {

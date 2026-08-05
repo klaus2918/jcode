@@ -166,7 +166,7 @@ impl App {
                 "/subscription\nShow curated jcode subscription status for this session, including router config, runtime mode, curated models, and planned tier budget scaffolding."
             }
             "subscribe" => {
-                "/subscribe\nWhy subscribe to jcode: more tokens on curated frontier models, one browser sign-in with no API keys, failover routing, and funding open-source development. Lists plans and prices, then start with /login jcode."
+                "/subscribe\nWhy subscribe to jcode: more tokens on curated frontier models, one browser sign-in with no API keys, failover routing, and funding open-source development. Lists plans and prices. Subscribe via the jcode dashboard and set the router key in ~/.jcode/.env."
             }
             "version" => "/version\nShow jcode version/build details.",
             "changelog" => "/changelog\nShow recent changes embedded in this build.",
@@ -185,12 +185,6 @@ impl App {
             }
             "tool-call-details" => {
                 "/tool-call-details\nShow whether the dimmed technical detail (command, path, args) renders next to the model-provided intent on tool rows.\n\n/tool-call-details on\nShow the technical detail after the intent, e.g. `bash · Run tests · $ cargo test`.\n\n/tool-call-details off\nShow only the intent on tool rows that have one. Rows without an intent still show the technical detail, and error summaries always render."
-            }
-            "auth" | "login" => {
-                "/auth\nShow authentication status for all providers.\n\n/login\nInteractive provider selection - pick a provider to log into.\n\n/login <provider>\nStart login flow directly for any provider shown by /login or the /login completions.\n\nUse /login jcode for curated jcode subscription access via your router, not OpenRouter BYOK."
-            }
-            "account" | "accounts" => {
-                "/account\nOpen the inline account picker showing both Claude and OpenAI accounts together. It lists saved accounts plus new/replace actions for each provider.\n\n/account claude  or  /account openai\nOpen the inline picker filtered to that provider.\n\n/account <provider> settings\nShow provider-specific account/settings details.\n\n/account <provider> login\nStart or refresh credentials for a provider.\n\n/account claude add  or  /account openai add\nCreate the next numbered OAuth account directly.\n\n/account <provider> switch <label>\nSwitch the active account for multi-account providers.\n\n/account <provider> remove <label>\nRemove a saved account.\n\n/account default-provider <provider|auto>\nSet the preferred default provider for future sessions.\n\n/account default-model <model|clear>\nSet the preferred default model for future sessions.\n\nOpenAI-specific settings:\n  /account openai transport ...\n  /account openai effort ...\n  /account openai fast on|off\n\nCustom provider settings:\n  /account openai-compatible api-base ...\n  /account openai-compatible api-key-name ...\n  /account openai-compatible env-file ...\n  /account openai-compatible default-model ..."
             }
             "save" => {
                 "/save\nBookmark the current session so it appears at the top of /resume.\n\n/save <label>\nBookmark with a custom label for easy identification.\n\nSaved sessions are shown in a dedicated \"Saved\" section in the session picker."

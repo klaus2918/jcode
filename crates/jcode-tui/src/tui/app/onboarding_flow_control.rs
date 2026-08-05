@@ -618,14 +618,9 @@ impl App {
         }
     }
 
-    /// Answer the "Log in to OpenAI?" prompt. Yes starts the OpenAI sign-in;
-    /// No exits onboarding and drops the user on the normal new-session screen
-    /// with a system message telling them to run `/login` when they're ready.
-    ///
-    /// We intentionally do NOT open the inline provider picker on "No": that
-    /// flow has a flaky input widget (typed characters were not echoed), and
-    /// finishing onboarding straight to the usual screen is simpler and more
-    /// robust. The user can pick any provider via `/login` at their own pace.
+    /// Answer the "Configure a provider?" prompt. Yes starts the config-guided
+    /// setup; No exits onboarding and drops the user on the normal new-session
+    /// screen with a system message telling them how to connect a provider.
     pub(super) fn onboarding_answer_login_openai(&mut self, wants_openai: bool) {
         if !matches!(
             self.onboarding_phase(),
@@ -637,19 +632,11 @@ impl App {
             self.onboarding_start_default_login();
         } else {
             self.onboarding_finish();
-            let login = Self::onboarding_login_suggestion();
-            let hint = if login == "/login" {
-                "No problem. When you're ready to log in, run /login to pick a provider \
-                 (OpenAI, Anthropic, Gemini, OpenRouter, and more)."
-                    .to_string()
-            } else {
-                format!(
-                    "No problem. When you're ready, run {login} to reuse the credentials \
-                     already on this machine, or /login to pick another provider."
-                )
-            };
-            self.push_display_message(DisplayMessage::system(hint));
-            self.set_status_notice(format!("Run {login} when you're ready"));
+            self.push_display_message(DisplayMessage::system(
+                "No problem. When you're ready to connect a model provider, run                  `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>`                  and pick it in /model."
+                    .to_string(),
+            ));
+            self.set_status_notice("Configure a provider when you're ready");
         }
     }
 
@@ -663,7 +650,7 @@ impl App {
         );
         let choice = if yes { "Yes" } else { "No" };
         self.set_status_notice(format!(
-            "Log in to OpenAI? [{choice}] - hl to move, Enter to choose (No skips for now)"
+            "Configure a model provider now? [{choice}] - hl to move, Enter to choose (No skips for now)"
         ));
     }
 
@@ -1238,33 +1225,10 @@ impl App {
             || lower.contains("expired or invalid")
     }
 
-    /// Suggest a concrete `/login <provider>` command the user can actually
-    /// complete, instead of the generic `/login`. Preference order:
-    /// 1. A jcode login that exists but expired (they clearly use it).
-    /// 2. Credentials detected from another CLI (Codex -> openai, Claude Code
-    ///    -> claude, Cursor -> cursor), since that login will succeed instantly.
-    ///
-    /// Falls back to plain `/login` when nothing is detected.
+    /// resonix 化后没有交互式登录可建议：模型接入只走 `[[providers]]` 配置 +
+    /// 统一 `.env`。返回配置引导命令供文案引用。
     pub(super) fn onboarding_login_suggestion() -> String {
-        Self::onboarding_login_suggestion_provider()
-            .map(|p| format!("/login {p}"))
-            .unwrap_or_else(|| "/login".to_string())
-    }
-
-    fn onboarding_login_suggestion_provider() -> Option<&'static str> {
-        use crate::auth::AuthState;
-        let status = crate::auth::AuthStatus::check_fast();
-        // Config-driven mode: only allowlisted providers are relevant. An
-        // expired login is the strongest signal (the user already picked this
-        // provider once), so re-login is the fastest path back to working.
-        for provider in crate::provider_catalog::auth_status_login_providers_filtered() {
-            let state = status.state_for_provider(provider);
-            let id: &'static str = provider.id;
-            if matches!(state, AuthState::Expired) {
-                return Some(id);
-            }
-        }
-        None
+        "`jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>`".to_string()
     }
 
     /// Build the "other providers" rows for the onboarding readiness summary.
@@ -1361,9 +1325,9 @@ impl App {
             }
             let login = Self::onboarding_login_suggestion();
             let fix_hint = if looks_like_auth || !ready.is_empty() {
-                format!("Run {login} to fix a login, or /model to pick another.")
+                format!("Run {login} to fix provider credentials, or /model to pick another.")
             } else {
-                format!("Run {login} to add a login, or /model to pick another.")
+                format!("Run {login} to add a provider, or /model to pick another.")
             };
             body.push_str(&format!("\n{fix_hint}"));
         }
