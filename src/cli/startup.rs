@@ -185,7 +185,7 @@ pub fn register_external_provider_runtimes() {
                 Err(err) => {
                     logging::info(&format!(
                         "OpenAI runtime not registered: no usable credentials ({err:#}). \
-                         Run `jcode login --provider openai` to add them."
+                         Run `jcode provider add openai --base-url https://api.openai.com/v1 --api-key-env OPENAI_API_KEY` to add them."
                     ));
                     return None;
                 }

@@ -104,8 +104,10 @@ pub fn recommended_actions(
 ) -> Vec<String> {
     let mut actions = Vec::new();
     match assessment.state {
+        // resonix 对齐：模型接入走 `[[providers]]` 配置 + 统一 `~/.jcode/.env`，
+        // 不再有交互式登录。
         AuthState::NotConfigured => actions.push(format!(
-            "Connect it: jcode login --provider {}",
+            "Connect it: jcode provider add {} --base-url <url> --api-key-env <ENV_VAR>",
             provider.id
         )),
         AuthState::Expired
@@ -115,12 +117,12 @@ pub fn recommended_actions(
             ) =>
         {
             actions.push(format!(
-                "Re-run login; this provider cannot auto-refresh: jcode login --provider {}",
+                "Re-set the credential; this provider cannot auto-refresh: jcode provider add {} --base-url <url> --api-key-env <ENV_VAR>",
                 provider.id
             ));
         }
         AuthState::Expired => actions.push(format!(
-            "Refresh or replace the current login: jcode login --provider {}",
+            "Refresh or replace the current credential: jcode provider add {} --base-url <url> --api-key-env <ENV_VAR>",
             provider.id
         )),
         AuthState::Available => {}

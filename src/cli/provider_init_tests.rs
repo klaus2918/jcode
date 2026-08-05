@@ -163,8 +163,8 @@ default_model = "claude-sonnet-4-6"
 
 #[test]
 fn auto_import_login_provider_is_string_resolvable() {
-    // `jcode login auto-import` / `--provider auto-import` 由旧 clap 拒绝变为
-    // 注册表可解析（登录菜单专用动作），固化该行为。
+    // `--provider auto-import` 由旧 clap 拒绝变为注册表可解析
+    // （外部凭据导入专用动作），固化该行为。
     let provider = crate::provider_catalog::resolve_login_provider("auto-import")
         .expect("auto-import should resolve");
     assert_eq!(provider.id, "auto-import");

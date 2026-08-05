@@ -628,6 +628,42 @@ desktop_notifications = true
 # See https://jcode.sh/discovery-tools
 # enabled = true
 # endpoint = "https://api.jcode.sh/v1/discovery"
+
+# ---- Model providers (resonix 风格) ----
+# 模型接入只走 [[providers]] 配置 + 统一 ~/.jcode/.env 密钥文件。
+# 用 `jcode provider add <name> --base-url <url> --model <id> --api-key-env <ENV_VAR>`
+# 生成条目，或取消注释下面的模板手动编辑。密钥值永远不写进本文件：
+# 只写 api_key_env（环境变量名），值放在 ~/.jcode/.env（KEY=value 一行）。
+
+# [provider]
+# default_provider = "ollama-local"        # auto 启动时优先使用的命名 profile
+# default_model = "llama3.1:8b"
+
+# ---- 本地端点模板 ----
+# [[providers.ollama-local]]
+# type = "openai-compatible"
+# base_url = "http://localhost:11434/v1"   # Ollama
+# auth = "none"
+# requires_api_key = false
+# default_model = "llama3.1:8b"
+# [[providers.ollama-local.models]]
+# id = "llama3.1:8b"
+
+# [[providers.lmstudio]]
+# type = "openai-compatible"
+# base_url = "http://localhost:1234/v1"    # LM Studio
+# auth = "none"
+# requires_api_key = false
+# default_model = "qwen2.5-coder-7b"
+
+# ---- 远程端点模板（密钥放 ~/.jcode/.env）----
+# [[providers.deepseek]]
+# type = "openai-compatible"
+# base_url = "https://api.deepseek.com/v1"
+# api_key_env = "DEEPSEEK_API_KEY"
+# default_model = "deepseek-chat"
+# [[providers.deepseek.models]]
+# id = "deepseek-chat"
 	"##;
 
         // Substitute platform-specific defaults from the keybinding registry.
