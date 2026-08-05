@@ -829,11 +829,8 @@ mod tests {
         assert_eq!(profile.env_file.as_deref(), Some("provider-my-api.env"));
         assert_eq!(profile.models[0].context_window, Some(128_000));
 
-        let env_file = temp
-            .path()
-            .join("config")
-            .join("jcode")
-            .join("provider-my-api.env");
+        // resonix 对齐：密钥写入统一 `<jcode home>/.env`。
+        let env_file = temp.path().join(".env");
         let env_content = std::fs::read_to_string(env_file).expect("env file");
         assert!(env_content.contains("JCODE_PROVIDER_MY_API_API_KEY=secret-test-key"));
     }

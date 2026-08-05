@@ -36,6 +36,12 @@ pub async fn run() -> Result<()> {
         .ok();
     logging::info("jcode starting");
 
+    // resonix 对齐：把旧分散 env 文件（openai-compatible.env 等）合并进统一
+    // `<jcode home>/.env`。幂等且静默失败不阻塞启动。
+    if let Err(err) = crate::provider_catalog::maybe_migrate_legacy_env_files() {
+        logging::warn(&format!("Failed to migrate legacy env files: {err:#}"));
+    }
+
     // Wire config-reload reactions without making config depend on auth/bus:
     // when the config cache reloads, invalidate the auth-status cache and
     // broadcast a models-updated event.
