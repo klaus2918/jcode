@@ -912,9 +912,9 @@ pub(crate) async fn maybe_prompt_server_bootstrap_login(provider_choice: &str) -
     // run the blocking CLI "Approve sources" import prompt or the
     // "Choose a provider" selection menu here: a brand-new user launches
     // straight into the TUI, which detects the missing credentials and walks
-    // them through login / external-auth import / model selection in the guided
-    // first-run flow. The server is happy to spawn unauthenticated and the TUI
-    // drives `/login` from there.
+    // them through provider configuration in the guided first-run flow. The
+    // server is happy to spawn unauthenticated and the TUI drives the
+    // `jcode provider add` config guidance from there.
     //
     // The only thing left to honor at the CLI layer is an explicit headless
     // bootstrap (e.g. CI / non-interactive provisioning), which opts in via the
@@ -1000,10 +1000,10 @@ pub(crate) async fn spawn_server(
         cmd.env("JCODE_DEBUG_CONTROL", "1");
     }
     cmd.arg("--provider").arg(provider_choice);
-    // The interactive TUI owns first-run onboarding/login. Let the spawned
-    // server boot with a deferred (credential-less) provider when nothing is
-    // configured yet, instead of bailing; the TUI activates a provider via the
-    // in-TUI `/login` flow. See init_provider_with_options.
+    // The interactive TUI owns first-run onboarding. Let the spawned server
+    // boot with a deferred (credential-less) provider when nothing is
+    // configured yet, instead of bailing; the TUI guides the user through
+    // `jcode provider add` configuration. See init_provider_with_options.
     cmd.env("JCODE_DEFERRED_AUTH_BOOTSTRAP", "1");
     if let Some(provider_profile) = provider_profile {
         cmd.arg("--provider-profile").arg(provider_profile);

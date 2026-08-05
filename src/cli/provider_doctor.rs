@@ -60,9 +60,9 @@ pub async fn run_provider_doctor_command(
         )
         .with_context(|| {
             format!(
-                "no API key found for `{provider}` (looked in env `{}` and `{}`). \
-                 Run `jcode login --provider {provider}`, or use `--tier offline` to check wiring only.",
-                resolved.api_key_env, resolved.env_file
+                "no API key found for `{provider}` (looked in env `{}` and unified `~/.jcode/.env`). \
+                 Run `jcode provider add {provider} --base-url <url> --api-key-env <ENV_VAR>`, or use `--tier offline` to check wiring only.",
+                resolved.api_key_env
             )
         })?;
         Some(key)
@@ -175,7 +175,7 @@ fn next_step_hint(checkpoint: &str) -> String {
     use crate::live_tests::checkpoints as cp;
     let hint = match checkpoint {
         cp::AUTH_CREDENTIAL_LOADED => {
-            "  Next: run `jcode login --provider <provider>` to store a working credential."
+            "  Next: run `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>` to store a working credential."
         }
         cp::MODEL_CATALOG_LIVE_ENDPOINT => {
             "  Next: the live /models call failed. Check the key, network, and provider status."

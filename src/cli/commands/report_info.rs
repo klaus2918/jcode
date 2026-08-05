@@ -459,8 +459,8 @@ pub(super) async fn run_usage_command(emit_json: bool) -> Result<()> {
         println!("No connected providers");
         println!();
         println!("Next steps:");
-        println!("- Use `jcode login --provider claude` to connect Claude OAuth.");
-        println!("- Use `jcode login --provider openai` to connect ChatGPT / Codex OAuth.");
+        println!("- Add a model provider with `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>`.");
+        println!("- Set the key in the unified ~/.jcode/.env and pick it with /model.");
         return Ok(());
     }
 
@@ -667,7 +667,7 @@ mod tests {
                 .recommended_actions
                 .iter()
                 .any(|line| {
-                    line == &format!("Connect it: jcode login --provider {}", provider.id)
+                    line.contains("jcode provider add") || line.contains("provider add")
                 })
         );
 
