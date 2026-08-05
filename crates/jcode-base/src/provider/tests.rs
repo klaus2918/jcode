@@ -933,3 +933,25 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
         );
     });
 }
+
+/// 运行时验证：`/model openai/<model>` 斜杠引用必须真正路由到
+/// OpenAI 子 provider，而不是被当作字面模型名或误路由到其他厂商。
+#[test]
+fn slash_ref_routes_to_openai_subprovider_at_runtime() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let provider = test_multi_provider_with_openai();
+            // OpenAI stub 认 gpt-5.5（见 test_openai_runtime 的 models）。
+            provider
+                .set_model("openai/gpt-5.5")
+                .expect("slash ref should route to the OpenAI sub-provider");
+            assert_eq!(provider.model(), "gpt-5.5");
+            // 显式前缀之后 active provider 是 OpenAI。
+            assert_eq!(
+                provider.active_provider(),
+                jcode_provider_core::ActiveProvider::OpenAI
+            );
+        });
+    });
+}

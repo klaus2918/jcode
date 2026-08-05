@@ -639,31 +639,39 @@ desktop_notifications = true
 # default_provider = "ollama-local"        # auto 启动时优先使用的命名 profile
 # default_model = "llama3.1:8b"
 
-# ---- 本地端点模板 ----
-# [[providers.ollama-local]]
+# ---- 本地端点模板（[[providers]] 数组条目，name 必填）----
+# [[providers]]
+# name = "ollama-local"
 # type = "openai-compatible"
 # base_url = "http://localhost:11434/v1"   # Ollama
-# auth = "none"
-# requires_api_key = false
 # default_model = "llama3.1:8b"
-# [[providers.ollama-local.models]]
-# id = "llama3.1:8b"
+# models = ["llama3.1:8b"]
 
-# [[providers.lmstudio]]
+# [[providers]]
+# name = "lmstudio"
 # type = "openai-compatible"
 # base_url = "http://localhost:1234/v1"    # LM Studio
-# auth = "none"
-# requires_api_key = false
 # default_model = "qwen2.5-coder-7b"
+# models = ["qwen2.5-coder-7b"]
 
 # ---- 远程端点模板（密钥放 ~/.jcode/.env）----
-# [[providers.deepseek]]
+# [[providers]]
+# name = "deepseek"
 # type = "openai-compatible"
 # base_url = "https://api.deepseek.com/v1"
 # api_key_env = "DEEPSEEK_API_KEY"
 # default_model = "deepseek-chat"
-# [[providers.deepseek.models]]
-# id = "deepseek-chat"
+# models = ["deepseek-chat"]
+
+# 等效的经典表风格（二选一，不要混用）：
+# [providers.ollama-local]
+# type = "openai-compatible"
+# base_url = "http://localhost:11434/v1"
+# auth = "none"                            # 本地免认证可省略 api_key_env
+# requires_api_key = false
+# default_model = "llama3.1:8b"
+# [[providers.ollama-local.models]]
+# id = "llama3.1:8b"
 	"##;
 
         // Substitute platform-specific defaults from the keybinding registry.
@@ -681,6 +689,38 @@ desktop_notifications = true
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 把模板里的一行"取消注释"：只有看起来像 TOML 配置的行（`[`/`[[` 表头
+    /// 或含 `=` 的键值）才去掉 `# `；`----` 分隔线、中文说明等保留注释。
+    fn uncomment_config_lines(line: &str) -> String {
+        if let Some(body) = line.strip_prefix("# ") {
+            let trimmed = body.trim_start();
+            if trimmed.starts_with('[') || trimmed.contains('=') {
+                return format!(
+                    "{}
+",
+                    body
+                );
+            }
+            return format!(
+                "{}
+",
+                line
+            );
+        }
+        if line == "#" {
+            return format!(
+                "{}
+",
+                line.trim_start_matches('#')
+            );
+        }
+        format!(
+            "{}
+",
+            line
+        )
+    }
 
     /// The shipped template is a hand-maintained string, so a typo in it ships
     /// a config file that jcode itself cannot read. Parse it here.
@@ -739,5 +779,75 @@ mod tests {
             );
             assert_eq!(value.len(), 7, "{role} example should be #rrggbb: {value}");
         }
+    }
+
+    /// 模板里的 `[[providers]]` 数组示例必须能取消注释后直接解析（resonix
+    /// 风格：数组条目带 `name` 字段，字段名与解析器对齐）。这是用户最可能
+    /// 照抄的部分，写错会在生成配置文件时直接失败。
+    #[test]
+    fn documented_providers_array_example_is_valid_when_uncommented() {
+        let template = Config::default_config_file_contents();
+        // 从本地端点模板开始，到等效经典表风格之前（只取数组风格示例）。
+        let start = template
+            .find("# ---- 本地端点模板")
+            .expect("template documents local endpoint providers");
+        let end = template
+            .find("# 等效的经典表风格")
+            .expect("template separates array and table styles");
+        let example: String = template[start..end]
+            .lines()
+            .map(|line| uncomment_config_lines(line))
+            .collect();
+
+        let parsed: Config =
+            toml::from_str(&example).expect("uncommented [[providers]] array example must parse");
+        let ollama = parsed
+            .providers
+            .get("ollama-local")
+            .expect("ollama-local profile should parse");
+        assert_eq!(ollama.base_url, "http://localhost:11434/v1");
+        assert_eq!(
+            ollama.default_model.as_deref(),
+            Some("llama3.1:8b"),
+            "default_model alias should map from the `default_model` field"
+        );
+        let lmstudio = parsed
+            .providers
+            .get("lmstudio")
+            .expect("lmstudio profile should parse");
+        assert_eq!(lmstudio.base_url, "http://localhost:1234/v1");
+        let deepseek = parsed
+            .providers
+            .get("deepseek")
+            .expect("deepseek profile should parse");
+        assert_eq!(deepseek.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+        assert!(
+            deepseek.models.iter().any(|m| m.id == "deepseek-chat"),
+            "models string array should populate the model list"
+        );
+    }
+
+    /// 等效经典表风格示例（`[providers.<name>]` + `auth` / `requires_api_key`）
+    /// 也必须取消注释后能解析。
+    #[test]
+    fn documented_providers_table_example_is_valid_when_uncommented() {
+        let template = Config::default_config_file_contents();
+        let start = template
+            .find("# 等效的经典表风格")
+            .expect("template documents table style");
+        let example: String = template[start..]
+            .lines()
+            .map(|line| uncomment_config_lines(line))
+            .collect();
+
+        let parsed: Config =
+            toml::from_str(&example).expect("uncommented [providers.<name>] example must parse");
+        let ollama = parsed
+            .providers
+            .get("ollama-local")
+            .expect("ollama-local profile should parse");
+        assert_eq!(ollama.base_url, "http://localhost:11434/v1");
+        assert_eq!(ollama.requires_api_key, Some(false));
+        assert_eq!(ollama.default_model.as_deref(), Some("llama3.1:8b"));
     }
 }
