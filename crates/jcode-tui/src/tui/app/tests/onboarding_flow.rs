@@ -343,12 +343,12 @@ fn login_openai_no_finishes_onboarding_with_login_hint() {
         // reports no active phase).
         assert!(app.onboarding_phase().is_none());
         assert!(!app.onboarding_flow_active());
-        // A system message guides the user to /login.
+        // A system message guides the user to `jcode provider add`.
         let messages = app.display_messages();
         assert_eq!(messages.len(), before + 1, "exactly one guidance message");
         assert!(
-            messages.last().unwrap().content.contains("/login"),
-            "guidance message should mention /login: {:?}",
+            messages.last().unwrap().content.contains("jcode provider add"),
+            "guidance message should mention jcode provider add: {:?}",
             messages.last().unwrap().content
         );
     });
@@ -859,9 +859,12 @@ fn model_validation_auth_failure_offers_login_fix() {
     assert!(consumed);
     let messages = app.display_messages();
     let line = &messages.last().unwrap().content;
-    // Auth failures should point the user at /login to re-authenticate, while
-    // still offering /model as an alternative.
-    assert!(line.contains("/login"), "auth failure offers /login: {line:?}");
+    // Auth failures should point the user at `jcode provider add` to fix
+    // credentials, while still offering /model as an alternative.
+    assert!(
+        line.contains("jcode provider add"),
+        "auth failure offers provider config: {line:?}"
+    );
     assert!(line.contains("/model"), "still offers /model: {line:?}");
 }
 

@@ -359,17 +359,8 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(separator());
     lines.push(Line::from(""));
 
-    lines.push(Line::from(Span::styled("  Auth & Accounts", section_style)));
+    lines.push(Line::from(Span::styled("  Subscription", section_style)));
     lines.push(Line::from(""));
-    lines.push(help_entry("/auth", "Show authentication status"));
-    lines.push(help_entry(
-        "/login [provider]",
-        "Interactive or direct login",
-    ));
-    lines.push(help_entry(
-        "/account",
-        "Open combined Claude/OpenAI account picker",
-    ));
     lines.push(help_entry(
         "/subscription",
         "Inspect jcode subscription scaffold",

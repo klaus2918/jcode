@@ -349,8 +349,8 @@ pub(super) fn build_auth_status_lines(
 ) -> Vec<Line<'static>> {
     let specs = auth_full_specs(auth, active);
     // Only list providers the user actually has credentials for. When nothing
-    // is configured at all, fall back to the full list so the `/login` heading
-    // still shows what can be added.
+    // is configured at all, fall back to the full list so the heading still
+    // shows what can be added.
     let configured: Vec<_> = specs
         .iter()
         .filter(|(_, state)| *state != AuthState::NotConfigured)
@@ -787,10 +787,11 @@ fn build_header_lines_with_auth(
     let align = ratatui::layout::Alignment::Left;
     let w = width as usize;
 
-    // Auth inventory: `/login` heading, then one provider per line (dim
-    // hollow dot for unconfigured providers).
+    // Auth inventory: config-driven heading (resonix: providers are added via
+    // `[[providers]]` config + `jcode provider add`, not interactive login),
+    // then one provider per line (dim hollow dot for unconfigured providers).
     let auth_lines = build_auth_status_lines(auth, active);
-    let login_heading = "/login to add provider".to_string();
+    let login_heading = "providers: jcode provider add".to_string();
     lines.push(
         Line::from(Span::styled(
             login_heading,

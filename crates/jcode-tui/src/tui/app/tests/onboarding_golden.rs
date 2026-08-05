@@ -79,8 +79,8 @@ fn onboarding_golden_walks_every_phase() {
         let text = render_onboarding_text(&app, width, height);
         dump("LoginOpenAi (no imports)", &text);
         // Lean prompt: just the question + the Yes/No lozenge pills. The Esc hint
-        // already covers the "skip / log in later" path, so no extra prose.
-        assert!(text.contains("Log in to OpenAI?"), "{text}");
+        // already covers the "skip / configure later" path, so no extra prose.
+        assert!(text.contains("Configure a model provider?"), "{text}");
         assert!(text.contains("Yes") && text.contains("No"), "{text}");
         assert!(
             text.contains("\u{25D6} Yes \u{25D7}") && text.contains("\u{25D6} No \u{25D7}"),
@@ -99,9 +99,9 @@ fn onboarding_golden_walks_every_phase() {
         let app = app_in_phase(OnboardingPhase::Login { import: None });
         let text = render_onboarding_text(&app, width, height);
         dump("Login (no imports, recovery)", &text);
-        assert!(text.contains("First, log in to get started."), "{text}");
+        assert!(text.contains("First, connect a model provider."), "{text}");
         assert!(
-            text.contains("Press Enter to pick who to log in with"),
+            text.contains("Press Enter to see how to configure a provider"),
             "{text}"
         );
     }
