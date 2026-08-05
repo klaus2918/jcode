@@ -328,21 +328,17 @@ Agents are also able to spawn their own swarms autonomously. They have a swarm t
 
 jcode works with subscription-backed OAuth flows and many provider integrations, so you can use the models you already pay for and still fall back to direct API providers when needed.
 
-### Supported built-in login flows
+### Model access is configuration-driven
 
-- **Claude** (`jcode login --provider claude`)
-- **OpenAI / ChatGPT / Codex** (`jcode login --provider openai`)
-- **Google Gemini** (`jcode login --provider gemini`)
-- **GitHub Copilot** (`jcode login --provider copilot`)
-- **Azure OpenAI** (`jcode login --provider azure`)
-- **Alibaba Cloud Coding Plan** (`jcode login --provider alibaba-coding-plan`)
-- **Fireworks** (`jcode login --provider fireworks`)
-- **MiniMax** (`jcode login --provider minimax`)
-- **LM Studio** (`jcode login --provider lmstudio`)
-- **Ollama** (`jcode login --provider ollama`)
-- **Custom OpenAI-compatible endpoint** (`jcode login --provider openai-compatible`)
+jcode connects models exclusively through `[[providers]]` config entries and a
+unified credential file, resonix-style. There is no interactive login command:
+you configure an endpoint, store its key, and pick it with `/model`.
 
-For custom OpenAI-compatible endpoints, jcode now prompts for the API base and supports local localhost servers without requiring an API key.
+- **Add a provider:** `jcode provider add <name> --base-url <url> --model <id> --api-key-env <ENV_VAR>`
+- **Store the key:** the value goes in the unified `~/.jcode/.env` file (`ENV_VAR=value`), never in `config.toml`
+- **Use it:** `jcode --provider <name> run '...'`, or pick it interactively with `/model`
+
+Local endpoints (Ollama, LM Studio) need no key: `jcode provider add ollama-local --base-url http://localhost:11434/v1 --model llama3.2 --no-api-key`.
 
 ### Config-file setup for self-hosted endpoints and MCP
 
@@ -352,21 +348,17 @@ If you prefer to configure things by editing files instead of using the login UI
 
 Many hosted services speak the standard OpenAI `/v1/chat/completions` API. jcode talks to them through one shared OpenAI-compatible provider, so you can use almost any such endpoint without waiting for a dedicated integration.
 
-There are two ways to set one up:
+There is one way to set one up:
 
-- **Built-in named profiles** — jcode ships ready-made profiles for several popular OpenAI-compatible services. Log in by id and jcode fills in the base URL and key environment variable for you:
+- **`jcode provider add`** — the one-shot profile command writes a named profile and stores the key in the unified `~/.jcode/.env`:
 
   ```bash
-  jcode login --provider <profile-id>
-  # for example:
-  jcode login --provider openrouter
-  jcode login --provider ollama      # local endpoint
-  jcode login --provider gemini-api
+  jcode provider add openrouter --base-url https://openrouter.ai/api/v1 --model deepseek/deepseek-chat --api-key-env OPENROUTER_API_KEY
+  jcode provider add ollama-local --base-url http://localhost:11434/v1 --model llama3.2 --no-api-key
+  jcode provider add my-gateway --base-url https://gateway.example.com/v1 --model gpt-5.5 --api-key-stdin
   ```
 
-  Built-in OpenAI-compatible profile ids are registry-driven and include: `openrouter`, `anthropic`, `openai-native`, `gemini-api`, `lmstudio` (local), `ollama` (local), and `openai-compatible` (custom endpoint). Each profile only sets the endpoint and key variable; you still pick the model with `/model` (or `--model`). Run `jcode login` with no provider to see the interactive list. jcode never hardcodes vendor names — any other service is a `[providers.<name>]` config entry (or the equivalent resonix-style `[[providers]]` array entry) via `jcode provider add` (below).
-
-- **Any other endpoint** — point jcode at an arbitrary OpenAI-compatible API (hosted or local) with `jcode login --provider openai-compatible` or the scriptable `jcode provider add` command described below.
+  jcode never hardcodes vendor names — every service is a `[providers.<name>]` config entry (or the equivalent resonix-style `[[providers]]` array entry). The key lives in `~/.jcode/.env` under the `api_key_env` variable name; pick any configured provider/model with `/model`.
 
 Useful environment overrides for these endpoints:
 
@@ -411,16 +403,16 @@ Built-in local profiles are available for the common desktop/local runtimes:
 ```bash
 # Ollama: start the local server and install a model first.
 ollama pull llama3.2
-jcode login --provider ollama
-jcode --provider ollama --model llama3.2 run 'hello'
+jcode provider add ollama-local --base-url http://localhost:11434/v1 --model llama3.2 --no-api-key
+jcode --provider ollama-local run 'hello'
 
 # LM Studio: start the Local Server, load a chat model, then use the exact
 # model identifier shown by LM Studio or by curl http://localhost:1234/v1/models.
-jcode login --provider lmstudio
-jcode --provider lmstudio --model '<model-id>' run 'hello'
+jcode provider add lmstudio --base-url http://localhost:1234/v1 --model '<model-id>' --no-api-key
+jcode --provider lmstudio run 'hello'
 ```
 
-Ollama and LM Studio both expose OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints. jcode uses streaming chat completions, function/tool calling, and OpenAI-style image content for vision-capable local models. If a local server requires a token, enter it during `jcode login` or create a named profile with `--api-key-stdin`.
+Ollama and LM Studio both expose OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints. jcode uses streaming chat completions, function/tool calling, and OpenAI-style image content for vision-capable local models. If a local server requires a token, use `--api-key-stdin` and store it in the unified `~/.jcode/.env`.
 
 Useful flags:
 
@@ -484,7 +476,7 @@ Some OpenAI-compatible backends require non-standard top-level request fields. F
    reasoning_effort = "high"
    ```
 
-2. For built-in profiles (e.g. `nvidia-nim`) or any endpoint, via the `JCODE_OPENAI_EXTRA_BODY` environment variable (a JSON object string). It can live in the provider's env file (`~/.config/jcode/nvidia-nim.env`) next to the API key:
+2. For any endpoint, via the `JCODE_OPENAI_EXTRA_BODY` environment variable (a JSON object string). It can live in the unified `~/.jcode/.env` next to the API key:
 
    ```bash
    JCODE_OPENAI_EXTRA_BODY={"chat_template_kwargs":{"thinking":true,"reasoning_effort":"high"}}
@@ -492,11 +484,7 @@ Some OpenAI-compatible backends require non-standard top-level request fields. F
 
 Keys from `extra_body` are merged last and override any jcode-generated body field with the same name (`JCODE_OPENAI_EXTRA_BODY` wins over the config `extra_body` on key collisions). Invalid values are logged and ignored rather than failing the request.
 
-The custom OpenAI-compatible provider reads overrides from environment variables or from an env file in jcode's app config directory. On Linux this is usually `~/.config/jcode/`, so the default file is usually:
-
-```text
-~/.config/jcode/openai-compatible.env
-```
+The custom OpenAI-compatible provider reads overrides from environment variables or from the unified credential file `<jcode home>/.env` (resonix-style single file; legacy per-provider env files under `~/.config/jcode/` are migrated automatically on startup).
 
 Example for a local or LAN vLLM server:
 
@@ -509,7 +497,7 @@ OPENAI_COMPAT_API_KEY=your-token-here
 
 Notes:
 
-- `jcode login --provider openai-compatible` can create or update this for you.
+- `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>` creates or updates this for you.
 - Plain `http://` is accepted for `localhost` and private LAN IPs. Public remote HTTP is still rejected.
 - HTTPS endpoints work as usual.
 
@@ -552,46 +540,17 @@ Example MCP config:
 
 On first run, jcode also tries to import MCP servers from `~/.claude.json` (falling back to the legacy `~/.claude/mcp.json`) and `~/.codex/config.toml` if `~/.jcode/mcp.json` does not exist yet.
 
-For headless or SSH sessions, OAuth-style providers support `jcode login --provider <provider> --no-browser` (alias: `--headless`) so jcode prints the auth URL/QR and falls back to manual code or callback paste instead of trying to launch a local browser.
+### Supported providers
 
-For more scriptable remote flows, `claude`, `openai`, `gemini`, and `antigravity` also support a two-step pattern:
+Any service that speaks OpenAI-compatible (or Anthropic Messages) chat APIs can
+be connected through `jcode provider add`. Common local endpoints (Ollama,
+LM Studio) and the generic OpenAI-compatible endpoint are built in as
+convenience profiles; everything else is one config entry away. jcode never
+hardcodes vendor names.
 
-```bash
-# Step 1: print a resumable auth URL
-jcode login --provider openai --print-auth-url --json
-
-# Step 2: complete later with the callback URL or auth code
-jcode login --provider openai --callback-url 'http://localhost:1455/auth/callback?...'
-jcode login --provider gemini --auth-code '...'
-```
-
-Additional scriptable cases:
-
-```bash
-# Copilot device flow: print URL + user code, then complete later
-jcode login --provider copilot --print-auth-url --json
-jcode login --provider copilot --complete
-
-# Gmail/Google OAuth after credentials are already configured
-jcode login --provider google --print-auth-url --google-access-tier readonly
-jcode login --provider google --callback-url 'http://127.0.0.1:8456?...'
-```
-
-Pending scriptable login state is stored under `~/.jcode/pending-login/`, automatically expires, and stale entries are cleaned up when new scriptable logins start or resume.
-
-For the built-in OpenAI login flow, jcode opens a local callback on
-`http://localhost:1455/auth/callback` by default.
-
-<img width="2877" height="1762" alt="Screenshot from 2026-04-02 14-28-51" src="https://github.com/user-attachments/assets/530684c0-9d12-4363-aa0e-1b39a0d4e1be" />
-The above image is the first page of provider logins
-
-### Supported provider
-
-- **Native / first-party style providers:** `claude`, `openai`, `copilot`, `gemini`, `azure`, `alibaba-coding-plan`
-- **Aggregator / compatibility providers:** `openrouter`, `openai-compatible`
-- **Additional provider integrations:** `opencode`, `opencode-go`, `zai` / `kimi`, `302ai`, `baseten`, `cortecs`, `deepseek`, `firmware`, `huggingface`, `moonshotai`, `nebius`, `scaleway`, `stackit`, `groq`, `mistral`, `perplexity`, `togetherai`, `deepinfra`, `fireworks`, `minimax`, `xai`, `lmstudio`, `ollama`, `chutes`, `cerebras`, `cursor`, `antigravity`, `google`
-
-Jcode also supports easy multi-account switching. Ran out of tokens on your first ChatGPT Pro subscription? /account and quickly switch to your second. 
+Existing credentials from other tools (Claude Code, Codex, OpenCode, ...) are
+detected on first run and can be imported directly, so there is no re-login
+required.
 
 ---
 
@@ -755,17 +714,12 @@ Set up jcode on this machine for me.
    - Alibaba Cloud Coding Plan: existing jcode config/env if present
 5. Prefer whichever provider is already configured and verify it with `jcode auth-test --all-configured` or a provider-specific auth test when appropriate.
 6. Only if no usable provider is already configured, guide me through the minimal manual step needed:
-   - Claude: `jcode login --provider claude`
-   - GitHub Copilot: `jcode login --provider copilot`
-   - OpenAI: `jcode login --provider openai`
-   - Gemini: `jcode login --provider gemini`
-   - Azure OpenAI: `jcode login --provider azure`
-   - Fireworks: `jcode login --provider fireworks`
-   - MiniMax: `jcode login --provider minimax`
-   - NVIDIA NIM: `jcode login --provider nvidia-nim`
-   - Alibaba Cloud Coding Plan: `jcode login --provider alibaba-coding-plan`
-   - OpenRouter: help me set `OPENROUTER_API_KEY`
-   - Anthropic direct API: help me set `ANTHROPIC_API_KEY`
+   - Any OpenAI-compatible endpoint: `jcode provider add <name> --base-url <url> --model <id> --api-key-env <ENV_VAR>`
+   - Ollama (local): `jcode provider add ollama-local --base-url http://localhost:11434/v1 --model llama3.2 --no-api-key`
+   - LM Studio (local): `jcode provider add lmstudio --base-url http://localhost:1234/v1 --model <model-id> --no-api-key`
+   - OpenRouter: `jcode provider add openrouter --base-url https://openrouter.ai/api/v1 --model <id> --api-key-env OPENROUTER_API_KEY`
+   - Anthropic direct API: `jcode provider add anthropic --base-url https://api.anthropic.com/v1 --model <id> --api-key-env ANTHROPIC_API_KEY`
+   - Store the key value in the unified `~/.jcode/.env` (`ENV_VAR=value`), never in `config.toml`
 7. After setup, run a simple smoke test with `jcode run "say hello"` and confirm it works.
 8. If I want browser automation, use an external skill such as `op-browser` (Playwright + Chromium/Chrome); jcode itself does not embed a browser tool.
 9. Explain any manual step that still needs me, especially browser OAuth, device login, API key entry, or browser extension approval.
