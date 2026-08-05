@@ -431,7 +431,7 @@ pub async fn run_auth_test_command(
                 .await
             }
             ResolvedAuthTestTarget::Generic { provider, choice } => {
-                let mut report = AuthTestProviderReport::new_generic(
+                let report = AuthTestProviderReport::new_generic(
                     choice.clone(),
                     generic_credential_paths_for_provider(provider),
                 );
@@ -520,7 +520,7 @@ async fn run_auth_test_target(
     provider_smoke_prompt: &str,
     tool_smoke_prompt: &str,
 ) -> AuthTestProviderReport {
-    let mut report = AuthTestProviderReport::new(target);
+    let report = AuthTestProviderReport::new(target);
 
 
     populate_auth_test_target_report(

@@ -340,7 +340,7 @@ async fn init_provider_with_options(
             disable_subscription_runtime_mode_preserving_active_provider_profile();
             clear_initial_model_provider();
             let auto_detect_start = std::time::Instant::now();
-            let mut availability = detect_auto_provider_flags().await;
+            let availability = detect_auto_provider_flags().await;
 
             // resonix 化：`[provider] default_provider` 命中的命名配置 profile
             // 优先于 API key 探测。纯配置（本地 ollama、无 key 端点）也能用

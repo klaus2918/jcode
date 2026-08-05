@@ -830,7 +830,10 @@ impl MultiProvider {
     fn openai_compatible_model_prefix(
         model: &str,
     ) -> Option<(crate::provider_catalog::OpenAiCompatibleProfile, &str)> {
-        let (prefix, rest) = model.split_once(':')?;
+        // resonix 对齐：`profile/model` 斜杠引用作为冒号前缀的别名。
+        let (prefix, rest) = model
+            .split_once(':')
+            .or_else(|| model.split_once('/'))?;
         if explicit_model_provider_prefix(model).is_some() {
             return None;
         }
@@ -889,7 +892,10 @@ impl MultiProvider {
     /// provider profile from config (`[providers.<name>]`). Built-in provider
     /// prefixes and catalog profile ids take precedence and never reach here.
     fn named_provider_profile_model_prefix(model: &str) -> Option<(String, String)> {
-        let (prefix, rest) = model.split_once(':')?;
+        // resonix 对齐：`profile/model` 斜杠引用作为冒号前缀的别名。
+        let (prefix, rest) = model
+            .split_once(':')
+            .or_else(|| model.split_once('/'))?;
         if explicit_model_provider_prefix(model).is_some()
             || Self::openai_compatible_model_prefix(model).is_some()
         {

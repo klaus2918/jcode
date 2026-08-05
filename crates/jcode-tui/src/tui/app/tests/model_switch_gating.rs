@@ -220,6 +220,19 @@ fn remote_model_switch_rejects_while_turn_is_running() {
 }
 
 #[test]
+fn model_switch_accepts_slash_ref_as_resonix_alias() {
+    // resonix 对齐：`/model provider/model` 斜杠引用与冒号前缀等价，
+    // 由 MultiProvider::set_model 的 explicit_model_provider_prefix 解析。
+    let (mut app, _, set_model_calls) = create_model_switch_probe_app();
+
+    // Probe provider 没有 provider 前缀路由能力，斜杠会被原样传给 set_model
+    // （作为普通模型名）；这不影响解析层正确性，只验证命令路径可达。
+    assert!(super::model_context::handle_model_command(&mut app, "/model openai/gpt-5.6"));
+    let calls = set_model_calls.lock().unwrap();
+    assert_eq!(calls.last().map(String::as_str), Some("openai/gpt-5.6"));
+}
+
+#[test]
 fn remote_model_switch_same_model_is_noop() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
