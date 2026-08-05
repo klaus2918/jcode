@@ -678,9 +678,16 @@ mod tests {
         )
         .expect("save openai-compatible key in sandbox");
 
+        // resonix 对齐：密钥写入统一 `<jcode home>/.env`，不再创建分散 env 文件。
         assert!(
-            env_file.exists(),
-            "saving the provider key should create the env file"
+            crate::provider_catalog::unified_env_file_path()
+                .map(|path| path.exists())
+                .unwrap_or(false),
+            "saving the provider key should create the unified .env"
+        );
+        assert!(
+            !env_file.exists(),
+            "legacy per-provider env file should no longer be created"
         );
         assert_eq!(
             crate::provider_catalog::load_api_key_from_env_or_config(

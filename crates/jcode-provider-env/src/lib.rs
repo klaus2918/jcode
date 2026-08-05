@@ -104,9 +104,17 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         return Some(key);
     }
 
+    // resonix 对齐：先查统一 `<jcode home>/.env`，再回退旧的分散文件
+    // （openai-compatible.env / ollama.env 等），保证迁移期向后兼容。
+    if let Some(key) = load_from_unified_env_file(env_key) {
+        return Some(key);
+    }
+
+    // 旧分散文件可能不存在（凭证已迁到统一 .env）：缺失时不提前返回，
+    // 继续后面的 ZHIPU 特判与 fallback 解析。
     let config_path = jcode_storage::app_config_dir().ok()?.join(file_name);
     jcode_storage::harden_secret_file_permissions(&config_path);
-    let content = std::fs::read_to_string(config_path).ok()?;
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
     let prefix = format!("{}=", env_key);
 
     for line in content.lines() {
@@ -121,6 +129,11 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         if let Ok(key) = std::env::var("ZAI_API_KEY")
             && let Some(key) = clean_loaded_value(&key, "ZAI_API_KEY")
         {
+            return Some(key);
+        }
+
+        // 统一 .env 里的 ZAI_API_KEY（resonix 单文件）也作为回退源。
+        if let Some(key) = load_from_unified_env_file("ZAI_API_KEY") {
             return Some(key);
         }
 
@@ -190,6 +203,11 @@ pub fn load_env_value_from_config_file(env_key: &str, file_name: &str) -> Option
         return None;
     }
 
+    // resonix 对齐：统一 `.env` 优先，旧分散文件回退。
+    if let Some(value) = load_from_unified_env_file(env_key) {
+        return Some(value);
+    }
+
     let config_path = jcode_storage::app_config_dir().ok()?.join(file_name);
     jcode_storage::harden_secret_file_permissions(&config_path);
     let content = std::fs::read_to_string(config_path).ok()?;
@@ -206,6 +224,34 @@ pub fn load_env_value_from_config_file(env_key: &str, file_name: &str) -> Option
     None
 }
 
+/// 统一凭证文件路径（resonix 对齐）：`<jcode home>/.env`。
+///
+/// 所有 API key / 配置值现在集中写入这一个文件，取代旧的分散
+/// `openai-compatible.env` / `ollama.env` / `lmstudio.env` 等文件。
+/// 旧文件仍可读取（向后兼容），新写入一律进统一文件。
+pub fn unified_env_file_path() -> Option<std::path::PathBuf> {
+    jcode_storage::jcode_dir().ok().map(|dir| dir.join(".env"))
+}
+
+/// 读取统一 `.env` 中 `env_key` 的值（无进程 env 参与，供迁移/校验用）。
+fn load_from_unified_env_file(env_key: &str) -> Option<String> {
+    if !is_safe_env_key_name(env_key) {
+        return None;
+    }
+    let path = unified_env_file_path()?;
+    jcode_storage::harden_secret_file_permissions(&path);
+    let content = std::fs::read_to_string(path).ok()?;
+    let prefix = format!("{}=", env_key);
+    for line in content.lines() {
+        if let Some(value) = line.strip_prefix(&prefix)
+            && let Some(value) = clean_loaded_value(value, env_key)
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
 pub fn save_env_value_to_env_file(
     env_key: &str,
     file_name: &str,
@@ -218,8 +264,13 @@ pub fn save_env_value_to_env_file(
         anyhow::bail!("Invalid env file name: {}", file_name);
     }
 
-    let config_dir = jcode_storage::app_config_dir()?;
-    let file_path = config_dir.join(file_name);
+    // resonix 对齐：新写入一律进统一 `<jcode home>/.env`。file_name 参数
+    // 保留仅用于向后兼容的读取路径（旧分散文件回退）。
+    let file_path = unified_env_file_path()
+        .ok_or_else(|| anyhow::anyhow!("No jcode home directory for unified .env"))?;
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     jcode_storage::upsert_env_file_value(&file_path, env_key, value)?;
 
     if let Some(value) = value {
@@ -228,6 +279,90 @@ pub fn save_env_value_to_env_file(
         jcode_core::env::remove_var(env_key);
     }
 
+    Ok(())
+}
+
+/// 把旧的分散 env 文件（`openai-compatible.env` / `ollama.env` / `lmstudio.env`
+/// 等）合并进统一 `<jcode home>/.env`，然后删除分散文件。
+///
+/// resonix 对齐：凭证只存一个文件。迁移是幂等的：统一文件已存在的 key
+/// 以统一文件为准（旧文件不覆盖），避免覆盖用户在新文件中改过的值。
+pub fn maybe_migrate_legacy_env_files() -> anyhow::Result<()> {
+    let config_dir = jcode_storage::app_config_dir()?;
+    let unified = match unified_env_file_path() {
+        Some(path) => path,
+        None => return Ok(()),
+    };
+
+    // 收集旧分散文件中的全部 key=value，跳过统一文件本身（不在同一目录）。
+    let mut merged: Vec<(String, String)> = Vec::new();
+    let mut migrated_any = false;
+    for entry in std::fs::read_dir(&config_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        if !name.ends_with(".env") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(eq) = line.find('=') {
+                let key = line[..eq].trim();
+                let value = line[eq + 1..].trim();
+                if is_safe_env_key_name(key) && !value.is_empty() {
+                    merged.push((key.to_string(), value.to_string()));
+                }
+            }
+        }
+        // 迁移后删除分散文件（保留一个 .env 本身，防误删）。
+        std::fs::remove_file(&path)?;
+        migrated_any = true;
+        jcode_logging::info(&format!(
+            "Migrated legacy env file {} into unified ~/.jcode/.env",
+            name
+        ));
+    }
+
+    if !migrated_any {
+        return Ok(());
+    }
+
+    if let Some(parent) = unified.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    jcode_storage::harden_secret_file_permissions(&unified);
+    // 合并：统一文件已存在的 key 保持统一文件的值。
+    let mut existing: Vec<String> = Vec::new();
+    if let Ok(content) = std::fs::read_to_string(&unified) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            existing.push(line.to_string());
+            if let Some(eq) = line.find('=') {
+                let key = line[..eq].trim();
+                merged.retain(|(k, _)| k != key);
+            }
+        }
+    }
+    let mut all = existing;
+    for (key, value) in merged {
+        all.push(format!("{}={}", key, value));
+    }
+    let mut content = all.join("\n");
+    content.push('\n');
+    std::fs::write(&unified, content)?;
     Ok(())
 }
 
@@ -346,6 +481,63 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn migrate_legacy_env_files_merges_and_deletes_legacy_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::new(&["JCODE_HOME"]);
+        jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+        // 旧分散文件
+        let config_dir = jcode_storage::app_config_dir().expect("config dir");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("openai-compatible.env"),
+            "OPENAI_COMPAT_API_KEY=legacy-key\n",
+        )
+        .expect("write legacy env");
+
+        maybe_migrate_legacy_env_files().expect("migrate");
+
+        // 统一 .env 里有旧值，分散文件已删除
+        assert_eq!(
+            load_api_key_from_env_or_config("OPENAI_COMPAT_API_KEY", "openai-compatible.env")
+                .as_deref(),
+            Some("legacy-key")
+        );
+        assert!(!config_dir.join("openai-compatible.env").exists());
+        // 幂等：再跑一次不报错
+        maybe_migrate_legacy_env_files().expect("second migrate");
+    }
+
+    #[test]
+    fn migrate_keeps_unified_value_when_key_already_exists() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::new(&["JCODE_HOME"]);
+        jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+        // 统一文件已有值
+        save_env_value_to_env_file("OPENAI_COMPAT_API_KEY", "openai-compatible.env", Some("new-key"))
+            .expect("save unified");
+
+        // 旧文件也想写同一 key
+        let config_dir = jcode_storage::app_config_dir().expect("config dir");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("openai-compatible.env"),
+            "OPENAI_COMPAT_API_KEY=old-key\n",
+        )
+        .expect("write legacy env");
+
+        maybe_migrate_legacy_env_files().expect("migrate");
+
+        // 统一文件值优先（旧文件不覆盖）
+        assert_eq!(
+            load_api_key_from_env_or_config("OPENAI_COMPAT_API_KEY", "openai-compatible.env")
+                .as_deref(),
+            Some("new-key")
+        );
+    }
     #[test]
     fn sanitize_strips_unicode_invisible_characters() {
         // Zero-width space, BOM, NBSP, en space around the value.
