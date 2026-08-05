@@ -209,77 +209,10 @@ fn model_picker_top_hint(picker: &crate::tui::InlineInteractiveState) -> Option<
     }
 }
 
-fn account_picker_shows_provider_badge(picker: &crate::tui::InlineInteractiveState) -> bool {
-    let mut providers: Vec<&str> = Vec::new();
-    for &fi in &picker.filtered {
-        let entry = &picker.entries[fi];
-        if let Some(route) = entry.options.get(entry.selected_option) {
-            let provider = route.provider.trim();
-            if !provider.is_empty()
-                && !providers
-                    .iter()
-                    .any(|existing| existing.eq_ignore_ascii_case(provider))
-            {
-                providers.push(provider);
-                if providers.len() > 1 {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-fn account_picker_entry_title(
-    entry: &crate::tui::PickerEntry,
-    show_provider_badge: bool,
-) -> (String, usize) {
-    let display_name = picker_entry_display_name(entry);
-    let provider_prefix = if show_provider_badge {
-        entry
-            .options
-            .get(entry.selected_option)
-            .map(|route| format!("{} · ", route.provider))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let prefix_chars = provider_prefix.chars().count();
-    (format!("{}{}", provider_prefix, display_name), prefix_chars)
-}
-
-fn account_inline_interactive_state_label(entry: &crate::tui::PickerEntry) -> &'static str {
-    entry.account_state_label().unwrap_or("-")
-}
-
 fn picker_render_width(picker: &crate::tui::InlineInteractiveState, max_width: usize) -> usize {
     let marker_width = 3usize;
     let is_preview = picker.preview;
     const WIDTH_SCAN_LIMIT: usize = 200;
-
-    if picker.uses_compact_navigation() {
-        let show_provider_badge = account_picker_shows_provider_badge(picker);
-        let mut max_title_len = display_width("ACCOUNT");
-        let mut max_state_len = display_width("STATE");
-
-        for &fi in &picker.filtered {
-            let entry = &picker.entries[fi];
-            let (title, _) = account_picker_entry_title(entry, show_provider_badge);
-            max_title_len = max_title_len.max(display_width(title.as_str()));
-            max_state_len =
-                max_state_len.max(display_width(account_inline_interactive_state_label(entry)));
-        }
-
-        let state_width = (max_state_len + 1).clamp(7, 10);
-        let min_title_width = max_title_len.clamp(8, 10);
-        let title_cap = if show_provider_badge { 42 } else { 34 };
-        let budget = max_width.saturating_sub(marker_width + state_width);
-        let title_width = max_title_len
-            .min(title_cap)
-            .min(budget.max(min_title_width.min(budget)));
-
-        return marker_width + title_width + state_width;
-    }
 
     let mut max_model_len = display_width(picker.primary_label());
     let mut max_provider_len = display_width(picker.secondary_label(is_preview));
@@ -370,7 +303,6 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
     let filtered_count = picker.filtered.len();
     let col = picker.column;
     let is_preview = picker.preview;
-    let is_account_picker = picker.uses_compact_navigation();
     let is_usage_picker = picker.kind == crate::tui::PickerKind::Usage;
 
     let col_focus_style = Style::default().fg(accent_color()).bold();
@@ -378,24 +310,14 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
     let marker_width = 3usize;
     const WIDTH_SCAN_LIMIT: usize = 200;
 
-    let show_account_provider_badge =
-        is_account_picker && account_picker_shows_provider_badge(picker);
     let mut max_provider_len = display_width(picker.secondary_label(is_preview));
     let mut max_via_len = display_width(picker.tertiary_label());
-    let mut max_account_title_len = display_width("ACCOUNT");
-    let mut max_account_state_len = display_width("STATE");
     for &fi in picker.filtered.iter().take(WIDTH_SCAN_LIMIT) {
         let entry = &picker.entries[fi];
         let route = entry.active_option();
         if let Some(r) = route {
             max_provider_len = max_provider_len.max(display_width(r.provider.as_str()));
             max_via_len = max_via_len.max(display_width(&api_method_display(&r.api_method)));
-        }
-        if is_account_picker {
-            let (title, _) = account_picker_entry_title(entry, show_account_provider_badge);
-            max_account_title_len = max_account_title_len.max(display_width(title.as_str()));
-            max_account_state_len = max_account_state_len
-                .max(display_width(account_inline_interactive_state_label(entry)));
         }
     }
     max_provider_len = max_provider_len.max(8);
@@ -459,31 +381,25 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
 
     let mut provider_width = (max_provider_len + 1).max(8);
     let mut via_width = (max_via_len + 1).max(6);
-    if !is_account_picker {
-        let min_model_width = 8usize;
-        let needed = marker_width + provider_width + via_width + min_model_width;
-        if needed > width {
-            let provider_floor = 8usize.min(provider_width);
-            let via_floor = 6usize.min(via_width);
-            let provider_reduction = needed
-                .saturating_sub(width)
-                .min(provider_width.saturating_sub(provider_floor));
-            provider_width = provider_width.saturating_sub(provider_reduction);
-            let still_needed = marker_width + provider_width + via_width + min_model_width;
-            let via_reduction = still_needed
-                .saturating_sub(width)
-                .min(via_width.saturating_sub(via_floor));
-            via_width = via_width.saturating_sub(via_reduction);
-        }
+    let min_model_width = 8usize;
+    let needed = marker_width + provider_width + via_width + min_model_width;
+    if needed > width {
+        let provider_floor = 8usize.min(provider_width);
+        let via_floor = 6usize.min(via_width);
+        let provider_reduction = needed
+            .saturating_sub(width)
+            .min(provider_width.saturating_sub(provider_floor));
+        provider_width = provider_width.saturating_sub(provider_reduction);
+        let still_needed = marker_width + provider_width + via_width + min_model_width;
+        let via_reduction = still_needed
+            .saturating_sub(width)
+            .min(via_width.saturating_sub(via_floor));
+        via_width = via_width.saturating_sub(via_reduction);
     }
-    let account_state_width = (max_account_state_len + 1).clamp(7, 10);
-    let account_title_width = width.saturating_sub(marker_width + account_state_width);
     let model_width = width.saturating_sub(marker_width + provider_width + via_width);
 
     let (col_labels, col_logical) = picker.header_layout(is_preview);
-    let col_widths: [usize; 3] = if is_account_picker {
-        [account_title_width, account_state_width, 0]
-    } else if is_preview {
+    let col_widths: [usize; 3] = if is_preview {
         [provider_width, model_width, via_width]
     } else {
         [model_width, provider_width, via_width]
@@ -519,15 +435,13 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         second_style,
     ));
 
-    if !is_account_picker {
-        let third_label = col_labels[2];
-        let third_style = if col_logical[2] == col {
-            col_focus_style
-        } else {
-            col_dim_style
-        };
-        header_spans.push(Span::styled(format!(" {}", third_label), third_style));
-    }
+    let third_label = col_labels[2];
+    let third_style = if col_logical[2] == col {
+        col_focus_style
+    } else {
+        col_dim_style
+    };
+    header_spans.push(Span::styled(format!(" {}", third_label), third_style));
 
     let mut meta_parts = String::new();
     if !picker.filter.is_empty() {
@@ -559,11 +473,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         }
     }
 
-    let row_base_width = if is_account_picker {
-        marker_width + account_title_width + account_state_width
-    } else {
-        marker_width + provider_width + via_width + model_width
-    };
+    let row_base_width = marker_width + provider_width + via_width + model_width;
     let detail_width = width.saturating_sub(row_base_width).saturating_sub(2);
 
     let selected_route_notice = picker
@@ -636,24 +546,10 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
             },
         ));
         let display_name = picker_entry_display_name(entry);
-        let account_action_color = match &entry.action {
-            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Add { .. }) => {
-                Some(rgb(140, 220, 170))
-            }
-            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Replace {
-                ..
-            }) => Some(rgb(240, 200, 120)),
-            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::OpenCenter {
-                ..
-            }) => Some(rgb(150, 190, 255)),
-            _ => None,
-        };
         let primary_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 0 {
             Style::default().fg(Color::White).bg(rgb(60, 60, 80)).bold()
-        } else if let Some(color) = account_action_color {
-            Style::default().fg(color).bold()
         } else if entry.is_current {
             Style::default().fg(accent_color())
         } else if entry.is_favorite {
@@ -665,82 +561,6 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         } else {
             Style::default().fg(rgb(200, 200, 220))
         };
-
-        if is_account_picker {
-            let (title_text, title_prefix_chars) =
-                account_picker_entry_title(entry, show_account_provider_badge);
-            let padded_title = pad_left_display(title_text.as_str(), account_title_width);
-            let state_label = account_inline_interactive_state_label(entry);
-            let state_display = format!(
-                " {}",
-                pad_left_display(state_label, account_state_width.saturating_sub(1))
-            );
-            let match_positions = if !picker.filter.is_empty() {
-                fuzzy_match_positions(&picker.filter, &entry.name)
-                    .into_iter()
-                    .map(|p| p + title_prefix_chars)
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let title_spans: Vec<Span> = if match_positions.is_empty() || unavailable {
-                vec![Span::styled(padded_title, primary_style)]
-            } else {
-                let title_chars: Vec<char> = padded_title.chars().collect();
-                let highlight_style = primary_style.underlined();
-                let mut result = Vec::new();
-                let mut run_start = 0;
-                let mut is_match_run = !title_chars.is_empty() && match_positions.contains(&0);
-                for ci in 1..=title_chars.len() {
-                    let cur_is_match = ci < title_chars.len() && match_positions.contains(&ci);
-                    if cur_is_match != is_match_run || ci == title_chars.len() {
-                        let chunk: String = title_chars[run_start..ci].iter().collect();
-                        result.push(Span::styled(
-                            chunk,
-                            if is_match_run {
-                                highlight_style
-                            } else {
-                                primary_style
-                            },
-                        ));
-                        run_start = ci;
-                        is_match_run = cur_is_match;
-                    }
-                }
-                result
-            };
-
-            let state_style = if unavailable {
-                Style::default().fg(rgb(80, 80, 80))
-            } else if is_row_selected {
-                Style::default().fg(Color::White).bg(rgb(60, 60, 80)).bold()
-            } else if entry.is_current {
-                Style::default().fg(accent_color()).bold()
-            } else if let Some(color) = account_action_color {
-                Style::default().fg(color)
-            } else {
-                Style::default().fg(dim_color())
-            };
-
-            spans.extend(title_spans);
-            spans.push(Span::styled(state_display, state_style));
-            if let Some(route) = route
-                && let Some(detail_text) = route_detail_display_text(&route.detail, unavailable)
-                && detail_width > 0
-            {
-                spans.push(Span::styled(
-                    format!("  {}", truncate_display(detail_text.as_str(), detail_width)),
-                    if unavailable {
-                        Style::default().fg(rgb(180, 120, 120)).italic()
-                    } else {
-                        Style::default().fg(dim_color())
-                    },
-                ));
-            }
-
-            lines.push(Line::from(spans));
-            continue;
-        }
 
         let padded_model = if is_preview {
             format!(
@@ -823,7 +643,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
             Style::default().fg(rgb(220, 190, 120))
         };
 
-        if is_preview && !is_account_picker {
+        if is_preview {
             spans.push(Span::styled(provider_display, provider_style));
             spans.extend(model_spans);
             spans.push(Span::styled(via_display, via_style));
@@ -918,72 +738,6 @@ mod tests {
                 created_date: None,
                 effort: None,
             }],
-        }
-    }
-
-    fn sample_account_picker(mixed_providers: bool) -> crate::tui::InlineInteractiveState {
-        let mut models = vec![crate::tui::PickerEntry {
-            name: "work".to_string(),
-            options: vec![crate::tui::PickerOption {
-                provider: "Claude".to_string(),
-                api_method: "active".to_string(),
-                available: true,
-                detail: String::new(),
-                estimated_reference_cost_micros: None,
-            }],
-            action: crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::Switch {
-                provider_id: "claude".to_string(),
-                label: "work".to_string(),
-            }),
-            selected_option: 0,
-            is_current: true,
-            is_default: false,
-            is_favorite: false,
-            recommended: false,
-            recommendation_rank: usize::MAX,
-            usage_score: 0,
-            old: false,
-            created_date: None,
-            effort: None,
-        }];
-
-        if mixed_providers {
-            models.push(crate::tui::PickerEntry {
-                name: "personal".to_string(),
-                options: vec![crate::tui::PickerOption {
-                    provider: "OpenAI".to_string(),
-                    api_method: "saved".to_string(),
-                    available: true,
-                    detail: String::new(),
-                    estimated_reference_cost_micros: None,
-                }],
-                action: crate::tui::PickerAction::Account(
-                    crate::tui::AccountPickerAction::Switch {
-                        provider_id: "openai".to_string(),
-                        label: "personal".to_string(),
-                    },
-                ),
-                selected_option: 0,
-                is_current: false,
-                is_default: false,
-                is_favorite: false,
-                recommended: false,
-                recommendation_rank: usize::MAX,
-                usage_score: 0,
-                old: false,
-                created_date: None,
-                effort: None,
-            });
-        }
-
-        crate::tui::InlineInteractiveState {
-            kind: crate::tui::PickerKind::Account,
-            filtered: (0..models.len()).collect(),
-            selected: 0,
-            column: 0,
-            filter: String::new(),
-            preview: false,
-            entries: models,
         }
     }
 
@@ -1228,31 +982,6 @@ mod tests {
         entry.recommended = true;
 
         assert!(picker_entry_display_name(entry).contains("♥"));
-    }
-
-    #[test]
-    fn account_picker_width_uses_compact_two_column_layout() {
-        let picker = sample_account_picker(true);
-        let width = picker_render_width(&picker, 120);
-        assert!(width < 60, "account picker should stay compact");
-        assert!(
-            width >= 18,
-            "account picker should still fit title and state"
-        );
-    }
-
-    #[test]
-    fn account_picker_only_shows_provider_badges_when_needed() {
-        let mixed = sample_account_picker(true);
-        let single = sample_account_picker(false);
-
-        assert!(account_picker_shows_provider_badge(&mixed));
-        assert!(!account_picker_shows_provider_badge(&single));
-
-        let (mixed_title, _) = account_picker_entry_title(&mixed.entries[0], true);
-        let (single_title, _) = account_picker_entry_title(&single.entries[0], false);
-        assert!(mixed_title.starts_with("Claude · "));
-        assert_eq!(single_title, "work");
     }
 
     #[test]

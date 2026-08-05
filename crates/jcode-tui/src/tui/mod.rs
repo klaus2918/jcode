@@ -1,4 +1,3 @@
-pub mod account_picker;
 pub(crate) mod app;
 
 #[derive(Clone)]
@@ -24,7 +23,6 @@ mod info_widget_settle;
 pub mod info_widget_stability;
 pub mod keybind;
 mod layout_utils;
-pub mod login_picker;
 pub mod markdown;
 mod memory_profile;
 pub mod mermaid;
@@ -568,10 +566,6 @@ pub trait TuiState {
     }
     /// Session picker overlay for /resume command
     fn session_picker_overlay(&self) -> Option<&std::cell::RefCell<session_picker::SessionPicker>>;
-    /// Login picker overlay for /login command
-    fn login_picker_overlay(&self) -> Option<&std::cell::RefCell<login_picker::LoginPicker>>;
-    /// Account picker overlay for /account command
-    fn account_picker_overlay(&self) -> Option<&std::cell::RefCell<account_picker::AccountPicker>>;
     /// Usage overlay for /usage command
     fn usage_overlay(&self) -> Option<&std::cell::RefCell<usage_overlay::UsageOverlay>>;
     /// Working directory for this session
@@ -872,8 +866,6 @@ pub(crate) fn detect_kv_cache_problem(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
     Model,
-    Account,
-    Login,
     Usage,
 }
 
@@ -974,7 +966,6 @@ pub struct LoginImportRow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InlineInteractiveLayout {
-    Compact,
     ThreeColumn,
 }
 
@@ -1037,28 +1028,6 @@ impl PickerKind {
                 shows_default_shortcut_hint: true,
                 preview_activation_column: 2,
             },
-            Self::Account => InlineInteractiveSchema {
-                layout: InlineInteractiveLayout::Compact,
-                primary_label: "ACCOUNT",
-                secondary_label: "STATE",
-                secondary_preview_label: "STATE",
-                tertiary_label: "",
-                preview_submit_hint: "  ↵ select",
-                active_submit_hint: "  ↑↓/jk ↵ Esc",
-                shows_default_shortcut_hint: false,
-                preview_activation_column: 0,
-            },
-            Self::Login => InlineInteractiveSchema {
-                layout: InlineInteractiveLayout::ThreeColumn,
-                primary_label: "ITEM",
-                secondary_label: "PROVIDER",
-                secondary_preview_label: "PROVIDER",
-                tertiary_label: "ACTION",
-                preview_submit_hint: "  ↵ open",
-                active_submit_hint: "  ↑↓ ←→ ↵ Esc",
-                shows_default_shortcut_hint: true,
-                preview_activation_column: 2,
-            },
             Self::Usage => InlineInteractiveSchema {
                 layout: InlineInteractiveLayout::ThreeColumn,
                 primary_label: "ITEM",
@@ -1073,35 +1042,8 @@ impl PickerKind {
         }
     }
 
-    pub fn uses_compact_navigation(&self) -> bool {
-        self.schema().layout == InlineInteractiveLayout::Compact
-    }
-
     pub fn filter_text(&self, entry: &PickerEntry) -> String {
         match self {
-            Self::Account => {
-                let provider = entry
-                    .active_option()
-                    .map(|option| option.provider.as_str())
-                    .unwrap_or("");
-                let state = entry.account_state_label().unwrap_or("");
-                format!("{} {} {}", entry.name, provider, state)
-            }
-            Self::Login => {
-                let auth_kind = entry
-                    .active_option()
-                    .map(|option| option.provider.as_str())
-                    .unwrap_or("");
-                let state = entry
-                    .active_option()
-                    .map(|option| option.api_method.as_str())
-                    .unwrap_or("");
-                let detail = entry
-                    .active_option()
-                    .map(|option| option.detail.as_str())
-                    .unwrap_or("");
-                format!("{} {} {} {}", entry.name, auth_kind, state, detail)
-            }
             Self::Usage => {
                 let status = entry
                     .active_option()
@@ -1136,14 +1078,6 @@ impl PickerKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AccountPickerAction {
-    Switch { provider_id: String, label: String },
-    Add { provider_id: String },
-    Replace { provider_id: String, label: String },
-    OpenCenter { provider_filter: Option<String> },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentModelTarget {
     Swarm,
@@ -1156,10 +1090,6 @@ pub enum AgentModelTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickerAction {
     Model,
-    Account(AccountPickerAction),
-    Login(crate::provider_catalog::LoginProviderDescriptor),
-    Logout(crate::provider_catalog::LoginProviderDescriptor),
-    LogoutAll,
     Usage {
         id: String,
         title: String,
@@ -1211,33 +1141,7 @@ impl InlineInteractiveState {
 
 fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
     match action {
-        PickerAction::Model
-        | PickerAction::AgentTarget(_)
-        | PickerAction::AgentModelChoice { .. }
-        | PickerAction::LogoutAll => 0,
-        PickerAction::Account(AccountPickerAction::Switch { provider_id, label }) => {
-            provider_id.capacity() + label.capacity()
-        }
-        PickerAction::Account(AccountPickerAction::Add { provider_id }) => provider_id.capacity(),
-        PickerAction::Account(AccountPickerAction::Replace { provider_id, label }) => {
-            provider_id.capacity() + label.capacity()
-        }
-        PickerAction::Account(AccountPickerAction::OpenCenter { provider_filter }) => {
-            provider_filter
-                .as_ref()
-                .map(|value| value.capacity())
-                .unwrap_or(0)
-        }
-        PickerAction::Login(descriptor) | PickerAction::Logout(descriptor) => {
-            descriptor.id.len()
-                + descriptor.display_name.len()
-                + descriptor
-                    .aliases
-                    .iter()
-                    .map(|value| value.len())
-                    .sum::<usize>()
-                + descriptor.menu_detail.len()
-        }
+        PickerAction::Model | PickerAction::AgentTarget(_) | PickerAction::AgentModelChoice { .. } => 0,
         PickerAction::Usage {
             id,
             title,
@@ -1322,10 +1226,6 @@ impl InlineInteractiveState {
                 .all(|entry| matches!(entry.action, PickerAction::AgentTarget(_)))
     }
 
-    pub fn uses_compact_navigation(&self) -> bool {
-        self.schema().layout == InlineInteractiveLayout::Compact
-    }
-
     pub fn preview_submit_hint(&self) -> &'static str {
         self.schema().preview_submit_hint
     }
@@ -1340,18 +1240,12 @@ impl InlineInteractiveState {
 
     pub fn max_navigable_column(&self) -> usize {
         match self.schema().layout {
-            InlineInteractiveLayout::Compact => 0,
             InlineInteractiveLayout::ThreeColumn => 2,
         }
     }
 
     pub fn header_layout(&self, preview: bool) -> ([&'static str; 3], [usize; 3]) {
-        if self.uses_compact_navigation() {
-            (
-                [self.primary_label(), self.secondary_label(preview), ""],
-                [0, 0, 0],
-            )
-        } else if preview {
+        if preview {
             (
                 [
                     self.secondary_label(true),
@@ -1447,15 +1341,7 @@ impl PickerEntry {
     }
 
     pub fn account_state_label(&self) -> Option<&'static str> {
-        match &self.action {
-            PickerAction::Account(AccountPickerAction::Switch { .. }) => {
-                Some(if self.is_current { "active" } else { "saved" })
-            }
-            PickerAction::Account(AccountPickerAction::Add { .. }) => Some("add"),
-            PickerAction::Account(AccountPickerAction::Replace { .. }) => Some("replace"),
-            PickerAction::Account(AccountPickerAction::OpenCenter { .. }) => Some("manage"),
-            _ => None,
-        }
+        None
     }
 }
 

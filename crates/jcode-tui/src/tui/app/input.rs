@@ -2364,18 +2364,6 @@ pub(super) fn handle_modal_key(
         return Ok(true);
     }
 
-    if app.login_picker_overlay.is_some() {
-        app.handle_login_picker_key(code, modifiers)?;
-        return Ok(true);
-    }
-
-    if app.account_picker_overlay.is_some() {
-        if let Some(command) = app.next_account_picker_action(code, modifiers)? {
-            app.handle_account_picker_command(command);
-        }
-        return Ok(true);
-    }
-
     if app.copy_selection_mode {
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('c') | KeyCode::Char('d'))
@@ -3447,16 +3435,6 @@ impl App {
         // Otherwise the new prompt can appear directly under the last tool call, and the final
         // assistant paragraph shows up later out of order.
         self.commit_pending_streaming_assistant_message();
-
-        if let Some(pending) = self.pending_login.take() {
-            self.handle_login_input(pending, input);
-            return;
-        }
-
-        if let Some(pending) = self.pending_account_input.take() {
-            self.handle_pending_account_input(pending, input);
-            return;
-        }
 
         if let Some(name) = self.pending_ssh_remote_name.take() {
             commands::handle_pending_ssh_remote_target(self, name, input);

@@ -19,7 +19,6 @@ use crate::skill::SkillRegistry;
 use crate::tool::selfdev::ReloadContext;
 use crate::tool::{Registry, ToolContext};
 use anyhow::Result;
-use auth::PendingLogin;
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -50,7 +49,6 @@ pub enum AppRuntimeMode {
 }
 
 mod auth;
-mod auth_account_picker_saved_accounts;
 mod catchup;
 mod commands;
 mod commands_colors;
@@ -685,8 +683,6 @@ struct CommandSuggestionsCache {
 /// ever consults the input buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CommandSuggestionsSignature {
-    pending_login: bool,
-    pending_account_input: bool,
     pending_ssh_remote_name: bool,
     /// `Some(kind)` while an inline picker preview is open, which suppresses
     /// the textual suggestion list for the matching command.
@@ -1393,7 +1389,6 @@ pub struct App {
     // prompt.
     pending_prompt_before_history: Option<input::PreparedInput>,
     // Pending account switch from inline picker (for remote mode async processing)
-    pending_account_picker_action: Option<crate::tui::AccountPickerAction>,
     // Keybindings for model switching
     model_switch_keys: ModelSwitchKeys,
     // Keybindings for effort switching
@@ -1535,10 +1530,6 @@ pub struct App {
     streaming_md_renderer: RefCell<IncrementalMarkdownRenderer>,
     /// Ambient mode system prompt override (when running as visible ambient cycle)
     ambient_system_prompt: Option<String>,
-    /// Pending login flow: if set, next input is intercepted as OAuth code or API key
-    pending_login: Option<PendingLogin>,
-    /// Pending account picker follow-up input (new label or setting value)
-    pending_account_input: Option<auth::PendingAccountInput>,
     /// Pending SSH remote target prompt. Stores the friendly remote name.
     pending_ssh_remote_name: Option<String>,
     /// One-shot flag: force the next paint to clear the terminal first.
@@ -1586,9 +1577,7 @@ pub struct App {
     pending_catchup_resume: Option<PendingCatchupResume>,
     in_flight_catchup_resume: Option<PendingCatchupResume>,
     /// Login picker overlay (None = not visible)
-    login_picker_overlay: Option<RefCell<super::login_picker::LoginPicker>>,
     /// Account picker overlay (None = not visible)
-    account_picker_overlay: Option<RefCell<super::account_picker::AccountPicker>>,
     /// Usage overlay (None = not visible)
     usage_overlay: Option<RefCell<super::usage_overlay::UsageOverlay>>,
     /// Whether a usage refresh request is currently in flight.

@@ -1,4 +1,4 @@
-use super::{App, save_tui_openai_compatible_api_base, save_tui_openai_compatible_key};
+use super::{save_tui_openai_compatible_api_base, save_tui_openai_compatible_key};
 
 fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
     let _env_guard = crate::storage::lock_test_env();
@@ -30,25 +30,6 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
         }
     }
     result
-}
-
-#[test]
-fn oauth_preflight_mentions_browser_fallback_and_doctor() {
-    let message = App::record_oauth_preflight("openai", false, Some("localhost:1455"), Some(true));
-    assert!(message.contains("could not open a browser"));
-    assert!(message.contains("auth doctor openai"));
-}
-
-#[test]
-fn oauth_preflight_mentions_manual_safe_callback_mode() {
-    let message = App::record_oauth_preflight(
-        "gemini",
-        true,
-        Some("http://127.0.0.1:0/oauth2callback"),
-        Some(false),
-    );
-    assert!(message.contains("manual-safe paste completion"));
-    assert!(message.contains("oauth2callback"));
 }
 
 #[test]
@@ -95,35 +76,6 @@ fn tui_openai_compatible_key_save_persists_key_for_current_session() -> anyhow::
             )
             .as_deref(),
             Some("sk-test-tui-login")
-        );
-        Ok(())
-    })
-}
-
-#[test]
-fn tui_api_key_logout_clears_saved_key_and_process_env() -> anyhow::Result<()> {
-    with_temp_jcode_home(|| {
-        let resolved = save_tui_openai_compatible_api_base("https://api.example.com/v1")?;
-        let resolved = save_tui_openai_compatible_key(
-            crate::provider_catalog::OPENAI_COMPAT_PROFILE,
-            " sk-test-tui-login ",
-        )
-        .map(|_| resolved)?;
-
-        assert_eq!(
-            std::env::var(&resolved.api_key_env).as_deref(),
-            Ok("sk-test-tui-login")
-        );
-
-        App::clear_api_key_login(&resolved.api_key_env, &resolved.env_file)?;
-
-        assert!(std::env::var_os(&resolved.api_key_env).is_none());
-        assert!(
-            crate::provider_catalog::load_api_key_from_env_or_config(
-                &resolved.api_key_env,
-                &resolved.env_file,
-            )
-            .is_none()
         );
         Ok(())
     })
