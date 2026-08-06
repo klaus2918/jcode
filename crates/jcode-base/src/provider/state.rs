@@ -111,7 +111,7 @@ impl<'a> ProviderState<'a> {
     }
 
     pub(crate) fn default_model(&self) -> Option<&'a str> {
-        self.config.provider.default_model.as_deref()
+        self.config.effective_default_model()
     }
 
     pub(crate) fn default_provider_key(&self) -> Option<&'a str> {

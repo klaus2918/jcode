@@ -888,6 +888,43 @@ impl MultiProvider {
         crate::provider_catalog::openai_compatible_profile_by_id(&fallback?)
     }
 
+    /// Find the user-defined named provider profile (config `[providers.<name>]`)
+    /// that serves a bare model id, using the live route catalog as the source
+    /// of truth. Without this, unprefixed models fell through to the
+    /// active-runtime branch, which reuses the installed runtime without
+    /// re-checking its base_url, so a config hot-reload that changed the
+    /// endpoint (e.g. a local gateway port) never took effect for bare ids.
+    fn named_provider_profile_owning_model(&self, model: &str) -> Option<String> {
+        let model = model.trim();
+        if model.is_empty() {
+            return None;
+        }
+        let active_profile_id = ProviderRegistry::new(self).active_compatible_profile_id();
+        let mut fallback: Option<String> = None;
+        for route in self.fresh_routes_memo_entry().routes {
+            if !route.available || route.model != model {
+                continue;
+            }
+            let Some(profile_id) = route
+                .api_method
+                .strip_prefix("openai-compatible:")
+                .map(str::trim)
+                .filter(|profile_id| !profile_id.is_empty())
+                .filter(|profile_id| crate::config::config().providers.contains_key(*profile_id))
+            else {
+                continue;
+            };
+            if active_profile_id.as_deref() == Some(profile_id) {
+                fallback = Some(profile_id.to_string());
+                break;
+            }
+            if fallback.is_none() {
+                fallback = Some(profile_id.to_string());
+            }
+        }
+        fallback
+    }
+
     /// Parse a `<name>:<model>` spec whose prefix is a user-defined named
     /// provider profile from config (`[providers.<name>]`). Built-in provider
     /// prefixes and catalog profile ids take precedence and never reach here.
@@ -926,6 +963,10 @@ impl MultiProvider {
             .ok_or_else(|| anyhow::anyhow!("Unknown provider profile '{}'", profile_name))?;
 
         let expected_api_method = format!("openai-compatible:{}", profile_name);
+        // 配置热重载后 base_url 可能已变化（例如 cc-switch 本地网关端口调整）。
+        // 复用已安装 runtime 前必须校验其 api_base 与当前配置一致，否则请求
+        // 会继续发往旧端点，导致修改配置不生效。
+        let expected_api_base = crate::provider_catalog::normalize_api_base(&config.base_url);
         let registry = ProviderRegistry::new(self);
         let provider = {
             let existing = registry
@@ -933,7 +974,11 @@ impl MultiProvider {
                 .filter(|provider| {
                     provider
                         .direct_openai_compatible_route_parts()
-                        .map(|(_provider, api_method, _detail)| api_method == expected_api_method)
+                        .map(|(_provider, api_method, api_base)| {
+                            api_method == expected_api_method
+                                && crate::provider_catalog::normalize_api_base(&api_base)
+                                    == expected_api_base
+                        })
                         .unwrap_or(false)
                 });
             if let Some(provider) = existing {
@@ -1105,18 +1150,24 @@ impl MultiProvider {
         }
 
         let profile_id = resolved.id.clone();
+        // 复用已安装 runtime 前校验 api_base 与当前解析结果一致（含 env
+        // 覆盖），否则配置热重载后请求会继续发往旧端点。
+        let expected_api_base = crate::provider_catalog::normalize_api_base(&resolved.api_base);
         let registry = ProviderRegistry::new(self);
         let provider = {
             let existing = registry.compatible_profile(&profile_id).filter(|provider| {
                 provider
                     .direct_openai_compatible_route_parts()
-                    .and_then(|(_provider, api_method, _detail)| {
+                    .map(|(_provider, api_method, api_base)| {
                         api_method
                             .strip_prefix("openai-compatible:")
                             .map(|profile| profile.trim().to_string())
+                            .as_deref()
+                            == Some(profile_id.as_str())
+                            && crate::provider_catalog::normalize_api_base(&api_base)
+                                == expected_api_base
                     })
-                    .as_deref()
-                    == Some(profile_id.as_str())
+                    .unwrap_or(false)
             });
             if let Some(provider) = existing {
                 provider
@@ -1883,6 +1934,11 @@ impl Provider for MultiProvider {
             && let Some(target) = provider_from_model_key(target_provider)
         {
             self.set_model_on_provider(target, model)
+        } else if let Some(profile_name) = self.named_provider_profile_owning_model(model) {
+            // 用户配置的 named provider 统一走 base_url 校验的复用路径，
+            // 保证配置热重载（如本地网关端口调整）后 bare model 也重建
+            // runtime，而不是复用旧端点。
+            self.set_model_on_named_provider_profile(&profile_name, model)
         } else if let Some(profile) = self.openai_compatible_profile_owning_model(model) {
             // Bare ids from an OpenAI-compatible catalog (`celeris-1`,
             // `mimo-v2.5`, ...) match none of the built-in model-name

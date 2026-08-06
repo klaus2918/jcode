@@ -999,7 +999,7 @@ impl App {
         }
 
         let config = crate::config::config();
-        let config_default_model = config.provider.default_model.clone();
+        let config_default_model = config.effective_default_model().map(str::to_string);
         let config_default_provider = config.provider.default_provider.clone();
 
         let current_effort = if self.is_remote {
@@ -1239,7 +1239,7 @@ impl App {
             self.provider.model().to_string()
         };
         let config = crate::config::config();
-        let config_default_model = config.provider.default_model.clone();
+        let config_default_model = config.effective_default_model().map(str::to_string);
         let config_default_provider = config.provider.default_provider.clone();
         let current_effort = if self.is_remote {
             self.remote_reasoning_effort.clone()
@@ -1306,7 +1306,7 @@ impl App {
             self.provider.model().to_string()
         };
         let config = crate::config::config();
-        let config_default_model = config.provider.default_model.clone();
+        let config_default_model = config.effective_default_model().map(str::to_string);
         let config_default_provider = config.provider.default_provider.clone();
         let config_anthropic_effort = config.provider.anthropic_reasoning_effort.clone();
         let config_openai_effort = config.provider.openai_reasoning_effort.clone();
@@ -1830,7 +1830,7 @@ impl App {
             self.provider.model().to_string()
         };
         let config = crate::config::config();
-        let config_default_model = config.provider.default_model.clone();
+        let config_default_model = config.effective_default_model().map(str::to_string);
         let config_default_provider = config.provider.default_provider.clone();
         let current_effort = if self.is_remote {
             self.remote_reasoning_effort.clone()

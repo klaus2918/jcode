@@ -8,10 +8,11 @@ pub use jcode_config_types::{
     CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
     DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HooksConfig, KeybindingsConfig,
     LatexRenderingMode, MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig,
-    NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig, NetworkConfig,
-    NotificationsConfig, OverscrollStatusMode, PowerConfig, ProviderApiFormat, ProviderConfig,
-    ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
-    SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
+    NamedProviderModelConfig, NamedProviderModelOverrides, NamedProviderType,
+    NativeScrollbarConfig, NetworkConfig, NotificationsConfig, OverscrollStatusMode, PowerConfig,
+    ProviderApiFormat, ProviderConfig, ProviderPrice, ReasoningDisplayMode, SafetyConfig,
+    SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
+    UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -108,8 +109,12 @@ fn provider_to_value(name: &str, config: &NamedProviderConfig) -> toml::Value {
         toml::Value::String(config.base_url.clone()),
     );
 
+    // resonix 字段名是 `default`（`model` 仅作向后兼容别名）。
     if let Some(model) = config.default_model.as_deref().filter(|m| !m.is_empty()) {
-        table.insert("model".to_string(), toml::Value::String(model.to_string()));
+        table.insert(
+            "default".to_string(),
+            toml::Value::String(model.to_string()),
+        );
     }
 
     if let Some(key_env) = config.api_key_env.as_deref().filter(|k| !k.is_empty()) {
@@ -190,6 +195,46 @@ fn provider_to_value(name: &str, config: &NamedProviderConfig) -> toml::Value {
             "supports_reasoning_effort".to_string(),
             toml::Value::Boolean(supports),
         );
+    }
+
+    if let Some(price) = config.price.as_ref() {
+        table.insert("price".to_string(), price_to_value(price));
+    }
+    if let Some(prices) = config.prices.as_ref() {
+        let mut prices_table = toml::map::Map::new();
+        for (model, price) in prices {
+            prices_table.insert(model.clone(), price_to_value(price));
+        }
+        table.insert("prices".to_string(), toml::Value::Table(prices_table));
+    }
+    if let Some(thinking) = config.thinking.as_deref().filter(|v| !v.is_empty()) {
+        table.insert(
+            "thinking".to_string(),
+            toml::Value::String(thinking.to_string()),
+        );
+    }
+    if let Some(effort) = config.effort.as_deref().filter(|v| !v.is_empty()) {
+        table.insert(
+            "effort".to_string(),
+            toml::Value::String(effort.to_string()),
+        );
+    }
+    if let Some(vision_models) = config.vision_models.as_ref() {
+        if !vision_models.is_empty() {
+            let values = vision_models
+                .iter()
+                .map(|id| toml::Value::String(id.clone()))
+                .collect::<Vec<_>>();
+            table.insert("vision_models".to_string(), toml::Value::Array(values));
+        }
+    }
+    if let Some(model_overrides) = config.model_overrides.as_ref() {
+        if !model_overrides.is_empty() {
+            table.insert(
+                "model_overrides".to_string(),
+                model_overrides_to_value(model_overrides),
+            );
+        }
     }
 
     // Provider-wide context window: hoist when every model shares the same
@@ -353,6 +398,57 @@ fn insert_opt_usize(
     }
 }
 
+/// Render a resonix `price` / `prices` inline table.
+fn price_to_value(price: &ProviderPrice) -> toml::Value {
+    let mut table = toml::map::Map::new();
+    table.insert(
+        "cache_hit".to_string(),
+        toml::Value::Float(price.cache_hit),
+    );
+    table.insert("input".to_string(), toml::Value::Float(price.input));
+    table.insert("output".to_string(), toml::Value::Float(price.output));
+    if let Some(currency) = price.currency.as_deref().filter(|c| !c.is_empty()) {
+        table.insert(
+            "currency".to_string(),
+            toml::Value::String(currency.to_string()),
+        );
+    }
+    toml::Value::Table(table)
+}
+
+/// Render a resonix `model_overrides` inline table keyed by model id.
+fn model_overrides_to_value(
+    overrides: &BTreeMap<String, NamedProviderModelOverrides>,
+) -> toml::Value {
+    let mut table = toml::map::Map::new();
+    for (model, over) in overrides {
+        let mut inner = toml::map::Map::new();
+        if let Some(window) = over.context_window {
+            inner.insert(
+                "context_window".to_string(),
+                toml::Value::Integer(window as i64),
+            );
+        }
+        insert_opt_bool(&mut inner, "vision", over.vision);
+        insert_opt_bool(&mut inner, "tools", over.tools);
+        insert_opt_str(
+            &mut inner,
+            "reasoning_protocol",
+            over.reasoning_protocol.as_deref(),
+        );
+        if let Some(efforts) = over.supported_efforts.as_ref() {
+            let values = efforts
+                .iter()
+                .map(|v| toml::Value::String(v.clone()))
+                .collect::<Vec<_>>();
+            inner.insert("supported_efforts".to_string(), toml::Value::Array(values));
+        }
+        insert_opt_str(&mut inner, "default_effort", over.default_effort.as_deref());
+        table.insert(model.clone(), toml::Value::Table(inner));
+    }
+    toml::Value::Table(table)
+}
+
 /// One entry of a resonix-style top-level `[[providers]]` array table.
 #[derive(Deserialize)]
 struct NamedProviderArrayEntry {
@@ -381,6 +477,18 @@ struct NamedProviderArrayEntry {
     /// that does not set its own.
     #[serde(default, alias = "context-window", alias = "context_window")]
     context_window: Option<usize>,
+    #[serde(default)]
+    price: Option<ProviderPrice>,
+    #[serde(default)]
+    prices: Option<BTreeMap<String, ProviderPrice>>,
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+    #[serde(default)]
+    vision_models: Option<Vec<String>>,
+    #[serde(default)]
+    model_overrides: Option<BTreeMap<String, NamedProviderModelOverrides>>,
 }
 
 impl NamedProviderArrayEntry {
@@ -401,6 +509,47 @@ impl NamedProviderArrayEntry {
                 }
             }
         }
+        // resonix `effort` 是 provider 级默认 effort：应用到未单独配置的模型。
+        if let Some(effort) = &self.effort {
+            for model in &mut models {
+                if model.default_effort.is_none() {
+                    model.default_effort = Some(effort.clone());
+                }
+            }
+        }
+        // resonix `vision_models`：把列表中的模型标记为接受图像输入。
+        if let Some(vision_models) = &self.vision_models {
+            for model in &mut models {
+                if vision_models.iter().any(|id| id == &model.id) && model.vision.is_none() {
+                    model.vision = Some(true);
+                }
+            }
+        }
+        // resonix `model_overrides`：逐模型覆盖 context/vision/tools/reasoning。
+        if let Some(overrides) = &self.model_overrides {
+            for model in &mut models {
+                if let Some(over) = overrides.get(&model.id) {
+                    if over.context_window.is_some() {
+                        model.context_window = over.context_window;
+                    }
+                    if over.vision.is_some() {
+                        model.vision = over.vision;
+                    }
+                    if over.tools.is_some() {
+                        model.tools = over.tools;
+                    }
+                    if over.reasoning_protocol.is_some() {
+                        model.reasoning_protocol = over.reasoning_protocol.clone();
+                    }
+                    if over.supported_efforts.is_some() {
+                        model.supported_efforts = over.supported_efforts.clone();
+                    }
+                    if over.default_effort.is_some() {
+                        model.default_effort = over.default_effort.clone();
+                    }
+                }
+            }
+        }
         NamedProviderConfig {
             provider_type: self.provider_type,
             base_url: self.base_url,
@@ -408,6 +557,12 @@ impl NamedProviderArrayEntry {
             default_model: self.default_model,
             api_key_env: self.api_key_env,
             models,
+            price: self.price,
+            prices: self.prices,
+            thinking: self.thinking,
+            effort: self.effort,
+            vision_models: self.vision_models,
+            model_overrides: self.model_overrides,
             ..NamedProviderConfig::default()
         }
     }
@@ -902,6 +1057,13 @@ pub struct Config {
     /// Auth trust / consent configuration
     pub auth: AuthConfig,
 
+    /// 顶层默认模型（resonix 风格 `default_model = "provider/model"`）。
+    ///
+    /// resonix 把默认模型写在顶层而非 `[provider]` 表；两种写法都接受，
+    /// [`Self::effective_default_model`] 优先 `[provider]` 表，其次本字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+
     /// Provider configuration
     pub provider: ProviderConfig,
 
@@ -959,6 +1121,19 @@ pub struct Config {
 
     /// Network / proxy configuration for outbound provider requests.
     pub network: NetworkConfig,
+}
+
+impl Config {
+    /// 生效的默认模型：`[provider]` 表优先，其次 resonix 顶层 `default_model`。
+    ///
+    /// resonix 把 `default_model = "provider/model"` 写在顶层；jcode 的传统
+    /// 写法在 `[provider]` 表里。两种写法都生效，`[provider]` 表优先。
+    pub fn effective_default_model(&self) -> Option<&str> {
+        self.provider
+            .default_model
+            .as_deref()
+            .or(self.default_model.as_deref())
+    }
 }
 
 /// Agent Client Protocol adapter configuration.

@@ -98,15 +98,17 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         return None;
     }
 
-    if let Ok(key) = std::env::var(env_key)
-        && let Some(key) = clean_loaded_value(&key, env_key)
-    {
+    // resonix 对齐：先查统一 `<jcode home>/.env`，再回退旧的分散文件
+    // （openai-compatible.env / ollama.env 等），保证迁移期向后兼容。
+    // 统一 .env 是密钥的权威来源：用户直接编辑 .env 替换 key 后立即生效，
+    // 不会被继承的旧进程环境变量（jcode 保存 key 时会 set_var）覆盖。
+    if let Some(key) = load_from_unified_env_file(env_key) {
         return Some(key);
     }
 
-    // resonix 对齐：先查统一 `<jcode home>/.env`，再回退旧的分散文件
-    // （openai-compatible.env / ollama.env 等），保证迁移期向后兼容。
-    if let Some(key) = load_from_unified_env_file(env_key) {
+    if let Ok(key) = std::env::var(env_key)
+        && let Some(key) = clean_loaded_value(&key, env_key)
+    {
         return Some(key);
     }
 
@@ -132,7 +134,7 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
             return Some(key);
         }
 
-        // 统一 .env 里的 ZAI_API_KEY（resonix 单文件）也作为回退源。
+        // 统一 .env 里的 ZAI_API_KEY（resonix 单文件）优先于进程 env。
         if let Some(key) = load_from_unified_env_file("ZAI_API_KEY") {
             return Some(key);
         }
@@ -168,6 +170,12 @@ pub fn load_env_value_from_env_or_config(env_key: &str, file_name: &str) -> Opti
             file_name
         ));
         return None;
+    }
+
+    // 统一 .env 优先于进程环境变量（resonix 语义：.env 是配置值/密钥的
+    // 权威来源），旧分散文件作为最后回退。
+    if let Some(value) = load_from_unified_env_file(env_key) {
+        return Some(value);
     }
 
     if let Ok(value) = std::env::var(env_key)
@@ -407,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_api_key_from_env_before_config_file() {
+    fn loads_api_key_from_unified_env_before_process_env() {
         let temp = tempfile::tempdir().expect("tempdir");
         let _guard = EnvGuard::new(&["JCODE_HOME", "JCODE_PROVIDER_ENV_TEST_KEY"]);
         jcode_core::env::set_var("JCODE_HOME", temp.path());
@@ -420,10 +428,12 @@ mod tests {
         .expect("save file key");
         jcode_core::env::set_var("JCODE_PROVIDER_ENV_TEST_KEY", "env-key");
 
+        // 统一 `.env` 是密钥权威来源：用户替换 .env 后立即生效，进程里的
+        // 旧环境变量（jcode 保存 key 时会 set_var）不再覆盖文件值。
         assert_eq!(
             load_api_key_from_env_or_config("JCODE_PROVIDER_ENV_TEST_KEY", "provider-env-test.env")
                 .as_deref(),
-            Some("env-key")
+            Some("file-key")
         );
     }
 

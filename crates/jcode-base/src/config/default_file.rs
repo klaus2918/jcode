@@ -629,60 +629,56 @@ desktop_notifications = true
 # enabled = true
 # endpoint = "https://api.jcode.sh/v1/discovery"
 
-# ---- Model providers (resonix 风格) ----
+# ---- Model providers（resonix 风格）----
 # 模型接入只走 [[providers]] 配置 + 统一 ~/.jcode/.env 密钥文件。
 # 用 `jcode provider add <name> --base-url <url> --model <id> --api-key-env <ENV_VAR>`
 # 生成条目，或取消注释下面的模板手动编辑。密钥值永远不写进本文件：
 # 只写 api_key_env（环境变量名），值放在 ~/.jcode/.env（KEY=value 一行）。
 
+# 顶层默认模型（resonix 写法，provider/model 斜杠引用）：
+# default_model = "deepseek/deepseek-chat"
+# 或经典写法（[provider] 表，两者等价，[provider] 优先）：
 # [provider]
-# default_provider = "ollama-local"        # auto 启动时优先使用的命名 profile
+# default_provider = "ollama-local"
 # default_model = "llama3.1:8b"
 
 # ---- 本地端点模板（[[providers]] 数组条目，name 必填）----
 # [[providers]]
 # name = "ollama-local"
-# type = "openai-compatible"
+# kind = "openai"
 # base_url = "http://localhost:11434/v1"   # Ollama
-# default_model = "llama3.1:8b"
+# default = "llama3.1:8b"
 # models = ["llama3.1:8b"]
+# context_window = 128000                  # 令牌窗口；压缩阈值基于它计算
 
 # [[providers]]
 # name = "lmstudio"
-# type = "openai-compatible"
+# kind = "openai"
 # base_url = "http://localhost:1234/v1"    # LM Studio
-# default_model = "qwen2.5-coder-7b"
+# default = "qwen2.5-coder-7b"
 # models = ["qwen2.5-coder-7b"]
 
 # ---- 远程端点模板（密钥放 ~/.jcode/.env）----
 # [[providers]]
 # name = "deepseek"
-# type = "openai-compatible"
+# kind = "openai"
 # base_url = "https://api.deepseek.com/v1"
 # api_key_env = "DEEPSEEK_API_KEY"
-# default_model = "deepseek-chat"
+# default = "deepseek-chat"
 # models = ["deepseek-chat"]
+# price = { cache_hit = 0.014, input = 0.14, output = 0.28, currency = "¥" }  # 每 1M token
+# thinking = "adaptive"
+# effort = "high"
 
 # ---- 本地网关模板（cc-switch 本地代理，无需 key）----
 # [[providers]]
 # name = "cc-switch"
-# type = "openai-compatible"
+# kind = "anthropic"                    # 代理按 Claude 通道转发，上游为 OpenAI 兼容时自动转换格式
 # base_url = "http://127.0.0.1:15721"   # cc-switch 代理地址，以面板显示为准（默认端口 15721）
-# api = "anthropic"                     # 代理按 Claude 通道转发，上游为 OpenAI 兼容时自动转换格式
 # auth = "none"                         # 真实 key 由 cc-switch 注入，这里不需要 api_key_env
-# default_model = "deepseek-v4-flash"
+# default = "deepseek-v4-flash"
 # models = ["deepseek-v4-flash"]
-
-# 等效的经典表风格（二选一，不要混用）：
-# [providers.ollama-local]
-# type = "openai-compatible"
-# base_url = "http://localhost:11434/v1"
-# auth = "none"                            # 本地免认证可省略 api_key_env
-# requires_api_key = false
-# default_model = "llama3.1:8b"
-# [[providers.ollama-local.models]]
-# id = "llama3.1:8b"
-	"##;
+		"##;
 
         // Substitute platform-specific defaults from the keybinding registry.
         let p = jcode_config_types::KeybindingPlatform::current();

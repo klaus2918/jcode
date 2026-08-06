@@ -1,4 +1,20 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// 序列化 f32 为最短十进制表示。
+///
+/// `toml_edit` 会把 f32 提升为 f64 再输出，导致 `0.3f32` 写成
+/// `0.30000001192092896` 这类完整精度垃圾（用户 config.toml 里出现过）。
+/// 这里先取 f32 的最短 round-trip 文本（Rust `to_string` 保证可还原），
+/// 再解析回 f64 交给序列化器，输出干净且无精度损失。
+fn serialize_f32_short<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let shortest = value.to_string();
+    let as_f64: f64 = shortest.parse().unwrap_or_else(|_| *value as f64);
+    serializer.serialize_f64(as_f64)
+}
 
 pub mod keybindings;
 pub use keybindings::{
@@ -353,15 +369,18 @@ pub struct CompactionConfig {
     /// the window. Shared by all modes: reactive compacts at this level,
     /// proactive projects token growth against it, semantic falls back to it.
     /// Clamped to [0.05, 0.95] at use time.
+    #[serde(serialize_with = "serialize_f32_short")]
     pub threshold: f32,
 
     /// [proactive] Number of turns to look ahead when projecting token growth
     pub lookahead_turns: usize,
 
     /// [proactive] EWMA alpha for token growth smoothing (0.0-1.0, higher = more recency bias)
+    #[serde(serialize_with = "serialize_f32_short")]
     pub ewma_alpha: f32,
 
     /// [proactive/semantic] Minimum context fill level before any proactive check fires (0.0-1.0)
+    #[serde(serialize_with = "serialize_f32_short")]
     pub proactive_floor: f32,
 
     /// [proactive/semantic] Minimum number of token snapshots needed before proactive check
@@ -374,9 +393,11 @@ pub struct CompactionConfig {
     pub min_turns_between_compactions: usize,
 
     /// [semantic] Cosine similarity threshold below which a topic shift is detected (0.0-1.0)
+    #[serde(serialize_with = "serialize_f32_short")]
     pub topic_shift_threshold: f32,
 
     /// [semantic] Cosine similarity above which a message is kept verbatim (0.0-1.0)
+    #[serde(serialize_with = "serialize_f32_short")]
     pub relevance_keep_threshold: f32,
 
     /// [semantic] Number of recent turns to look at for building the "current goal" embedding
@@ -541,6 +562,79 @@ pub struct NamedProviderModelConfig {
     pub output_limit_field: Option<String>,
 }
 
+/// Provider/model pricing (resonix `price` / `prices` entries), per 1M tokens.
+///
+/// `price` on a `[[providers]]` entry is the provider-wide fallback;
+/// `prices` maps a model id to its own price for mixed-gateway providers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct ProviderPrice {
+    /// Cache-hit price per 1M tokens.
+    #[serde(default)]
+    pub cache_hit: f64,
+    /// Input price per 1M tokens.
+    #[serde(default)]
+    pub input: f64,
+    /// Output price per 1M tokens.
+    #[serde(default)]
+    pub output: f64,
+    /// Currency symbol, e.g. "¥".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+}
+
+/// Per-model overrides (resonix `model_overrides` entries) for mixed gateways
+/// that serve several models with different context/reasoning/vision shapes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct NamedProviderModelOverrides {
+    #[serde(
+        default,
+        alias = "context_limit",
+        alias = "context-length",
+        alias = "context-window",
+        alias = "context_length",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_window: Option<usize>,
+    #[serde(
+        default,
+        alias = "supports_vision",
+        alias = "vision_supported",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub vision: Option<bool>,
+    #[serde(
+        default,
+        alias = "supports_tools",
+        alias = "tool_use",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tools: Option<bool>,
+    #[serde(
+        default,
+        alias = "reasoning-protocol",
+        alias = "reasoning",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_protocol: Option<String>,
+    #[serde(
+        default,
+        alias = "efforts",
+        alias = "supported-efforts",
+        alias = "supported_efforts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub supported_efforts: Option<Vec<String>>,
+    #[serde(
+        default,
+        alias = "default-effort",
+        alias = "default_effort",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_effort: Option<String>,
+}
+
 /// Deserialize `[[providers.<name>.models]]` (array-of-table) or a resonix-style
 /// string array `models = ["a", "b"]` into model config entries. The string
 /// form is an input-friendly alias: each id becomes a `NamedProviderModelConfig`
@@ -598,7 +692,12 @@ pub struct NamedProviderConfig {
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
     pub env_file: Option<String>,
-    #[serde(default, alias = "model", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "model",
+        alias = "default",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_model: Option<String>,
     pub requires_api_key: Option<bool>,
     #[serde(default)]
@@ -632,6 +731,26 @@ pub struct NamedProviderConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub supports_reasoning_effort: Option<bool>,
+    /// Provider-wide price fallback (resonix `price`), per 1M tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<ProviderPrice>,
+    /// Per-model prices (resonix `prices`), keyed by model id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prices: Option<BTreeMap<String, ProviderPrice>>,
+    /// Reasoning mode (resonix `thinking`, e.g. "adaptive"). Preserved for
+    /// round-trip and diagnostics; model-level behavior is applied per-model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    /// Default effort (resonix `effort`) applied to models without their own
+    /// `default_effort`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Models in this provider that accept image input (resonix `vision_models`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_models: Option<Vec<String>>,
+    /// Per-model context/reasoning/vision overrides (resonix `model_overrides`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_overrides: Option<BTreeMap<String, NamedProviderModelOverrides>>,
 }
 
 impl Default for NamedProviderConfig {
@@ -654,6 +773,12 @@ impl Default for NamedProviderConfig {
             models: Vec::new(),
             extra_body: None,
             supports_reasoning_effort: None,
+            price: None,
+            prices: None,
+            thinking: None,
+            effort: None,
+            vision_models: None,
+            model_overrides: None,
         }
     }
 }
