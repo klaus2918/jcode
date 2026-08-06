@@ -73,7 +73,11 @@ impl App {
         Self::sanitize_remote_model_hint(
             std::env::var("JCODE_MODEL")
                 .ok()
-                .or_else(|| crate::config::config().provider.default_model.clone()),
+                .or_else(|| {
+                    crate::config::config()
+                        .effective_default_model()
+                        .map(str::to_string)
+                }),
         )
     }
 
