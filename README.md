@@ -340,6 +340,33 @@ you configure an endpoint, store its key, and pick it with `/model`.
 
 Local endpoints (Ollama, LM Studio) need no key: `jcode provider add ollama-local --base-url http://localhost:11434/v1 --model llama3.2 --no-api-key`.
 
+#### Local gateway (CC Switch proxy)
+
+jcode can also connect through a [CC Switch](https://github.com/farion1231/cc-switch) local proxy: CC Switch holds your real API keys, runs a local proxy (default `http://127.0.0.1:15721`, shown in its proxy panel), and forwards requests to whichever provider you have enabled there, with failover and format conversion handled by the proxy. Point jcode at the proxy as an Anthropic-format endpoint:
+
+```toml
+[provider]
+default_provider = "cc-switch"
+default_model = "deepseek-v4-flash"
+
+[providers.cc-switch]
+type = "openai-compatible"
+base_url = "http://127.0.0.1:15721"   # address shown in the CC Switch proxy panel
+api = "anthropic"                     # proxy routes this as a Claude-channel request
+auth = "none"                         # CC Switch injects the real key
+
+[[providers.cc-switch.models]]
+id = "deepseek-v4-flash"
+context_window = 1000000
+```
+
+Two rules to remember:
+
+- **The model is always required.** The proxy only forwards requests, it never picks a model for you, so `default_model` (and the `models` list) must use model names your enabled CC Switch provider supports.
+- **The key is not required.** Set `auth = "none"`; CC Switch injects the real key at the proxy. Switch providers inside CC Switch, not in jcode.
+
+See [docs/PROVIDER_MIGRATION_GUIDE.md](docs/PROVIDER_MIGRATION_GUIDE.md) for the full guide.
+
 ### Config-file setup for self-hosted endpoints and MCP
 
 If you prefer to configure things by editing files instead of using the login UI, jcode supports both a custom OpenAI-compatible endpoint config and MCP config files.
