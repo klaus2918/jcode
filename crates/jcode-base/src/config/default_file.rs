@@ -663,6 +663,16 @@ desktop_notifications = true
 # default_model = "deepseek-chat"
 # models = ["deepseek-chat"]
 
+# ---- 本地网关模板（cc-switch 本地代理，无需 key）----
+# [[providers]]
+# name = "cc-switch"
+# type = "openai-compatible"
+# base_url = "http://127.0.0.1:15721"   # cc-switch 代理地址，以面板显示为准（默认端口 15721）
+# api = "anthropic"                     # 代理按 Claude 通道转发，上游为 OpenAI 兼容时自动转换格式
+# auth = "none"                         # 真实 key 由 cc-switch 注入，这里不需要 api_key_env
+# default_model = "deepseek-v4-flash"
+# models = ["deepseek-v4-flash"]
+
 # 等效的经典表风格（二选一，不要混用）：
 # [providers.ollama-local]
 # type = "openai-compatible"

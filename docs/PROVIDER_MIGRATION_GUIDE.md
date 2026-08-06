@@ -7,8 +7,7 @@
 
 ## 1. 发生了什么
 
-jcode 默认构建移除了 30 个第三方 OpenAI 兼容预设与 29 个对应登录 provider。
-现在默认构建只保留：
+jcode 默认构建移除了 30 个第三方 OpenAI 兼容预设与 29 个对应登录 provider。 现在默认构建只保留：
 
 - **协议/抽象入口**：`openai-compatible`（自定义端点）、`ollama`、`lmstudio`（本地端点）
 - **原生登录骨架**：auto-import / claude / anthropic-api / openai / openai-api / openrouter / bedrock / azure / jcode / cursor / copilot / gemini / gemini-api / antigravity / google
@@ -36,8 +35,8 @@ jcode provider add <name> \
 
 ### 2.2 预设 → 重建命令对照表
 
-| 旧预设 | base_url | api_key_env | 默认模型 |
-|---|---|---|---|
+| 旧预设 | base\_url | api\_key\_env | 默认模型 |
+| --- | --- | --- | --- |
 | opencode | `https://opencode.ai/zen/v1` | `OPENCODE_API_KEY` | `minimax-m2.7` |
 | opencode-go | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` | `kimi-k2.5` |
 | zai | `https://api.z.ai/api/coding/paas/v4` | `ZHIPU_API_KEY` | `glm-4.5` |
@@ -147,7 +146,52 @@ env_file = "deepseek.env"
 
 ---
 
-## 4. 兼容红线（未受影响）
+## 4. 接入方式：本地网关（cc-switch 本地代理）
+
+> 场景：已有 [CC Switch](https://github.com/farion1231/cc-switch) 统一管理多路 API provider，通过其**本地代理**统一出口接入 jcode。provider 切换、故障转移、格式转换、用量统计都由 cc-switch 承担，jcode 只面向一个本地端点。
+
+### 4.1 工作方式
+
+- cc-switch 本地代理监听 `127.0.0.1:<port>`（默认 `15721`，可在面板修改），按应用类型（Claude / Codex / Gemini）把请求路由到当前启用的 provider，并在转发时注入该 provider 保存的真实 key。
+- jcode 以 **Anthropic Messages 格式**接入，等价于一个"Claude 通道"客户端，请求经代理透传或格式转换（上游为 OpenAI 兼容时自动转换）。
+- cc-switch 支持的工具列表（Claude Code / Codex / Gemini CLI / OpenCode 等）**不含 jcode**，它不会自动改写 jcode 配置，jcode 侧需手动写入下面的配置。
+
+### 4.2 jcode 配置示例
+
+```toml
+[provider]
+default_provider = "cc-switch"
+default_model = "deepseek-v4-flash"
+
+[providers.cc-switch]
+type = "openai-compatible"
+base_url = "http://127.0.0.1:15721"   # cc-switch 代理地址：以面板显示为准（默认端口 15721）
+api = "anthropic"                     # Anthropic wire 格式，代理按 Claude 通道路由
+auth = "none"                         # 真实 key 由 cc-switch 注入，jcode 侧不需要 key
+default_model = "deepseek-v4-flash"   # 必须指定，见下
+
+[[providers.cc-switch.models]]
+id = "deepseek-v4-flash"
+context_window = 1000000
+```
+
+### 4.3 模型和 key：还需要指定吗
+
+| 项 | 结论 | 说明 |
+| --- | --- | --- |
+| 模型 | **必须指定** | Anthropic Messages 请求的 `model` 字段必填，代理只转发/转换格式，不会替 jcode 选模型。`default_model` 和 `models` 列表里的 id 必须是 cc-switch 当前启用 provider 支持的模型名（如 `deepseek-v4-flash`）。模型列表可用 `/model` 切换。 |
+| key | **不需要** | 真实 key 保存在 cc-switch 的 provider 配置中，由代理在转发时注入。jcode 侧 `auth = "none"` 即可，无需 `api_key_env`；若填了占位值也不参与请求。 |
+
+### 4.4 注意事项
+
+- `base_url` 以 cc-switch 代理面板显示的"服务地址"为准（端口可改）。
+- 代理必须保持运行；停止后请求会失败（cc-switch 会还原它接管的工具配置，但 jcode 配置是手动写的，不会被还原）。
+- provider 切换在 cc-switch 面板操作（切换 Claude 通道的启用 provider），jcode 侧不用改配置；切换后确保模型名与新 provider 匹配。
+- 故障转移、请求日志、用量统计在 cc-switch 面板查看，jcode 无感知。
+
+---
+
+## 5. 兼容红线（未受影响）
 
 - `[providers.<name>]` 语义不变；已配置的命名 provider 继续工作
 - 已登录账户、订阅、能力注册表、路由/协议全部不变
