@@ -911,14 +911,20 @@ model_overrides   = { "deepseek-v4-flash" = { context_window = 1000000 } }
             crate::config::invalidate_config_cache();
 
             let cfg = crate::config::config();
-            let profile = cfg.providers.get("cc-switch").expect("cc-switch entry parsed");
+            let profile = cfg
+                .providers
+                .get("cc-switch")
+                .expect("cc-switch entry parsed");
             assert_eq!(profile.auth, crate::config::NamedProviderAuth::None);
             assert_eq!(
                 profile.api_format,
                 Some(crate::config::ProviderApiFormat::Anthropic)
             );
             assert_eq!(profile.default_model.as_deref(), Some("deepseek-v4-flash"));
-            assert_eq!(profile.api_key_env, None, "this config must not carry api_key_env");
+            assert_eq!(
+                profile.api_key_env, None,
+                "this config must not carry api_key_env"
+            );
             assert_eq!(profile.models[0].context_window, Some(1_000_000));
             assert!(
                 crate::provider_catalog::named_provider_profile_is_configured("cc-switch", profile),
@@ -1138,6 +1144,136 @@ context_window = 1000000
                 .set_model("deepseek-flash:deepseek-v4-flash")
                 .expect("switch back to deepseek-flash should succeed");
             assert_eq!(session.model(), "deepseek-v4-flash");
+        });
+    });
+}
+
+
+/// The user's real CC Switch + cch config (named-table style with per-model
+/// `api_key_env`) must surface every configured model in the /model picker and
+/// support in-session switching both between models and between providers.
+#[test]
+fn user_named_style_cc_switch_and_cch_config_supports_picker_and_switching() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            std::fs::write(
+                std::path::PathBuf::from(jcode_home).join("config.toml"),
+                r#"
+[provider]
+default_provider = "cch"
+default_model = "deepseek-v4-flash"
+
+[providers.cc-switch]
+type = "openai-compatible"
+base_url = "http://127.0.0.1:15721"
+api = "anthropic"
+auth = "none"
+
+[[providers.cc-switch.models]]
+id = "deepseek-v4-flash"
+context_window = 1000000
+auth = "none"
+
+[providers.cch]
+type = "openai-compatible"
+base_url = "http://cch.skytech.io"
+api = "anthropic"
+auth = "header"
+auth_header = "x-api-key"
+api_key_env = "DEEPSEEK_API_KEY"
+default_model = "deepseek-v4-flash"
+
+[[providers.cch.models]]
+id = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 1000000
+
+[[providers.cch.models]]
+id = "MiniMax-M3"
+api_key_env = "MINIMAX_API_KEY"
+context_window = 1000000
+
+[[providers.cch.models]]
+id = "glm-5.2"
+api_key_env = "GLM_API_KEY"
+context_window = 1000000
+
+[[providers.cch.models]]
+id = "kimi-k3"
+api_key_env = "KIMI_API_KEY"
+context_window = 1000000
+
+[[providers.cch.models]]
+id = "mimo-v2.5-pro"
+api_key_env = "XIAOMI_MIMO_API_KEY"
+context_window = 1000000
+"#,
+            )
+            .expect("write test config.toml");
+            crate::env::set_var("DEEPSEEK_API_KEY", "sk-deepseek");
+            crate::env::set_var("MINIMAX_API_KEY", "sk-minimax");
+            crate::env::set_var("GLM_API_KEY", "sk-glm");
+            crate::env::set_var("KIMI_API_KEY", "sk-kimi");
+            crate::env::set_var("XIAOMI_MIMO_API_KEY", "sk-mimo");
+            crate::config::invalidate_config_cache();
+
+            let template = MultiProvider::new_fast();
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            assert_eq!(
+                ProviderRegistry::new(&template)
+                    .active_compatible_profile_id()
+                    .as_deref(),
+                Some("cch")
+            );
+
+            // /model picker route catalog: every configured model across both
+            // providers must be listed.
+            let routes = template.model_routes();
+            for expected in [
+                ("cc-switch", "deepseek-v4-flash"),
+                ("cch", "deepseek-v4-flash"),
+                ("cch", "MiniMax-M3"),
+                ("cch", "glm-5.2"),
+                ("cch", "kimi-k3"),
+                ("cch", "mimo-v2.5-pro"),
+            ] {
+                assert!(
+                    routes.iter().any(|r| r.provider == expected.0 && r.model == expected.1),
+                    "picker must list {expected:?}; got: {:?}",
+                    routes
+                        .iter()
+                        .map(|r| (r.provider.as_str(), r.model.as_str()))
+                        .collect::<Vec<_>>()
+                );
+            }
+            assert!(
+                routes.iter().all(|r| r.available),
+                "all configured named routes must be switchable: {:?}",
+                routes
+                    .iter()
+                    .map(|r| (r.provider.as_str(), r.model.as_str(), r.available))
+                    .collect::<Vec<_>>()
+            );
+
+            let session = template.fork_for_new_session();
+            // Bare-id switch within the default cch provider.
+            session
+                .set_model("MiniMax-M3")
+                .expect("in-session switch to MiniMax-M3");
+            assert_eq!(session.model(), "MiniMax-M3");
+            // Prefixed picker route to another cch model.
+            session
+                .set_model("cch:glm-5.2")
+                .expect("prefixed switch to glm-5.2");
+            assert_eq!(session.model(), "glm-5.2");
+            // Cross-provider switch to the local cc-switch gateway.
+            session
+                .set_model("cc-switch:deepseek-v4-flash")
+                .expect("switch to cc-switch");
+            assert_eq!(session.model(), "deepseek-v4-flash");
+            assert_eq!(session.display_name(), "cc-switch");
         });
     });
 }
