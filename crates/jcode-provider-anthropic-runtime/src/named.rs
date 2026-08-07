@@ -984,6 +984,33 @@ impl Provider for NamedAnthropicProvider {
         self.available_models_display()
     }
 
+    fn model_routes(&self) -> Vec<jcode_provider_core::ModelRoute> {
+        use jcode_provider_core::ModelRoute;
+        let provider_configured = !matches!(self.fallback_auth, NamedAnthropicAuth::Missing { .. });
+        let mut seen = std::collections::HashSet::new();
+        let mut routes = Vec::new();
+        for model in self.available_models_display() {
+            if !seen.insert(model.clone()) {
+                continue;
+            }
+            let available = provider_configured
+                && !matches!(
+                    self.per_model_auth.get(&model.to_ascii_lowercase()),
+                    Some(NamedAnthropicAuth::Missing { .. })
+                );
+            routes.push(ModelRoute {
+                model,
+                provider: self.profile_name.clone(),
+                api_method: format!("openai-compatible:{}", self.profile_name),
+                available,
+                detail: self.api_base.clone(),
+                cheapness: None,
+                capability: None,
+            });
+        }
+        routes
+    }
+
     async fn prefetch_models(&self) -> Result<()> {
         // 未指定默认模型（cc-switch 本地网关等）：自动发现并选择当前
         // provider 的模型，跟随面板切换。其余场景仅 `model_catalog` 开启
