@@ -136,7 +136,15 @@ pub struct NamedAnthropicProvider {
     /// Messages endpoint is derived as `{base}/v1/messages` (or used verbatim
     /// when `base` already ends in `/messages`).
     api_base: String,
-    auth: NamedAnthropicAuth,
+    /// Current auth (provider-level or the active model's override), refreshed
+    /// on every `set_model`.
+    auth: Arc<std::sync::RwLock<NamedAnthropicAuth>>,
+    /// Provider-level fallback auth used by models without their own override.
+    fallback_auth: NamedAnthropicAuth,
+    /// Per-model auth overrides (keyed by lowercased model id), built from
+    /// each `[[providers.<name>.models]]` entry's `api_key_env` / `auth` /
+    /// `auth_header` / `env_file`.
+    per_model_auth: HashMap<String, NamedAnthropicAuth>,
     profile_name: String,
     supports_model_catalog: bool,
     static_models: Vec<String>,
@@ -166,8 +174,17 @@ impl NamedAnthropicProvider {
         }
     }
 
+    /// Snapshot of the currently active auth (provider-level or the active
+    /// model's override).
+    fn auth(&self) -> NamedAnthropicAuth {
+        self.auth
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     async fn fetch_models(&self) -> Result<Vec<String>> {
-        let models = fetch_gateway_catalog(&self.client, &self.api_base, &self.auth).await?;
+        let models = fetch_gateway_catalog(&self.client, &self.api_base, &self.auth()).await?;
         if let Ok(mut cache) = self.models_cache.try_write() {
             *cache = models.clone();
         }
@@ -192,21 +209,18 @@ impl NamedAnthropicProvider {
         Ok(true)
     }
 
-    fn resolve_named_key(profile: &NamedProviderConfig) -> Option<String> {
-        let env_key = profile
-            .api_key_env
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty());
-        if let Some(env_key) = env_key {
-            // 统一 `<jcode home>/.env` 是密钥的权威来源（resonix 对齐），
-            // 无论是否配置 env_file 都必须先查它。未配置 env_file 时使用
-            // 一个安全但通常不存在的回退文件名，让
-            // `load_api_key_from_env_or_config` 的查找顺序生效：统一 .env
-            // -> 进程环境变量 -> 旧分散文件（缺失时静默回退）。
-            let env_file = profile
-                .env_file
-                .as_deref()
+    fn resolve_key(
+        env_key: Option<&str>,
+        inline_key: Option<&str>,
+        env_file: Option<&str>,
+    ) -> Option<String> {
+        if let Some(env_key) = env_key.map(str::trim).filter(|v| !v.is_empty()) {
+            // The unified `<jcode home>/.env` is the authoritative key source
+            // (resonix-aligned): even without an explicit env_file, consult it
+            // first via a safe fallback filename so
+            // `load_api_key_from_env_or_config`'s lookup order applies
+            // (unified .env -> process env -> legacy scattered files).
+            let env_file = env_file
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
                 .unwrap_or("named-provider.env");
@@ -214,7 +228,18 @@ impl NamedAnthropicProvider {
                 env_key, env_file,
             );
         }
-        profile.api_key.clone()
+        inline_key
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string)
+    }
+
+    fn resolve_named_key(profile: &NamedProviderConfig) -> Option<String> {
+        Self::resolve_key(
+            profile.api_key_env.as_deref(),
+            profile.api_key.as_deref(),
+            profile.env_file.as_deref(),
+        )
     }
 
     /// Build the runtime for a named Anthropic-format profile.
@@ -237,7 +262,7 @@ impl NamedAnthropicProvider {
             .filter(|v| !v.is_empty())
             .map(ToString::to_string)
             .unwrap_or_else(|| "inline api_key".to_string());
-        let auth = match profile.auth {
+        let fallback_auth = match profile.auth {
             NamedProviderAuth::None => NamedAnthropicAuth::None {
                 label: "local endpoint (no auth)".to_string(),
             },
@@ -296,12 +321,75 @@ impl NamedAnthropicProvider {
             .ok()
             .and_then(|v| v.trim().parse::<u32>().ok());
 
+        // Per-model auth overrides: each `[[providers.<name>.models]]` entry may
+        // carry its own `api_key_env` / `auth` / `auth_header` / `env_file` so a
+        // gateway serving several vendors (cch: DeepSeek / MiniMax / GLM / Kimi /
+        // Xiaomi) uses the right key after `/model` switching.
+        let mut per_model_auth: HashMap<String, NamedAnthropicAuth> = HashMap::new();
+        for model_entry in &profile.models {
+            let id = model_entry.id.trim();
+            if id.is_empty()
+                || (model_entry.api_key_env.is_none()
+                    && model_entry.auth.is_none()
+                    && model_entry.auth_header.is_none()
+                    && model_entry.env_file.is_none())
+            {
+                continue;
+            }
+            let auth_mode = model_entry.auth.unwrap_or(profile.auth);
+            let header = model_entry
+                .auth_header
+                .as_deref()
+                .or(profile.auth_header.as_deref());
+            let env_file = model_entry.env_file.as_deref().or(profile.env_file.as_deref());
+            let key = Self::resolve_key(
+                model_entry.api_key_env.as_deref(),
+                profile.api_key.as_deref(),
+                env_file,
+            );
+            let label = model_entry
+                .api_key_env
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "inline api_key".to_string());
+            let model_auth = match auth_mode {
+                NamedProviderAuth::None => NamedAnthropicAuth::None {
+                    label: "local endpoint (no auth)".to_string(),
+                },
+                NamedProviderAuth::Bearer => match key {
+                    Some(token) => NamedAnthropicAuth::Bearer { token, label },
+                    None => NamedAnthropicAuth::Missing { label },
+                },
+                NamedProviderAuth::Header => match key {
+                    Some(value) => NamedAnthropicAuth::Header {
+                        header_name: HeaderName::from_bytes(
+                            header.unwrap_or("api-key").as_bytes(),
+                        )?,
+                        value,
+                        label,
+                    },
+                    None => NamedAnthropicAuth::Missing { label },
+                },
+            };
+            per_model_auth.insert(id.to_ascii_lowercase(), model_auth);
+        }
+
+        let initial_model_key = model.to_ascii_lowercase();
         Ok(Self {
             client: jcode_provider_core::http_client_with_proxy(profile.proxy.as_deref())?,
             model: Arc::new(std::sync::RwLock::new(model)),
             reasoning_effort: Arc::new(std::sync::RwLock::new(reasoning_effort)),
             api_base,
-            auth,
+            auth: Arc::new(std::sync::RwLock::new(
+                per_model_auth
+                    .get(&initial_model_key)
+                    .cloned()
+                    .unwrap_or_else(|| fallback_auth.clone()),
+            )),
+            fallback_auth,
+            per_model_auth,
             profile_name: profile_name.to_string(),
             supports_model_catalog: profile.model_catalog,
             static_models,
@@ -390,7 +478,8 @@ impl NamedAnthropicProvider {
     ) {
         let client = self.client.clone();
         let api_base = self.api_base.clone();
-        let auth = self.auth.clone();
+        let per_model_auth = self.per_model_auth.clone();
+        let fallback_auth = self.fallback_auth.clone();
         let model_state = Arc::clone(&self.model);
         tokio::spawn(async move {
             let token = token;
@@ -400,6 +489,15 @@ impl NamedAnthropicProvider {
             let original_model = model_name.clone();
             let mut model_name = model_name;
             let mut tried_models: Vec<String> = vec![original_model.clone()];
+            // Per-model auth: recompute per attempt so a catalog-following
+            // fallback to another model (cc-switch auto-follow) uses that
+            // model's own key/header.
+            let auth_for = |model: &str| {
+                per_model_auth
+                    .get(&model.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| fallback_auth.clone())
+            };
 
             for attempt in 0..MAX_RETRIES {
                 if attempt > 0 {
@@ -434,6 +532,7 @@ impl NamedAnthropicProvider {
                 };
 
                 let url = Self::messages_url(&api_base);
+                let auth = auth_for(&model_name);
                 match stream_response_named(
                     attempt_client,
                     &url,
@@ -552,9 +651,13 @@ impl Default for NamedAnthropicProvider {
             model: Arc::new(std::sync::RwLock::new(model.clone())),
             reasoning_effort: Arc::new(std::sync::RwLock::new(None)),
             api_base: "https://api.anthropic.com".to_string(),
-            auth: NamedAnthropicAuth::None {
+            auth: Arc::new(std::sync::RwLock::new(NamedAnthropicAuth::None {
+                label: "unconfigured".to_string(),
+            })),
+            fallback_auth: NamedAnthropicAuth::None {
                 label: "unconfigured".to_string(),
             },
+            per_model_auth: HashMap::new(),
             profile_name: "anthropic".to_string(),
             supports_model_catalog: false,
             static_models: Vec::new(),
@@ -770,7 +873,8 @@ impl Provider for NamedAnthropicProvider {
         log_anthropic_canonical_input(&model, "anthropic_messages", &request, false, false);
 
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
-        let token = match &self.auth {
+        let auth = self.auth();
+        let token = match &auth {
             NamedAnthropicAuth::Bearer { token, .. } => token.clone(),
             NamedAnthropicAuth::Header { value, .. } => value.clone(),
             NamedAnthropicAuth::None { .. } | NamedAnthropicAuth::Missing { .. } => String::new(),
@@ -816,6 +920,17 @@ impl Provider for NamedAnthropicProvider {
             .model
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = model.to_string();
+        // Per-model auth (api_key_env / auth / auth_header) follows the active
+        // model so switching between vendors on one gateway uses the right key.
+        let next_auth = self
+            .per_model_auth
+            .get(&model.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_else(|| self.fallback_auth.clone());
+        *self
+            .auth
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_auth;
         Ok(())
     }
 
@@ -928,7 +1043,9 @@ impl Provider for NamedAnthropicProvider {
                     .unwrap_or_else(|poisoned| poisoned.into_inner().clone()),
             )),
             api_base: self.api_base.clone(),
-            auth: self.auth.clone(),
+            auth: Arc::clone(&self.auth),
+            fallback_auth: self.fallback_auth.clone(),
+            per_model_auth: self.per_model_auth.clone(),
             profile_name: self.profile_name.clone(),
             supports_model_catalog: self.supports_model_catalog,
             static_models: self.static_models.clone(),
@@ -943,7 +1060,9 @@ impl Provider for NamedAnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jcode_base::config::{NamedProviderAuth, NamedProviderConfig, ProviderApiFormat};
+    use jcode_base::config::{
+        NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, ProviderApiFormat,
+    };
 
     /// One-shot `/models` mock: serves `body` to the first request.
     fn spawn_models_server(body: &'static str) -> String {
@@ -1008,7 +1127,7 @@ mod tests {
         };
         let provider = NamedAnthropicProvider::new_named("test-gw", &profile)
             .expect("named anthropic provider should construct");
-        match &provider.auth {
+        match provider.auth() {
             NamedAnthropicAuth::Bearer { token, .. } => {
                 assert_eq!(token, "sk-from-unified-env");
             }
@@ -1141,5 +1260,86 @@ mod tests {
         provider.prefetch_models().await.unwrap();
         let after = provider.available_models_display();
         assert_eq!(after, vec!["deepseek-v4-flash", "deepseek-v4-pro"]);
+    }
+
+    #[test]
+    fn per_model_api_key_env_switches_auth_on_set_model() {
+        // cch ???provider ? auth=header/x-api-key + DEEPSEEK_API_KEY?
+        // ? MiniMax-M3 ??????? api_key_env????????? key?
+        let _guard = jcode_base::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let saved_home = std::env::var_os("JCODE_HOME");
+        let saved_deepseek = std::env::var_os("CCH_KEY_DEEPSEEK");
+        let saved_minimax = std::env::var_os("CCH_KEY_MINIMAX");
+        jcode_base::env::set_var("JCODE_HOME", temp.path());
+        std::fs::write(
+            temp.path().join(".env"),
+            "CCH_KEY_DEEPSEEK=sk-deepseek
+CCH_KEY_MINIMAX=sk-minimax
+",
+        )
+        .expect("write unified .env");
+
+        let profile = NamedProviderConfig {
+            base_url: "http://cch.skytech.io".to_string(),
+            api_format: Some(ProviderApiFormat::Anthropic),
+            auth: NamedProviderAuth::Header,
+            auth_header: Some("x-api-key".to_string()),
+            api_key_env: Some("CCH_KEY_DEEPSEEK".to_string()),
+            default_model: Some("deepseek-v4-flash".to_string()),
+            models: vec![
+                NamedProviderModelConfig {
+                    id: "deepseek-v4-flash".to_string(),
+                    ..NamedProviderModelConfig::default()
+                },
+                NamedProviderModelConfig {
+                    id: "MiniMax-M3".to_string(),
+                    api_key_env: Some("CCH_KEY_MINIMAX".to_string()),
+                    ..NamedProviderModelConfig::default()
+                },
+            ],
+            ..NamedProviderConfig::default()
+        };
+        let provider = NamedAnthropicProvider::new_named("cch", &profile).expect("construct");
+
+        match provider.auth() {
+            NamedAnthropicAuth::Header { value, header_name, label } => {
+                assert_eq!(value, "sk-deepseek");
+                assert_eq!(header_name.as_str(), "x-api-key");
+                assert_eq!(label, "CCH_KEY_DEEPSEEK");
+            }
+            other => panic!("expected provider-level Header auth, got: {other:?}"),
+        }
+
+        provider.set_model("MiniMax-M3").expect("switch to MiniMax");
+        match provider.auth() {
+            NamedAnthropicAuth::Header { value, label, .. } => {
+                assert_eq!(value, "sk-minimax", "per-model key must follow the switch");
+                assert_eq!(label, "CCH_KEY_MINIMAX");
+            }
+            other => panic!("expected per-model Header auth, got: {other:?}"),
+        }
+
+        // ????????????? provider ? key?
+        provider.set_model("deepseek-v4-flash").expect("switch back");
+        match provider.auth() {
+            NamedAnthropicAuth::Header { value, .. } => assert_eq!(value, "sk-deepseek"),
+            other => panic!("expected fallback Header auth, got: {other:?}"),
+        }
+
+        if let Some(home) = saved_home {
+            jcode_base::env::set_var("JCODE_HOME", home);
+        } else {
+            jcode_base::env::remove_var("JCODE_HOME");
+        }
+        for (key, value) in [
+            ("CCH_KEY_DEEPSEEK", saved_deepseek),
+            ("CCH_KEY_MINIMAX", saved_minimax),
+        ] {
+            match value {
+                Some(value) => jcode_base::env::set_var(key, value),
+                None => jcode_base::env::remove_var(key),
+            }
+        }
     }
 }
