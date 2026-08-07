@@ -1755,6 +1755,42 @@ fn named_openai_compatible_loads_api_key_from_env_file() {
         .expect("provider should load key from env file");
 }
 
+/// 统一 `<jcode home>/.env` 是密钥的权威来源（resonix 对齐）：未配置
+/// `env_file` 的 named profile 也必须从统一 .env 解析 `api_key_env` 指向
+/// 的 key，而不是只看进程环境变量（回归测试）。
+#[test]
+fn named_openai_compatible_loads_api_key_from_unified_env_without_env_file() {
+    let _lock = ENV_LOCK.lock();
+    let temp = TempDir::new().expect("create temp dir");
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+    let _api_key = EnvVarGuard::remove("CUSTOM_API_KEY");
+    std::fs::create_dir_all(temp.path()).expect("create temp dir");
+    std::fs::write(
+        temp.path().join(".env"),
+        "CUSTOM_API_KEY=from-unified-env\n",
+    )
+    .expect("write unified .env");
+
+    let config = jcode_base::config::NamedProviderConfig {
+        base_url: "https://compat.example.test/v1".to_string(),
+        api_key_env: Some("CUSTOM_API_KEY".to_string()),
+        // env_file 故意留空：必须走统一 .env 而非仅进程环境。
+        env_file: None,
+        default_model: Some("custom-model".to_string()),
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("custom", &config)
+        .expect("provider should construct");
+    match &provider.auth {
+        ProviderAuth::AuthorizationBearer { token, .. } => {
+            assert_eq!(token, "from-unified-env");
+        }
+        other => panic!("expected bearer auth from unified .env, got: {other:?}"),
+    }
+}
+
 #[test]
 fn custom_compatible_provider_preserves_claude_like_model_ids() {
     let provider = make_custom_compatible_provider();

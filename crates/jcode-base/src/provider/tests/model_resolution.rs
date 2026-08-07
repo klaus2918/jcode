@@ -107,8 +107,6 @@ fn test_available_models_display_uses_route_models_and_filters_placeholder_rows(
 }
 
 #[test]
-
-#[test]
 fn test_direct_chutes_ignores_legacy_openrouter_catalog_cache() {
     with_clean_provider_test_env(|| {
         let temp_home = tempfile::tempdir().expect("temp HOME");

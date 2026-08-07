@@ -473,10 +473,7 @@ impl MultiProvider {
         .map(|(tag, _)| *tag)
         .collect::<Vec<_>>()
         .join(",");
-        let allowlist = crate::config::config()
-            .provider
-            .model_picker_providers
-            .clone()
+        let allowlist = crate::provider_catalog::configured_picker_provider_allowlist()
             .unwrap_or_default()
             .join(",");
         format!(
@@ -831,9 +828,7 @@ impl MultiProvider {
         model: &str,
     ) -> Option<(crate::provider_catalog::OpenAiCompatibleProfile, &str)> {
         // resonix 对齐：`profile/model` 斜杠引用作为冒号前缀的别名。
-        let (prefix, rest) = model
-            .split_once(':')
-            .or_else(|| model.split_once('/'))?;
+        let (prefix, rest) = model.split_once(':').or_else(|| model.split_once('/'))?;
         if explicit_model_provider_prefix(model).is_some() {
             return None;
         }
@@ -930,9 +925,7 @@ impl MultiProvider {
     /// prefixes and catalog profile ids take precedence and never reach here.
     fn named_provider_profile_model_prefix(model: &str) -> Option<(String, String)> {
         // resonix 对齐：`profile/model` 斜杠引用作为冒号前缀的别名。
-        let (prefix, rest) = model
-            .split_once(':')
-            .or_else(|| model.split_once('/'))?;
+        let (prefix, rest) = model.split_once(':').or_else(|| model.split_once('/'))?;
         if explicit_model_provider_prefix(model).is_some()
             || Self::openai_compatible_model_prefix(model).is_some()
         {
@@ -1465,13 +1458,11 @@ impl MultiProvider {
     }
 
     fn ensure_model_switch_allowed(&self, requested: &str) -> Result<()> {
-        let Some(allowlist) = crate::config::config()
-            .provider
-            .model_picker_providers
-            .as_deref()
+        let Some(allowlist) = crate::provider_catalog::configured_picker_provider_allowlist()
         else {
             return Ok(());
         };
+        let allowlist = allowlist.as_slice();
         if allowlist.iter().all(|entry| entry.trim().is_empty()) {
             return Ok(());
         }
@@ -1573,13 +1564,10 @@ fn provider_core_allowlist_filtered_routes(
     provider: &MultiProvider,
     routes: Vec<ModelRoute>,
 ) -> Vec<ModelRoute> {
-    let Some(allowlist) = crate::config::config()
-        .provider
-        .model_picker_providers
-        .as_deref()
-    else {
+    let Some(allowlist) = crate::provider_catalog::configured_picker_provider_allowlist() else {
         return routes;
     };
+    let allowlist = allowlist.as_slice();
     if allowlist.iter().all(|entry| entry.trim().is_empty()) {
         return routes;
     }
@@ -1908,10 +1896,18 @@ impl Provider for MultiProvider {
         // resemble a globally known model family. Picker and slash-command
         // route specs carry explicit prefixes, so the branch above can switch
         // to any configured provider at any time.
+        //
+        // Exception (resonix multi-provider setup): when the bare id belongs to
+        // a *different* configured named provider (or openai-compatible
+        // profile), it is a cross-provider switch request and must not be
+        // trapped on the active endpoint. The owning-profile resolution below
+        // then routes it to the right runtime.
         if self.active_provider() == ActiveProvider::OpenRouter
             && self
                 .active_openrouter_execution_provider()
                 .is_some_and(|provider| !provider.supports_provider_routing_features())
+            && self.named_provider_profile_owning_model(model).is_none()
+            && self.openai_compatible_profile_owning_model(model).is_none()
         {
             return self.set_model_on_provider(ActiveProvider::OpenRouter, requested_model);
         }
@@ -1974,47 +1970,25 @@ impl Provider for MultiProvider {
         // Cycle-model switching must respect the same `model_picker_providers`
         // allowlist as /model, otherwise Ctrl+Tab cycles through providers the
         // user configured out of the picker. Derive the cycle list from the
-        // allowlist-filtered route memo (the same catalog /model shows), scoped
-        // to the currently active provider so cycle stays on the active
-        // endpoint's models.
-        let allowlist = crate::config::config()
-            .provider
-            .model_picker_providers
-            .clone()
+        // allowlist-filtered route memo (the same catalog /model shows).
+        //
+        // In config-driven mode the allowlist is the set of configured named
+        // providers (resonix `[[providers]]`), and /model lists every one of
+        // them. Cycle must expose the same set so Ctrl+Tab / server cycling can
+        // reach every configured model; scoping to the active endpoint would
+        // hide the other configured providers (kimi, GLM, minimax, ...) and
+        // make them unreachable by cycle even though the picker shows them.
+        // The built-in (non-allowlist) path below still scopes to the active
+        // provider, matching the legacy single-endpoint behavior.
+        let allowlist = crate::provider_catalog::configured_picker_provider_allowlist()
             .unwrap_or_default();
         let has_allowlist = !allowlist.iter().all(|entry| entry.trim().is_empty());
-        let current = self.model();
-        let active_key = Self::provider_key(self.active_provider());
-        let active_profile = self
-            .active_openai_compatible_profile
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
         let models = if has_allowlist {
-            // Allowlist path: reuse the already-filtered catalog so cycle and
-            // /model always agree, and scope to routes that belong to the
-            // active runtime (profile or provider key).
+            // Allowlist path: reuse the already-filtered catalog (it contains
+            // only the configured providers) so cycle and /model always agree.
             self.fresh_routes_memo_entry()
                 .routes
                 .iter()
-                .filter(|route| {
-                    let belongs = active_profile
-                        .as_deref()
-                        .map(|profile_id| {
-                            route
-                                .api_method
-                                .strip_prefix("openai-compatible:")
-                                .is_some_and(|id| id == profile_id)
-                        })
-                        .unwrap_or_else(|| {
-                            jcode_provider_core::model_route_provider_matches_key(
-                                Some(&route.api_method),
-                                &route.provider,
-                                active_key,
-                            )
-                        });
-                    belongs || route.model == current
-                })
                 .map(|route| route.model.clone())
                 .collect::<Vec<_>>()
         } else {
