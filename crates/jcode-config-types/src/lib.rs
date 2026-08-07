@@ -560,6 +560,26 @@ pub struct NamedProviderModelConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub output_limit_field: Option<String>,
+    /// API key environment variable for this model. Overrides the provider-wide
+    /// `api_key_env` when the endpoint serves multiple models with different
+    /// keys (e.g. a gateway with per-vendor keys).
+    #[serde(
+        default,
+        alias = "api-key-env",
+        alias = "api_key_env",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_key_env: Option<String>,
+    /// Auth mode override for this model (e.g. `auth = "none"` for a keyless
+    /// gateway model). Falls back to the provider-wide `auth` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<NamedProviderAuth>,
+    /// Auth header name override for this model (used with `auth = "header"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header: Option<String>,
+    /// env file override for this model's key (defaults to the unified .env).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
 }
 
 /// Provider/model pricing (resonix `price` / `prices` entries), per 1M tokens.

@@ -365,7 +365,7 @@ Two rules to remember:
 - **The model is always required.** The proxy only forwards requests, it never picks a model for you, so `default_model` (and the `models` list) must use model names your enabled CC Switch provider supports.
 - **The key is not required.** Set `auth = "none"`; CC Switch injects the real key at the proxy. Switch providers inside CC Switch, not in jcode.
 
-See [docs/PROVIDER_MIGRATION_GUIDE.md](docs/PROVIDER_MIGRATION_GUIDE.md) for the full guide.
+See [docs/Provider杩佺Щ鎸囧崡.md](docs/Provider杩佺Щ鎸囧崡.md) for the full guide.
 
 ### Config-file setup for self-hosted endpoints and MCP
 
@@ -682,15 +682,15 @@ specific browser or testing backend.
 - [jcode.sh/docs](https://jcode.sh/docs) — install, providers, configuration, keybindings
 - [jcode.sh/swarm](https://jcode.sh/swarm) — many coding agents in one repository
 - [jcode.sh/bench](https://jcode.sh/bench) — benchmark methodology and results
-- [Ambient Mode / OpenClaw](docs/AMBIENT_MODE.md)
-- [Memory Architecture](docs/MEMORY_ARCHITECTURE.md)
-- [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
-- [Server Architecture](docs/SERVER_ARCHITECTURE.md)
-- [Safety System](docs/SAFETY_SYSTEM.md)
-- [Sponsored Discovery Sponsor Onboarding](docs/SPONSORED_DISCOVERY_SPONSOR_ONBOARDING.md)
-- [Windows Notes](docs/WINDOWS.md)
-- [Wrappers and Shell Integration](docs/WRAPPERS.md)
-- [Refactoring Notes](docs/REFACTORING.md)
+- [鐜妯″紡 / OpenClaw](docs/鐜妯″紡.md)
+- [璁板繂鏋舵瀯](docs/璁板繂鏋舵瀯.md)
+- [闆嗙兢鏋舵瀯](docs/闆嗙兢鏋舵瀯.md)
+- [鏈嶅姟鍣ㄦ灦鏋刔(docs/鏈嶅姟鍣ㄦ灦鏋?md)
+- [瀹夊叏绯荤粺](docs/瀹夊叏绯荤粺.md)
+- [璧炲姪鍙戠幇涓庤禐鍔╂柟鎺ュ叆](docs/璧炲姪鍙戠幇涓庤禐鍔╂柟鎺ュ叆.md)
+- [Windows 璇存槑](docs/Windows骞冲彴.md)
+- [鍖呰鑴氭湰涓?Shell 闆嗘垚](docs/鍖呰鑴氭湰鎸囧崡.md)
+- [閲嶆瀯璇存槑](docs/閲嶆瀯璺嚎鍥?md)
 
 ---
 
@@ -778,7 +778,7 @@ irm https://jcode.sh/install.ps1 | iex
 The Windows installer selects the correct architecture and verifies the download
 against the release's `SHA256SUMS`. Alacritty and the optional global launch
 hotkey require explicit consent and are not installed by default. See
-[Windows support, security, Defender, and SmartScreen notes](docs/WINDOWS.md).
+[Windows 鏀寔銆佸畨鍏ㄣ€丏efender 鍜?SmartScreen 璇存槑](docs/Windows骞冲彴.md).
 
 If a release does not contain a matching Windows asset, the installer stops
 instead of unexpectedly starting a long compilation. An explicit source build
