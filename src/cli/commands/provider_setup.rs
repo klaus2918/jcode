@@ -17,7 +17,7 @@ use crate::provider_catalog::{
 pub(crate) struct ProviderAddOptions {
     pub name: String,
     pub base_url: String,
-    pub model: String,
+    pub model: Option<String>,
     pub context_window: Option<usize>,
     pub api_key_env: Option<String>,
     pub api_key: Option<String>,
@@ -104,12 +104,19 @@ pub(crate) fn configure_provider_profile(
             options.base_url
         )
     })?;
-    let model = options.model.trim().to_string();
-    if model.is_empty() {
-        anyhow::bail!("--model cannot be empty");
-    }
+    // 模型可选：省略时 default_model/models 留空，运行期由网关的模型目录
+    // 自动发现并跟随（cc-switch 本地代理等场景）；指定时固定使用。
+    let model = options
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
     if matches!(options.context_window, Some(0)) {
         anyhow::bail!("--context-window must be greater than 0");
+    }
+    if model.is_none() && options.context_window.is_some() {
+        anyhow::bail!("--context-window requires --model");
     }
 
     let api_key = read_api_key(&options)?;
@@ -187,25 +194,21 @@ pub(crate) fn configure_provider_profile(
         api_key_env: api_key_env.clone(),
         api_key: None,
         env_file: env_file.clone(),
-        default_model: Some(model.clone()),
+        default_model: model.clone(),
         requires_api_key: Some(uses_auth),
         provider_routing: options.provider_routing,
         model_catalog: options.model_catalog,
         allow_provider_pinning: options.provider_routing,
-        models: vec![NamedProviderModelConfig {
-            id: model.clone(),
-            context_window: options.context_window,
-            input: Vec::new(),
-            vision: None,
-            tools: None,
-            reasoning_protocol: None,
-            supported_efforts: None,
-            default_effort: None,
-            output_window: None,
-            temperature_supported: None,
-            fixed_sampling: None,
-            output_limit_field: None,
-        }],
+        models: model
+            .as_ref()
+            .map(|model| {
+                vec![NamedProviderModelConfig {
+                    id: model.clone(),
+                    context_window: options.context_window,
+                    ..NamedProviderModelConfig::default()
+                }]
+            })
+            .unwrap_or_default(),
         extra_body: None,
         supports_reasoning_effort: None,
         ..NamedProviderConfig::default()
@@ -232,7 +235,7 @@ pub(crate) fn configure_provider_profile(
         content
     };
     if options.set_default {
-        updated = upsert_provider_defaults(updated, &name, &model);
+        updated = upsert_provider_defaults(updated, &name, model.as_deref());
     }
     updated = append_profile_section(updated, &name, &profile);
 
@@ -259,7 +262,9 @@ pub(crate) fn configure_provider_profile(
         profile: name.clone(),
         config_path: path_to_string(config_path),
         api_base,
-        model: model.clone(),
+        model: model
+            .clone()
+            .unwrap_or_else(|| "(auto; follows gateway /models)".to_string()),
         api_key_env,
         env_file,
         env_file_path,
@@ -267,9 +272,12 @@ pub(crate) fn configure_provider_profile(
         auth: auth_label(&auth).to_string(),
         default_set: options.set_default,
         run_command: format!(
-            "jcode --provider-profile {} --model {} run 'hello'",
+            "jcode --provider-profile {}{} run 'hello'",
             shell_quote(&name),
-            shell_quote(&model)
+            model
+                .as_deref()
+                .map(|model| format!(" --model {}", shell_quote(model)))
+                .unwrap_or_default()
         ),
         auth_test_command: format!(
             "jcode --provider-profile {} auth-test --prompt {}",
@@ -489,14 +497,18 @@ fn append_profile_section(
     content
 }
 
-fn upsert_provider_defaults(content: String, profile: &str, model: &str) -> String {
+fn upsert_provider_defaults(content: String, profile: &str, model: Option<&str>) -> String {
     let mut lines = split_lines_lossy(&content);
     let provider_idx = lines.iter().position(|line| line.trim() == "[provider]");
 
     let Some(idx) = provider_idx else {
         let mut prefix = String::from("[provider]\n");
         prefix.push_str(&format!("default_provider = {}\n", toml_quote(profile)));
-        prefix.push_str(&format!("default_model = {}\n\n", toml_quote(model)));
+        if let Some(model) = model {
+            prefix.push_str(&format!("default_model = {}\n\n", toml_quote(model)));
+        } else {
+            prefix.push('\n');
+        }
         if content.trim().is_empty() {
             return prefix;
         }
@@ -518,20 +530,22 @@ fn upsert_provider_defaults(content: String, profile: &str, model: &str) -> Stri
         "default_provider",
         &toml_quote(profile),
     );
-    let end = lines
-        .iter()
-        .enumerate()
-        .skip(idx + 1)
-        .find(|(_, line)| is_toml_header(line))
-        .map(|(line_idx, _)| line_idx)
-        .unwrap_or(lines.len());
-    upsert_key_in_range(
-        &mut lines,
-        idx + 1,
-        end,
-        "default_model",
-        &toml_quote(model),
-    );
+    if let Some(model) = model {
+        let end = lines
+            .iter()
+            .enumerate()
+            .skip(idx + 1)
+            .find(|(_, line)| is_toml_header(line))
+            .map(|(line_idx, _)| line_idx)
+            .unwrap_or(lines.len());
+        upsert_key_in_range(
+            &mut lines,
+            idx + 1,
+            end,
+            "default_model",
+            &toml_quote(model),
+        );
+    }
 
     join_lines(lines)
 }
@@ -745,7 +759,7 @@ mod tests {
         ProviderAddOptions {
             name: "my-api".to_string(),
             base_url: "https://llm.example.com/v1".to_string(),
-            model: "model-a".to_string(),
+            model: Some("model-a".to_string()),
             context_window: Some(128_000),
             api_key_env: None,
             api_key: Some("secret-test-key".to_string()),
@@ -884,6 +898,54 @@ mod tests {
         let parsed: Config = toml::from_str(&config).expect("valid config");
         let profile = parsed.providers.get("gw-http").expect("profile");
         assert_eq!(profile.base_url, "http://gateway.example.com");
+    }
+
+    #[test]
+    fn provider_add_omits_model_for_auto_discovery_gateway() {
+        // cc-switch 本地代理等网关场景：省略 --model 时配置不写死模型，
+        // default_model/models 留空，运行期由 /models 目录自动发现跟随。
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(&config_path, "").expect("write config");
+
+        let mut options = base_options();
+        options.name = "cc-switch".to_string();
+        options.base_url = "http://127.0.0.1:15721".to_string();
+        options.model = None;
+        options.context_window = None;
+        options.api_key = None;
+        options.no_api_key = true;
+        options.auth = None;
+        options.set_default = false;
+        options.model_catalog = true;
+        options.api = Some(crate::cli::args::ProviderApiFormatArg::Anthropic);
+
+        let report = configure_provider_profile(options).expect("configure provider");
+        assert!(
+            report.model.contains("auto"),
+            "report should advertise auto-follow, got: {}",
+            report.model
+        );
+        assert!(!report.run_command.contains("--model"));
+        let config = std::fs::read_to_string(&config_path).expect("read config");
+        assert!(!config.contains("default_model"));
+        assert!(!config.contains("models"));
+
+        let parsed: Config = toml::from_str(&config).expect("valid config");
+        let profile = parsed.providers.get("cc-switch").expect("profile");
+        assert_eq!(profile.base_url, "http://127.0.0.1:15721");
+        assert_eq!(
+            profile.api_format,
+            Some(crate::config::ProviderApiFormat::Anthropic)
+        );
+        assert!(profile.default_model.is_none(), "no pinned default model");
+        assert!(profile.models.is_empty(), "no static models list");
+        assert!(
+            profile.model_catalog,
+            "model_catalog enables /models refresh"
+        );
     }
 
     #[test]
