@@ -347,8 +347,12 @@ jcode can also connect through a [CC Switch](https://github.com/farion1231/cc-sw
 ```toml
 [provider]
 default_provider = "cc-switch"
-default_model = "deepseek-v4-flash"
+# default_model is optional here: leave it unset to auto-follow the provider
+# you enable in CC Switch (see the two rules below), or set it to pin a model.
 
+# The canonical on-disk style is named tables: [providers.<name>] plus
+# [[providers.<name>.models]] (resonix-style top-level [[providers]] arrays
+# are accepted for migration but never written by jcode).
 [providers.cc-switch]
 type = "openai-compatible"
 base_url = "http://127.0.0.1:15721"   # address shown in the CC Switch proxy panel
@@ -356,16 +360,17 @@ api = "anthropic"                     # proxy routes this as a Claude-channel re
 auth = "none"                         # CC Switch injects the real key
 
 [[providers.cc-switch.models]]
-id = "deepseek-v4-flash"
+id = "deepseek-v4-flash"              # optional; leave unset to auto-follow the provider
 context_window = 1000000
+auth = "none"
 ```
 
 Two rules to remember:
 
-- **The model is always required.** The proxy only forwards requests, it never picks a model for you, so `default_model` (and the `models` list) must use model names your enabled CC Switch provider supports.
-- **The key is not required.** Set `auth = "none"`; CC Switch injects the real key at the proxy. Switch providers inside CC Switch, not in jcode.
+- **The model is optional.** Leave `default_model` (and the `models` list) unset and jcode fetches the proxy's model catalog (`/v1/models`) at startup, automatically picking the first model of whichever provider is currently enabled in CC Switch. Switch providers inside CC Switch and jcode follows: when a request fails because the model is unavailable, it re-fetches the catalog and retries with a catalog model. To pin a specific model, set `default_model` (or pass `--model <id>`); an explicit choice is never overridden by auto-discovery.
+- **The key is not required.** Set `auth = "none"`; CC Switch injects the real key at the proxy.
 
-See [docs/Provider杩佺Щ鎸囧崡.md](docs/Provider杩佺Щ鎸囧崡.md) for the full guide.
+See [docs/Provider迁移指南.md](docs/Provider迁移指南.md) for the full guide.
 
 ### Config-file setup for self-hosted endpoints and MCP
 
@@ -613,19 +618,11 @@ Skills are not all loaded on startup. The conversation is embedded as a semantic
 
 ---
 
-## iOS Application / Native OpenClaw
-
-A native iOS application version of jcode is coming soon. This will allow you to work with jcode on your personal machine's environment from your phone, via Tailscale. Openclaw like features will be bundled with this iOS application. 
-
----
-
 ## Other planned features
 
 Agents dont like to commit in dirty git state with active changes. Git was clearly not built for multi-agent workflows, and git worktrees is not a good solution. Given this, I believe that is an opporunity for a new git like primitive to be born. 
 
 Build speed improvements: An incremental debug cargo build with cache enabled takes about 1 minute on my machine. The goal is 5-20 seconds. Refactors and crates seams should be able to make this happen. 
-
-<!-- Add iOS / native OpenClaw preview and fuller writeup here. -->
 
 ---
 
@@ -682,15 +679,15 @@ specific browser or testing backend.
 - [jcode.sh/docs](https://jcode.sh/docs) — install, providers, configuration, keybindings
 - [jcode.sh/swarm](https://jcode.sh/swarm) — many coding agents in one repository
 - [jcode.sh/bench](https://jcode.sh/bench) — benchmark methodology and results
-- [鐜妯″紡 / OpenClaw](docs/鐜妯″紡.md)
-- [璁板繂鏋舵瀯](docs/璁板繂鏋舵瀯.md)
-- [闆嗙兢鏋舵瀯](docs/闆嗙兢鏋舵瀯.md)
-- [鏈嶅姟鍣ㄦ灦鏋刔(docs/鏈嶅姟鍣ㄦ灦鏋?md)
-- [瀹夊叏绯荤粺](docs/瀹夊叏绯荤粺.md)
-- [璧炲姪鍙戠幇涓庤禐鍔╂柟鎺ュ叆](docs/璧炲姪鍙戠幇涓庤禐鍔╂柟鎺ュ叆.md)
-- [Windows 璇存槑](docs/Windows骞冲彴.md)
-- [鍖呰鑴氭湰涓?Shell 闆嗘垚](docs/鍖呰鑴氭湰鎸囧崡.md)
-- [閲嶆瀯璇存槑](docs/閲嶆瀯璺嚎鍥?md)
+- [环境模式 / OpenClaw](docs/环境模式.md)
+- [记忆架构](docs/记忆架构.md)
+- [集群架构](docs/集群架构.md)
+- [服务器架构](docs/服务器架构.md)
+- [安全系统](docs/安全系统.md)
+- [赞助发现与赞助方接入](docs/赞助发现与赞助方接入.md)
+- [Windows 说明](docs/Windows平台.md)
+- [包装脚本与 Shell 集成](docs/包装脚本指南.md)
+- [重构说明](docs/重构路线图.md)
 
 ---
 
@@ -778,12 +775,46 @@ irm https://jcode.sh/install.ps1 | iex
 The Windows installer selects the correct architecture and verifies the download
 against the release's `SHA256SUMS`. Alacritty and the optional global launch
 hotkey require explicit consent and are not installed by default. See
-[Windows 鏀寔銆佸畨鍏ㄣ€丏efender 鍜?SmartScreen 璇存槑](docs/Windows骞冲彴.md).
+[Windows 支持、安全、Defender 和 SmartScreen 说明](docs/Windows平台.md).
 
 If a release does not contain a matching Windows asset, the installer stops
 instead of unexpectedly starting a long compilation. An explicit source build
 is available with `-BuildFromSource` and requires Git, Rust, and Visual Studio
 2022 Build Tools with the **Desktop development with C++** workload.
+
+### Install / Update from a Local Package (Offline)
+
+To install or update jcode entirely from a locally provided package without
+touching the official site or GitHub, pass the package path directly:
+
+- **Already running jcode** (`.tar.gz` archive or a bare `.exe`/ELF binary):
+
+  ```bash
+  jcode update --local /path/to/jcode-windows-x86_64-<hash>.tar.gz
+  jcode update --local /path/to/jcode-windows-x86_64-<hash>.exe
+  ```
+
+  The package is extracted (`.tar.gz`) or staged (bare binary), probed for its
+  version, archived under `builds/versions/<version>/`, and the `stable` /
+  `current` channels plus the launcher are switched to it. The whole run is
+  offline: no release lookup, no download, no checksum fetch.
+
+- **Fresh install on Windows** (PowerShell):
+
+  ```powershell
+  .\install.ps1 -ArtifactExePath C:\path\to\jcode-windows-x86_64-<hash>.exe
+  .\install.ps1 -ArtifactTgzPath C:\path\to\jcode-windows-x86_64-<hash>.tar.gz
+  ```
+
+- **Fresh install on macOS / Linux** (shell):
+
+  ```bash
+  JCODE_LOCAL_ARTIFACT=/path/to/jcode-linux-x86_64-<hash>.tar.gz ./install.sh
+  ```
+
+Local packages often carry a git hash suffix (e.g.
+`jcode-windows-x86_64-2dc3213a6.exe`); the installer and `jcode update --local`
+detect and install them the same way as official assets.
 
 ### macOS via Homebrew
 
