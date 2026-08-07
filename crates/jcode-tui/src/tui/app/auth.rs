@@ -671,28 +671,19 @@ impl App {
                     !profile_activation_owns_selection,
                 );
             }
-            // First-run onboarding: once the user has authenticated on a fresh
-            // install, walk them through model selection -> continue/suggestions.
-            self.maybe_begin_onboarding_flow_after_login();
+            // First-run onboarding: once the user has configured model access
+            // on a fresh install, walk them through continue/suggestions.
+            self.maybe_begin_onboarding_flow_after_auth();
         } else {
             let message = crate::auth::login_diagnostics::augment_auth_error_message(
                 &login.provider,
                 &login.message,
             );
-            // During onboarding we route the failure to the recovery screen
-            // (which explains next steps) instead of dumping a raw error message
-            // and a status notice the user can miss.
-            if self.onboarding_flow_active() {
-                self.onboarding_handle_login_failed(Some(message));
-            } else {
-                self.push_display_message(DisplayMessage::error(message));
-                self.set_status_notice(format!("Login: {} failed", login.provider));
-                self.onboarding_handle_login_failed(None);
-            }
+            self.push_display_message(DisplayMessage::error(message));
+            self.set_status_notice(format!("Login: {} failed", login.provider));
         }
     }
-
-            }
+}
 #[cfg(test)]
 fn save_tui_openai_compatible_api_base(
     api_base: &str,
@@ -752,5 +743,3 @@ fn save_tui_openai_compatible_key(
 #[cfg(test)]
 #[path = "auth_tests.rs"]
 mod tests;
-
-

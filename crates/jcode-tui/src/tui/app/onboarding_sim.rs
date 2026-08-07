@@ -16,7 +16,7 @@
 
 use super::App;
 use super::SessionPickerMode;
-use super::onboarding_flow::{ImportReview, OnboardingFlow, OnboardingPhase};
+use super::onboarding_flow::{OnboardingFlow, OnboardingPhase};
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::time::Instant;
 
@@ -75,9 +75,6 @@ impl App {
         // left transient progress/error state behind. This only clears
         // onboarding-owned state; the real session transcript, input, auth, and
         // configuration remain untouched.
-        self.onboarding_import_in_progress = None;
-        self.onboarding_import_error = None;
-        self.onboarding_import_failed_provider = None;
         self.onboarding_pending_model_validation = None;
         self.onboarding_auto_model_selection_active
             .store(false, std::sync::atomic::Ordering::Release);
@@ -130,85 +127,10 @@ impl App {
     fn onboarding_sim_screens() -> Vec<SimScreen> {
         vec![
             SimScreen {
-                title: "Log in to OpenAI (nothing detected)",
-                phase: OnboardingPhase::LoginOpenAi {
+                title: "Configure a model provider (default welcome screen)",
+                phase: OnboardingPhase::ConfigureProvider {
                     yes_highlighted: true,
                 },
-            },
-            SimScreen {
-                title: "Import summary (detected logins, Continue preselected)",
-                phase: OnboardingPhase::Login {
-                    import: ImportReview::new(vec![
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "OpenAI/Codex",
-                            "Codex auth.json",
-                        ),
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "Claude",
-                            "Claude Code",
-                        ),
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "GitHub Copilot",
-                            "github-copilot/hosts.json",
-                        ),
-                    ]),
-                },
-            },
-            SimScreen {
-                title: "Import detected logins (multiple, checkbox list)",
-                phase: OnboardingPhase::Login {
-                    import: ImportReview::new(vec![
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "OpenAI/Codex",
-                            "Codex auth.json",
-                        ),
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "Claude",
-                            "Claude Code",
-                        ),
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "GitHub Copilot",
-                            "github-copilot/hosts.json",
-                        ),
-                    ])
-                    .map(|mut review| {
-                        review.enter_choose_mode();
-                        review
-                    }),
-                },
-            },
-            SimScreen {
-                title: "Telemetry settings (from the summary's third pill)",
-                phase: OnboardingPhase::Login {
-                    import: ImportReview::new(vec![
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "OpenAI/Codex",
-                            "Codex auth.json",
-                        ),
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "Claude",
-                            "Claude Code",
-                        ),
-                    ]),
-                },
-            },
-            SimScreen {
-                title: "Import detected logins (single)",
-                phase: OnboardingPhase::Login {
-                    import: ImportReview::new(vec![
-                        crate::external_auth::ExternalAuthReviewCandidate::fixture(
-                            "Cursor", "Cursor",
-                        ),
-                    ])
-                    .map(|mut review| {
-                        review.enter_choose_mode();
-                        review
-                    }),
-                },
-            },
-            SimScreen {
-                title: "Login recovery (import declined / failed)",
-                phase: OnboardingPhase::Login { import: None },
             },
             SimScreen {
                 title: "Choose a suggested review or blank session",
@@ -289,71 +211,24 @@ impl App {
         self.update_onboarding_sim_status();
     }
 
-    /// Visually move the Yes/No highlight (or the import checkbox cursor) on the
-    /// current screen. No real action is taken; the simulator never logs in or
-    /// imports anything.
+    /// Visually move the Yes/No highlight on the current screen. No real action
+    /// is taken; the simulator never logs in or imports anything.
     fn onboarding_sim_set_highlight(&mut self, yes: bool) {
         if let Some(flow) = self.onboarding_flow.as_mut() {
             match &mut flow.phase {
-                OnboardingPhase::LoginOpenAi { yes_highlighted }
-                | OnboardingPhase::ContinuePrompt {
-                    yes_highlighted, ..
-                } => {
+                OnboardingPhase::ConfigureProvider { yes_highlighted } => {
                     *yes_highlighted = yes;
-                }
-                OnboardingPhase::Login {
-                    import: Some(review),
-                } => {
-                    // On the checkbox import screen, preview check/uncheck of the
-                    // current row instead of a Yes/No pill.
-                    review.set_current(yes);
                 }
                 _ => {}
             }
         }
     }
 
-    /// Move the import checkbox cursor, or the telemetry option highlight while
-    /// the telemetry settings screen is showing. Only meaningful on the import
-    /// family of screens.
-    fn onboarding_sim_move_cursor(&mut self, down: bool) -> bool {
-        if let Some(flow) = self.onboarding_flow.as_mut()
-            && let OnboardingPhase::Login {
-                import: Some(review),
-            } = &mut flow.phase
-        {
-            if down {
-                review.cursor_down();
-            } else {
-                review.cursor_up();
-            }
-            return true;
-        }
-        false
-    }
-
-    /// Move the import summary pill focus (Continue / Import less / Telemetry
-    /// settings) so the simulator can preview each pill's highlighted state.
-    /// Returns true when the current screen is the read-only summary.
-    fn onboarding_sim_step_summary_pill(&mut self, forward: bool) -> bool {
-        if let Some(flow) = self.onboarding_flow.as_mut()
-            && let OnboardingPhase::Login {
-                import: Some(review),
-            } = &mut flow.phase
-            && !review.choosing
-        {
-            review.summary_step(forward);
-            return true;
-        }
-        false
-    }
-
     /// Intercept keys while the simulator is active. Returns true when consumed.
     ///
     /// The simulator owns key handling so the real onboarding key handlers never
     /// fire (which would attempt actual logins/imports). Tab/Shift+Tab step
-    /// between screens; on the import screen Up/Down move the checkbox cursor;
-    /// h/l preview the highlight; Esc/q exits.
+    /// between screens; h/l preview the highlight; Esc/q exits.
     pub(super) fn handle_onboarding_sim_key(
         &mut self,
         code: KeyCode,
@@ -367,23 +242,9 @@ impl App {
             self.stop_onboarding_simulator();
             return true;
         }
-        let on_import_screen = matches!(
-            self.onboarding_flow.as_ref().map(|f| &f.phase),
-            Some(OnboardingPhase::Login { import: Some(_) })
-        );
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.stop_onboarding_simulator();
-                true
-            }
-            // On the import summary, Left/Right preview the three action pills
-            // instead of stepping screens (Tab still steps).
-            KeyCode::Right if self.onboarding_sim_step_summary_pill(true) => {
-                self.force_full_redraw = true;
-                true
-            }
-            KeyCode::Left if self.onboarding_sim_step_summary_pill(false) => {
-                self.force_full_redraw = true;
                 true
             }
             KeyCode::Tab | KeyCode::Right => {
@@ -397,18 +258,6 @@ impl App {
             // Enter/Space advance between screens (don't commit a real import).
             KeyCode::Enter | KeyCode::Char(' ') => {
                 self.onboarding_sim_step(1);
-                true
-            }
-            // On the import screen, Up/Down move the checkbox cursor; elsewhere
-            // they have no effect (already consumed so nothing leaks through).
-            KeyCode::Up if on_import_screen => {
-                self.onboarding_sim_move_cursor(false);
-                self.force_full_redraw = true;
-                true
-            }
-            KeyCode::Down if on_import_screen => {
-                self.onboarding_sim_move_cursor(true);
-                self.force_full_redraw = true;
                 true
             }
             KeyCode::Char('h') | KeyCode::Char('y') | KeyCode::Char('Y') => {

@@ -1,6 +1,6 @@
 // Integration tests for the first-run onboarding flow control logic.
 
-use super::onboarding_flow::{ExternalCli, OnboardingFlow, OnboardingPhase};
+use super::onboarding_flow::{OnboardingFlow, OnboardingPhase};
 
 #[derive(Clone)]
 struct QualityFirstOpenAiProvider {
@@ -144,19 +144,21 @@ fn onboarding_begins_and_advances_past_model_select() {
 }
 
 #[test]
-fn onboarding_can_begin_at_login_phase() {
+fn onboarding_can_begin_at_configure_phase() {
     let mut app = create_test_app();
     app.onboarding_flow = None;
-    app.begin_onboarding_flow_at_login();
+    app.begin_onboarding_flow_at_configure();
+    // The live flow always starts at the config-guided provider prompt; the
+    // external-login import walkthrough is no longer part of live onboarding.
     assert!(matches!(
         app.onboarding_phase(),
-        Some(OnboardingPhase::Login { .. }) | Some(OnboardingPhase::LoginOpenAi { .. })
+        Some(OnboardingPhase::ConfigureProvider { yes_highlighted: true })
     ));
-    // begin_at_login is idempotent: a second call does not reset the phase.
+    // begin_at_configure is idempotent: a second call does not reset the phase.
     if let Some(flow) = app.onboarding_flow.as_mut() {
         flow.phase = OnboardingPhase::Suggestions;
     }
-    app.begin_onboarding_flow_at_login();
+    app.begin_onboarding_flow_at_configure();
     assert!(matches!(
         app.onboarding_phase(),
         Some(OnboardingPhase::Suggestions)
@@ -164,130 +166,21 @@ fn onboarding_can_begin_at_login_phase() {
 }
 
 #[test]
-fn login_welcome_kind_shows_import_checkbox_list() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::OnboardingWelcomeKind;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
-    let mut app = create_test_app();
-    app.onboarding_flow = None;
-    app.begin_onboarding_flow_at_login();
-    // Inject a multi-select import list as if external logins were detected at
-    // startup.
-    let review = ImportReview::new(vec![
-        ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-        ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-    ])
-    .unwrap();
-    if let Some(flow) = app.onboarding_flow.as_mut() {
-        flow.phase = OnboardingPhase::Login {
-            import: Some(review),
-        };
-    }
-    match app.onboarding_welcome_kind() {
-        OnboardingWelcomeKind::Login { import: Some(prompt), .. } => {
-            assert_eq!(prompt.rows.len(), 2);
-            assert_eq!(prompt.rows[0].provider_summary, "OpenAI/Codex");
-            assert_eq!(prompt.rows[0].source_name, "Codex auth.json");
-            // Every login is pre-checked by default.
-            assert!(prompt.rows.iter().all(|r| r.checked));
-            assert_eq!(prompt.checked_count, 2);
-            assert_eq!(prompt.cursor, 0);
-        }
-        other => panic!("expected Login welcome with import prompt, got {other:?}"),
-    }
-}
-
-#[test]
-fn import_review_collects_checked_logins() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
-    let mut review = ImportReview::new(vec![
-        ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-        ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-        ExternalAuthReviewCandidate::fixture("Gemini", "Gemini CLI"),
-    ])
-    .unwrap();
-    // The default is the summary screen with Continue preselected.
-    assert!(!review.choosing);
-    assert!(review.continue_focused);
-    assert_eq!(review.total(), 3);
-    // All pre-checked: the default action imports everything.
-    assert_eq!(review.approved_indices(), vec![0, 1, 2]);
-    assert_eq!(review.checked_count(), 3);
-
-    // Switch to the checkbox list and uncheck the middle login (cursor on row 1).
-    review.enter_choose_mode();
-    assert!(review.choosing);
-    assert_eq!(review.position(), 1);
-    review.cursor_down();
-    review.toggle_current();
-    assert_eq!(review.approved_indices(), vec![0, 2]);
-    assert_eq!(review.checked_count(), 2);
-}
-
-#[test]
-fn import_review_cursor_navigation_wraps() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
-    let mut review = ImportReview::new(vec![
-        ExternalAuthReviewCandidate::fixture("Cursor", "Cursor"),
-        ExternalAuthReviewCandidate::fixture("Gemini", "Gemini CLI"),
-    ])
-    .unwrap();
-    review.enter_choose_mode();
-    assert_eq!(review.position(), 1);
-    assert!(!review.continue_focused);
-    review.cursor_down();
-    assert_eq!(review.position(), 2);
-    assert!(!review.continue_focused);
-    // Down past the last row lands on the navigable Continue pill.
-    review.cursor_down();
-    assert!(review.continue_focused);
-    // Down again wraps from Continue to the first row.
-    review.cursor_down();
-    assert!(!review.continue_focused);
-    assert_eq!(review.position(), 1);
-    // Up from the first row lands on the Continue pill.
-    review.cursor_up();
-    assert!(review.continue_focused);
-    // Up from Continue lands on the last row.
-    review.cursor_up();
-    assert!(!review.continue_focused);
-    assert_eq!(review.position(), 2);
-    // Toggling the current row flips just that row.
-    assert!(review.current_checked());
-    review.toggle_current();
-    assert!(!review.current_checked());
-    // Toggling while Continue is focused is a no-op (no row changes).
-    review.cursor_down(); // back onto Continue
-    assert!(review.continue_focused);
-    let before = review.approved_indices();
-    review.toggle_current();
-    assert_eq!(review.approved_indices(), before);
-}
-
-#[test]
-fn login_phase_advances_to_model_select_without_telemetry_prompt() {
+fn configure_phase_advances_to_model_select_without_telemetry_prompt() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        // Force the bare Login phase (the recovery/import path) so we exercise
-        // onboarding_after_login directly regardless of host logins.
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
-        }
+        // Force the "Configure a model provider?" phase so we exercise
+        // onboarding_advance_from_configure directly regardless of host logins.
+        app.begin_onboarding_flow_at_configure();
         assert!(matches!(
             app.onboarding_phase(),
-            Some(OnboardingPhase::Login { .. })
+            Some(OnboardingPhase::ConfigureProvider { .. })
         ));
-        // After login we no longer ask a telemetry-consent question; we advance
-        // straight through model selection into the first-run start choice and
-        // leave content sharing off.
-        app.onboarding_after_login();
+        // After provider setup we no longer ask a telemetry-consent question; we
+        // advance straight through model selection into the first-run start
+        // choice and leave content sharing off.
+        app.onboarding_advance_from_configure();
         assert!(matches!(
             app.onboarding_phase(),
             Some(OnboardingPhase::ModelSelect)
@@ -298,23 +191,41 @@ fn login_phase_advances_to_model_select_without_telemetry_prompt() {
 }
 
 #[test]
-fn login_openai_phase_is_default_when_no_imports() {
+fn configure_phase_is_default_even_when_external_logins_exist() {
     use crate::tui::OnboardingWelcomeKind;
     with_temp_jcode_home(|| {
+        // Seed a real, importable Codex login. The first-run flow must NOT
+        // walk the user through importing Anthropic/Codex (or any other tool's)
+        // auth during onboarding: model access is config-driven, so the welcome
+        // screen asks a simple "Configure a model provider?" Yes/No instead.
+        let legacy_auth = crate::auth::codex::legacy_auth_file_path().expect("legacy auth path");
+        std::fs::create_dir_all(legacy_auth.parent().expect("legacy auth parent"))
+            .expect("create legacy auth dir");
+        std::fs::write(
+            legacy_auth,
+            r#"{"OPENAI_API_KEY":"sk-onboarding-test"}"#,
+        )
+        .expect("seed importable Codex key");
+        crate::auth::AuthStatus::invalidate_cache();
+        assert!(
+            crate::auth::codex::has_unconsented_legacy_credentials(),
+            "precondition: the seeded Codex login must be detected as importable"
+        );
+
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        // Fresh temp home has no importable logins, so begin_at_login lands on
-        // the "Log in to OpenAI?" Yes/No prompt (not the bare provider picker).
-        app.begin_onboarding_flow_at_login();
+        app.begin_onboarding_flow_at_configure();
+        // No import walkthrough: always the "Configure a model provider?"
+        // Yes/No prompt.
         assert!(matches!(
             app.onboarding_phase(),
-            Some(OnboardingPhase::LoginOpenAi {
+            Some(OnboardingPhase::ConfigureProvider {
                 yes_highlighted: true
             })
         ));
         assert!(matches!(
             app.onboarding_welcome_kind(),
-            OnboardingWelcomeKind::LoginOpenAi {
+            OnboardingWelcomeKind::ConfigureProvider {
                 yes_highlighted: true
             }
         ));
@@ -322,13 +233,13 @@ fn login_openai_phase_is_default_when_no_imports() {
 }
 
 #[test]
-fn login_openai_no_finishes_onboarding_with_login_hint() {
+fn configure_no_finishes_onboarding_with_provider_hint() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
+        app.begin_onboarding_flow_at_configure();
         if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::LoginOpenAi {
+            flow.phase = OnboardingPhase::ConfigureProvider {
                 yes_highlighted: true,
             };
         }
@@ -355,13 +266,13 @@ fn login_openai_no_finishes_onboarding_with_login_hint() {
 }
 
 #[test]
-fn login_openai_arrows_toggle_highlight() {
+fn configure_arrows_toggle_highlight() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
+        app.begin_onboarding_flow_at_configure();
         if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::LoginOpenAi {
+            flow.phase = OnboardingPhase::ConfigureProvider {
                 yes_highlighted: true,
             };
         }
@@ -369,152 +280,18 @@ fn login_openai_arrows_toggle_highlight() {
         assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Right));
         assert!(matches!(
             app.onboarding_phase(),
-            Some(OnboardingPhase::LoginOpenAi {
+            Some(OnboardingPhase::ConfigureProvider {
                 yes_highlighted: false
             })
         ));
         assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Left));
         assert!(matches!(
             app.onboarding_phase(),
-            Some(OnboardingPhase::LoginOpenAi {
+            Some(OnboardingPhase::ConfigureProvider {
                 yes_highlighted: true
             })
         ));
         assert!(app.inline_interactive_state.is_none());
-    });
-}
-
-#[test]
-fn import_review_decision_timer_counts_down_and_times_out() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::{DECISION_TIMEOUT, ImportReview};
-
-    let mut review =
-        ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("Cursor", "Cursor")]).unwrap();
-    // Fresh review: a full timeout's worth of seconds remain and it hasn't
-    // timed out yet.
-    assert!(review.seconds_remaining() <= DECISION_TIMEOUT.as_secs());
-    assert!(!review.timed_out());
-    // Force the clock past the timeout.
-    review.shown_at = std::time::Instant::now() - (DECISION_TIMEOUT + std::time::Duration::from_secs(1));
-    assert_eq!(review.seconds_remaining(), 0);
-    assert!(review.timed_out());
-}
-
-#[test]
-fn import_failure_resets_login_to_manual_prompt() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        // Simulate the walkthrough having approved a candidate and kicked off an
-        // import (the per-candidate sub-state is cleared once the import spawns).
-        let review =
-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("Cursor", "Cursor")])
-                .unwrap();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login {
-                import: Some(review),
-            };
-        }
-        // The async import later fails -> handle_login_failed must reset the
-        // Login phase to the clean manual-login prompt so the welcome card stops
-        // fighting the error message / donut.
-        app.onboarding_handle_login_failed(Some("Auto import failed: token expired".to_string()));
-        assert!(matches!(
-            app.onboarding_phase(),
-            Some(OnboardingPhase::Login { import: None })
-        ));
-        // Still in Login: Enter shows the provider config guidance and finishes
-        // onboarding (resonix: no manual login picker remains).
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(app.inline_interactive_state.is_none());
-        assert!(app.onboarding_phase().is_none());
-    });
-}
-
-#[test]
-fn import_review_decline_all_falls_back_to_manual_login() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        let mut review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
-            "OpenAI/Codex",
-            "Codex auth.json",
-        )])
-        .unwrap();
-        // Start in choose mode: this test exercises the per-login decline path.
-        review.enter_choose_mode();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login {
-                import: Some(review),
-            };
-        }
-        // Uncheck the only login ("n"), then commit with Enter. With nothing
-        // checked we don't spawn an import, the list clears, and the card falls
-        // back to the manual-login prompt.
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('n')));
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(matches!(
-            app.onboarding_phase(),
-            Some(OnboardingPhase::Login { import: None })
-        ));
-        // Still in Login: Enter shows the provider config guidance and finishes
-        // onboarding (resonix: no manual login picker remains).
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(app.inline_interactive_state.is_none());
-        assert!(app.onboarding_phase().is_none());
-    });
-}
-
-#[test]
-fn answering_no_on_continue_prompt_shows_suggestions() {
-    with_temp_jcode_home(|| {
-        let mut app = onboarding_test_app();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::ContinuePrompt {
-                cli: ExternalCli::Codex,
-                yes_highlighted: true,
-                shown_at: std::time::Instant::now(),
-            };
-        }
-        app.onboarding_answer_continue(false);
-        assert!(matches!(
-            app.onboarding_phase(),
-            Some(OnboardingPhase::Suggestions)
-        ));
-        // No session picker overlay opened on the "No" path.
-        assert!(app.session_picker_overlay.is_none());
-    });
-}
-
-#[test]
-fn continue_prompt_key_y_consumes_and_advances() {
-    with_temp_jcode_home(|| {
-        let mut app = onboarding_test_app();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::ContinuePrompt {
-                cli: ExternalCli::ClaudeCode,
-                yes_highlighted: true,
-                shown_at: std::time::Instant::now(),
-            };
-        }
-        // 'Y' is consumed by the onboarding handler.
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('Y')));
-        // It either opened the picker (StartChoice) or fell back depending on
-        // whether transcripts exist in the temp home; either way it leaves
-        // ContinuePrompt.
-        assert!(!matches!(
-            app.onboarding_phase(),
-            Some(OnboardingPhase::ContinuePrompt { .. })
-        ));
     });
 }
 
@@ -901,32 +678,27 @@ fn onboarding_state_is_escapable(app: &App) -> bool {
 }
 
 #[test]
-fn liveness_every_login_phase_has_a_single_keypress_exit() {
+fn liveness_every_configure_phase_has_a_single_keypress_exit() {
     use crate::tui::app::onboarding_flow::OnboardingPhase;
     with_temp_jcode_home(|| {
         // Each interactive Login-family phase must leave itself after exactly one
         // decisive key, with no dependence on an async event. We use the "skip /
-        // decline" key, which is always synchronous (it never spawns an import).
+        // decline" key, which is always synchronous.
         let cases: Vec<(&str, OnboardingPhase, KeyCode)> = vec![
-            // OpenAI prompt: "n" declines and finishes onboarding immediately.
+            // "Configure a model provider?" prompt: "n" declines and finishes
+            // onboarding immediately.
             (
-                "LoginOpenAi",
-                OnboardingPhase::LoginOpenAi {
+                "ConfigureProvider",
+                OnboardingPhase::ConfigureProvider {
                     yes_highlighted: true,
                 },
                 KeyCode::Char('n'),
-            ),
-            // Recovery fallback: Enter opens the provider picker overlay.
-            (
-                "Login{import:None}",
-                OnboardingPhase::Login { import: None },
-                KeyCode::Enter,
             ),
         ];
         for (label, phase, key) in cases {
             let mut app = create_test_app();
             app.onboarding_flow = None;
-            app.begin_onboarding_flow_at_login();
+            app.begin_onboarding_flow_at_configure();
             if let Some(flow) = app.onboarding_flow.as_mut() {
                 flow.phase = phase;
             }
@@ -945,160 +717,28 @@ fn liveness_every_login_phase_has_a_single_keypress_exit() {
 }
 
 #[test]
-fn liveness_import_review_decline_all_then_enter_escapes() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::{ImportReview, OnboardingPhase};
-    with_temp_jcode_home(|| {
-        // The import list is the richest interactive phase. Declining every login
-        // ("n") then committing (Enter) must never spawn an async import (so it
-        // can't hang) and must land on the recovery screen, from which a final
-        // Enter opens the provider picker. Whole path is synchronous.
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        let mut review = ImportReview::new(vec![
-            ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-            ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-        ])
-        .unwrap();
-        // Start in choose mode: this liveness path declines each login row.
-        review.enter_choose_mode();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login {
-                import: Some(review),
-            };
-        }
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('n')));
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Down));
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('n')));
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        // No async import was spawned (declined all), so we are not stuck on the
-        // progress screen; we are on the recovery screen.
-        assert!(app.onboarding_import_in_progress.is_none());
-        assert!(matches!(
-            app.onboarding_phase(),
-            Some(OnboardingPhase::Login { import: None })
-        ));
-        // Final Enter opens the provider picker -> escapable.
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(
-            onboarding_state_is_escapable(&app),
-            "recovery screen + Enter must open the provider picker"
-        );
-    });
-}
-
-#[test]
-fn liveness_stuck_import_is_recovered_by_the_tick_watchdog() {
-    use crate::tui::app::onboarding_flow::OnboardingPhase;
-    with_temp_jcode_home(|| {
-        // Simulate the dangerous state: the import was committed (progress screen
-        // showing) but its `LoginCompleted` event never arrived. The flow sits in
-        // Login{import:None} with `onboarding_import_in_progress` set. Without the
-        // watchdog the user is stranded forever. We backdate the start time past
-        // the watchdog window and assert a single tick recovers the flow into the
-        // failure-aware recovery screen (which has a guaranteed keypress exit).
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
-        }
-        // Enter the "importing" wait, backdated so the watchdog fires immediately.
-        app.onboarding_import_in_progress =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(120));
-        app.onboarding_import_error = None;
-
-        // Precondition: with the import flag set and no error yet, the screen
-        // shows progress and offers no keypress exit.
-        assert!(app.onboarding_import_in_progress.is_some());
-
-        let changed = app.onboarding_tick();
-        assert!(changed, "watchdog tick should change state");
-        // Recovered: no longer "importing", and an error is set so the recovery
-        // screen explains what happened.
-        assert!(
-            app.onboarding_import_in_progress.is_none(),
-            "watchdog must clear the stuck import progress flag"
-        );
-        assert!(
-            app.onboarding_import_error.is_some(),
-            "watchdog recovery must surface a failure reason to the user"
-        );
-        assert!(matches!(
-            app.onboarding_phase(),
-            Some(OnboardingPhase::Login { import: None })
-        ));
-        // And from there a single Enter still reaches the provider picker.
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(onboarding_state_is_escapable(&app));
-    });
-}
-
-#[test]
 fn liveness_esc_always_exits_onboarding_from_every_guided_phase() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::{ImportReview, OnboardingPhase};
+    use crate::tui::app::onboarding_flow::OnboardingPhase;
     with_temp_jcode_home(|| {
         // The universal escape hatch: from ANY guided pre-ready phase, a single
         // Esc must leave onboarding to the normal screen. This is the strongest
         // liveness guarantee - it doesn't matter how the flow got wedged, Esc
-        // always works. We cover every interactive/transient phase, including the
-        // async "importing" wait (where Esc must abandon the in-flight import).
-        let make_import = || {
-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
-                "OpenAI/Codex",
-                "Codex auth.json",
-            )])
-            .unwrap()
-        };
-        let phases: Vec<(&str, OnboardingPhase, bool)> = vec![
+        // always works.
+        let phases: Vec<(&str, OnboardingPhase)> = vec![
             (
-                "LoginOpenAi",
-                OnboardingPhase::LoginOpenAi {
+                "ConfigureProvider",
+                OnboardingPhase::ConfigureProvider {
                     yes_highlighted: true,
                 },
-                false,
             ),
-            (
-                "Login{import:Some}",
-                OnboardingPhase::Login {
-                    import: Some(make_import()),
-                },
-                false,
-            ),
-            (
-                "Login{import:None} recovery",
-                OnboardingPhase::Login { import: None },
-                false,
-            ),
-            // The async "importing" wait: import committed, LoginCompleted not yet
-            // arrived. Esc must still bail out cleanly.
-            (
-                "Login importing wait",
-                OnboardingPhase::Login { import: None },
-                true,
-            ),
-            ("ModelSelect", OnboardingPhase::ModelSelect, false),
-            (
-                "ContinuePrompt",
-                OnboardingPhase::ContinuePrompt {
-                    cli: ExternalCli::Codex,
-                    yes_highlighted: true,
-                    shown_at: std::time::Instant::now(),
-                },
-                false,
-            ),
+            ("ModelSelect", OnboardingPhase::ModelSelect),
         ];
-        for (label, phase, importing) in phases {
+        for (label, phase) in phases {
             let mut app = create_test_app();
             app.onboarding_flow = None;
-            app.begin_onboarding_flow_at_login();
+            app.begin_onboarding_flow_at_configure();
             if let Some(flow) = app.onboarding_flow.as_mut() {
                 flow.phase = phase;
-            }
-            if importing {
-                app.onboarding_import_in_progress = Some(std::time::Instant::now());
             }
             assert!(
                 !onboarding_state_is_escapable(&app),
@@ -1110,288 +750,6 @@ fn liveness_esc_always_exits_onboarding_from_every_guided_phase() {
                 onboarding_state_is_escapable(&app),
                 "{label}: Esc must reach an escapable state"
             );
-            // Esc must not leave a stale import-progress flag spinning.
-            assert!(
-                app.onboarding_import_in_progress.is_none(),
-                "{label}: Esc must clear any in-flight import progress"
-            );
-        }
-    });
-}
-
-#[test]
-fn import_failure_reason_is_cleaned_and_capitalized() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::{ImportReview, OnboardingPhase};
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        // Must be in the Login phase for the failure handler to apply.
-        let review =
-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("Cursor", "Cursor")])
-                .unwrap();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login {
-                import: Some(review),
-            };
-        }
-        // A multi-line markdown failure message with marker noise and a
-        // lowercase first word, mimicking the importer's render_markdown output.
-        let raw = "**Logins imported**\n\nthe token has expired\n- \u{2715} Cursor (from Cursor): bad";
-        app.onboarding_handle_login_failed(Some(raw.to_string()));
-        let shown = app
-            .onboarding_import_error
-            .as_deref()
-            .expect("failure reason should be recorded");
-        // Markdown bold headers and the "Logins imported" line are stripped; the
-        // first meaningful line is kept, marker trimmed, first letter uppercased.
-        assert!(!shown.contains("**"), "markdown bold stripped: {shown}");
-        assert!(!shown.contains('\u{2715}'), "marker glyph stripped: {shown}");
-        assert!(
-            shown.starts_with("The token has expired"),
-            "first meaningful line kept + capitalized: {shown}"
-        );
-    });
-}
-
-#[test]
-fn import_failure_h_key_prepares_agent_repair_brief() {
-    use crate::tui::app::onboarding_flow::OnboardingPhase;
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
-        }
-        // Simulate a failed import that recorded a reason.
-        app.onboarding_import_error = Some("the saved credential was rejected".to_string());
-        app.onboarding_import_failed_provider = Some("openai".to_string());
-        let before = app.display_messages.len();
-
-        // H on the failure screen prepares the agent repair brief.
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('H')));
-
-        // A brief was pushed into the transcript with the agent-runnable
-        // commands and the failure reason, so it works even without a clipboard.
-        assert!(app.display_messages.len() > before, "brief message pushed");
-        let brief = app
-            .display_messages
-            .iter()
-            .rev()
-            .find(|m| m.content.contains("Agent repair brief"))
-            .map(|m| m.content.clone())
-            .expect("repair brief message");
-        assert!(brief.contains("jcode auth-test --provider openai --json"), "{brief}");
-        assert!(brief.contains("--api-key-stdin"), "{brief}");
-        assert!(brief.contains("the saved credential was rejected"), "{brief}");
-        // The brief was also persisted to a stable path a helper agent can read.
-        let brief_path = crate::tui::app::onboarding_repair::repair_brief_path()
-            .expect("repair brief path");
-        assert!(brief_path.exists(), "brief file should be written: {brief_path:?}");
-        let on_disk = std::fs::read_to_string(&brief_path).expect("read brief file");
-        assert!(on_disk.contains("jcode auth-test --provider openai --json"), "{on_disk}");
-        assert!(brief.contains(&brief_path.display().to_string()), "brief cites its own path");
-        // Staying on the recovery screen, Enter shows the provider config
-        // guidance and finishes onboarding (resonix: no picker remains).
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(app.inline_interactive_state.is_none());
-        assert!(app.onboarding_phase().is_none());
-    });
-}
-
-#[test]
-fn import_failure_h_key_is_inert_without_a_recorded_error() {
-    use crate::tui::app::onboarding_flow::OnboardingPhase;
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
-        }
-        // Recovery screen reached by declining all (no error reason recorded):
-        // H must NOT be intercepted, so normal input handling can use it.
-        app.onboarding_import_error = None;
-        assert!(!app.handle_onboarding_continue_prompt_key(KeyCode::Char('H')));
-    });
-}
-
-#[test]
-fn import_summary_defaults_to_continue_and_enter_imports_all() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        let review = ImportReview::new(vec![
-            ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-            ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-        ])
-        .unwrap();
-        // The summary screen is the default and lands on Continue.
-        assert!(!review.choosing);
-        assert!(review.continue_focused);
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login {
-                import: Some(review),
-            };
-        }
-        // Enter on the preselected Continue commits the whole import: the list
-        // clears. On a live runtime the async import is marked in-flight; the
-        // test harness has no tokio runtime, so the graceful fallback lands on
-        // the recovery screen instead (never a panic, never a stuck screen).
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        assert!(matches!(
-            app.onboarding_phase(),
-            Some(OnboardingPhase::Login { import: None })
-        ));
-        assert!(
-            app.onboarding_import_in_progress.is_some() || app.onboarding_import_error.is_some(),
-            "Continue must either start the import or fail it gracefully"
-        );
-    });
-}
-
-#[test]
-fn import_continue_reaches_ready_quality_first_openai_model() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
-    with_temp_jcode_home(|| {
-        let legacy_auth = crate::auth::codex::legacy_auth_file_path().expect("legacy auth path");
-        std::fs::create_dir_all(legacy_auth.parent().expect("legacy auth parent"))
-            .expect("create legacy auth dir");
-        std::fs::write(
-            legacy_auth,
-            r#"{"OPENAI_API_KEY":"sk-onboarding-test"}"#,
-        )
-        .expect("seed importable Codex key");
-        crate::auth::AuthStatus::invalidate_cache();
-
-        // App construction performs synchronous runtime-backed setup, so build
-        // it before entering the async test runtime to avoid nested `block_on`.
-        let mut app = quality_first_openai_test_app();
-        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
-        runtime.block_on(async {
-            app.onboarding_flow = None;
-            app.begin_onboarding_flow_at_login();
-            let review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
-                "OpenAI/Codex",
-                "Codex auth.json",
-            )])
-            .unwrap();
-            if let Some(flow) = app.onboarding_flow.as_mut() {
-                flow.phase = OnboardingPhase::Login {
-                    import: Some(review),
-                };
-            }
-
-            let mut bus_rx = crate::bus::Bus::global().subscribe();
-            assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-
-            let login = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                loop {
-                    if let Ok(crate::bus::BusEvent::LoginCompleted(login)) = bus_rx.recv().await {
-                        break login;
-                    }
-                }
-            })
-            .await
-            .expect("import completion event");
-            assert!(
-                login.success,
-                "Continue should complete the approved import: {}",
-                login.message
-            );
-            assert_eq!(
-                login.provider, "openai-api",
-                "import completion must preserve the concrete provider route"
-            );
-            assert!(
-                app.onboarding_should_prefer_strongest_model(),
-                "first-run import without explicit defaults should use global ranking"
-            );
-
-            app.handle_login_completed(login);
-            assert!(matches!(
-                app.onboarding_phase(),
-                Some(OnboardingPhase::StartChoice { .. })
-            ));
-            let (model, provider_key) = tokio::time::timeout(
-                std::time::Duration::from_secs(4),
-                async {
-                    loop {
-                        match bus_rx.recv().await {
-                            Ok(crate::bus::BusEvent::ProviderModelActivated {
-                                model,
-                                provider_key,
-                                ..
-                            }) => break (model, provider_key),
-                            Ok(crate::bus::BusEvent::AuthCatalogRefreshReady) => {
-                                app.finish_auth_catalog_refresh();
-                            }
-                            _ => {}
-                        }
-                    }
-                },
-            )
-            .await
-            .expect("strongest model activation event");
-
-            assert_eq!(model, "gpt-5.5");
-            assert_eq!(provider_key.as_deref(), Some("openai-api"));
-        });
-    });
-}
-
-#[test]
-fn import_summary_choose_pill_opens_checkbox_list() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
-    with_temp_jcode_home(|| {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        let review = ImportReview::new(vec![
-            ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-            ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-        ])
-        .unwrap();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login {
-                import: Some(review),
-            };
-        }
-        // Arrow to the "Import less" pill, then commit it.
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Right));
-        assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
-        // Now in choose mode: the checkbox list with the cursor on row 1 and
-        // nothing imported yet.
-        match app.onboarding_phase() {
-            Some(OnboardingPhase::Login {
-                import: Some(review),
-            }) => {
-                assert!(review.choosing);
-                assert!(!review.continue_focused);
-                assert_eq!(review.cursor, 0);
-                assert_eq!(review.checked_count(), 2);
-            }
-            other => panic!("expected choose-mode import review, got {other:?}"),
-        }
-        assert!(app.onboarding_import_in_progress.is_none());
-
-        // The welcome snapshot reports choose mode so the renderer switches.
-        match app.onboarding_welcome_kind() {
-            crate::tui::OnboardingWelcomeKind::Login {
-                import: Some(prompt),
-                ..
-            } => assert!(prompt.choosing),
-            other => panic!("expected Login welcome with import prompt, got {other:?}"),
         }
     });
 }

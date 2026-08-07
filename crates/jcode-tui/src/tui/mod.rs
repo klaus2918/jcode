@@ -883,85 +883,14 @@ pub struct PromptHistorySearchView {
 /// resting state (the starter prompt cards).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OnboardingWelcomeKind {
-    /// Ask the user to log in first. Shown on a fresh install that booted
-    /// without working credentials.
-    ///
-    /// When `import` is `Some`, we detected importable external logins and are
-    /// walking the user through them one at a time (a yes/no prompt per login).
-    /// When `None` and `importing` is false, there was nothing to import and the
-    /// card points the user at the provider picker. When `None` and `importing`
-    /// is true, the user just committed the import and it is running, so the card
-    /// shows an "Importing your logins..." progress state. When `error` is
-    /// `Some`, a prior import failed and the recovery copy explains what went
-    /// wrong plus the concrete next step.
-    Login {
-        import: Option<LoginImportPrompt>,
-        importing: bool,
-        error: Option<String>,
-        /// When a prior import failed and we detected a coding agent the user
-        /// recently used, its display label (e.g. "Codex"). The recovery screen
-        /// offers "Press H to have <label> help fix this". `None` hides that
-        /// option.
-        repair_agent_label: Option<String>,
-    },
-    /// Ask the user whether to log in to OpenAI (no detected imports). A
+    /// Ask the user whether to configure a model provider now (config-driven;
+    /// external-login import walkthroughs are not part of live onboarding). A
     /// highlightable Yes/No selector; `yes_highlighted` reflects the current
-    /// choice. Yes starts the OpenAI sign-in, No skips login and finishes
-    /// onboarding (the user can run `/login` later).
-    LoginOpenAi { yes_highlighted: bool },
-    /// "Continue where you left off in <cli>?" with a highlightable Yes/No
-    /// selector and a live decision countdown (seconds remaining).
-    ContinuePrompt {
-        cli_label: String,
-        yes_highlighted: bool,
-        seconds_left: u64,
-    },
+    /// choice. Yes points at `jcode provider add`, No skips and finishes
+    /// onboarding (the user can connect a provider later).
+    ConfigureProvider { yes_highlighted: bool },
     /// The starter prompt-suggestion cards (default).
     Suggestions,
-}
-
-/// Render-friendly snapshot of the single-screen login-import checkbox list.
-/// Carries every detected login plus which ones are checked and which row the
-/// cursor is on, so the welcome card can draw the whole list at once.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoginImportPrompt {
-    /// One entry per detected login, in display order.
-    pub rows: Vec<LoginImportRow>,
-    /// Index of the row the cursor is currently on.
-    pub cursor: usize,
-    /// When `true`, the navigable "Continue" pill is focused. On the summary
-    /// screen this is the preselected default; in choose mode it means focus is
-    /// on the pill rather than a login row, so Enter commits the import.
-    pub continue_focused: bool,
-    /// `false` = the default summary screen (detected logins listed read-only,
-    /// with Continue / Choose pills). `true` = the per-login checkbox list.
-    pub choosing: bool,
-    /// Which summary pill is focused (only meaningful when `choosing` is false).
-    pub summary_pill: ImportSummaryPill,
-    /// How many rows are currently checked for import.
-    pub checked_count: usize,
-    /// Seconds left before the screen auto-imports all checked logins.
-    pub seconds_left: u64,
-}
-
-/// The three actions on the import summary screen, left to right.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImportSummaryPill {
-    /// Import everything we detected (default).
-    Continue,
-    /// Open the per-login checkbox list to import fewer logins.
-    ImportLess,
-}
-
-/// One row in the login-import checkbox list.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoginImportRow {
-    /// Human-readable provider summary (e.g. "OpenAI/Codex").
-    pub provider_summary: String,
-    /// Where the credentials came from (e.g. "Codex auth.json").
-    pub source_name: String,
-    /// Whether this login is checked for import.
-    pub checked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1141,7 +1070,9 @@ impl InlineInteractiveState {
 
 fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
     match action {
-        PickerAction::Model | PickerAction::AgentTarget(_) | PickerAction::AgentModelChoice { .. } => 0,
+        PickerAction::Model
+        | PickerAction::AgentTarget(_)
+        | PickerAction::AgentModelChoice { .. } => 0,
         PickerAction::Usage {
             id,
             title,

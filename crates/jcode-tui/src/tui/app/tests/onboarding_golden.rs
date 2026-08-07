@@ -12,8 +12,8 @@
 //   cargo test -p jcode-tui onboarding_golden -- --nocapture
 
 // NOTE: This file is `include!`d into `crate::tui::app::tests`, which already
-// imports `ExternalCli`, `OnboardingFlow`, and `OnboardingPhase` via the
-// sibling `onboarding_flow.rs` include. To avoid duplicate-import errors we
+// imports `OnboardingFlow`, and `OnboardingPhase` via the sibling
+// `onboarding_flow.rs` include. To avoid duplicate-import errors we
 // reference types through fully-qualified paths / local aliases below instead
 // of adding module-level `use` statements.
 
@@ -65,19 +65,17 @@ fn dump(title: &str, text: &str) {
 
 #[test]
 fn onboarding_golden_walks_every_phase() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
     let width = 80u16;
     let height = 30u16;
 
-    // 1. No detected imports: "Log in to OpenAI?" Yes/No prompt.
+    // 1. "Configure a model provider?" Yes/No prompt (config-driven; external
+    // login imports are not part of live onboarding).
     {
-        let app = app_in_phase(OnboardingPhase::LoginOpenAi {
+        let app = app_in_phase(OnboardingPhase::ConfigureProvider {
             yes_highlighted: true,
         });
         let text = render_onboarding_text(&app, width, height);
-        dump("LoginOpenAi (no imports)", &text);
+        dump("Configure provider prompt", &text);
         // Lean prompt: just the question + the Yes/No lozenge pills. The Esc hint
         // already covers the "skip / configure later" path, so no extra prose.
         assert!(text.contains("Configure a model provider?"), "{text}");
@@ -93,134 +91,7 @@ fn onboarding_golden_walks_every_phase() {
         );
     }
 
-    // 1b. Recovery fallback: bare Login phase with no import (import declined or
-    // failed) points the user at the provider picker.
-    {
-        let app = app_in_phase(OnboardingPhase::Login { import: None });
-        let text = render_onboarding_text(&app, width, height);
-        dump("Login (no imports, recovery)", &text);
-        assert!(text.contains("First, connect a model provider."), "{text}");
-        assert!(
-            text.contains("Press Enter to see how to configure a provider"),
-            "{text}"
-        );
-    }
-
-    // 2. Login with detected imports: the default SUMMARY screen. It lists
-    // everything we detected read-only and lands focus on a preselected
-    // "Continue" pill, with "Import less" beside it.
-    {
-        let review = ImportReview::new(vec![
-            ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-            ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-        ])
-        .unwrap();
-        let app = app_in_phase(OnboardingPhase::Login {
-            import: Some(review),
-        });
-        let text = render_onboarding_text(&app, width, height);
-        dump("Login (import summary, 2 logins)", &text);
-        // The headline states how many logins were found.
-        assert!(
-            text.contains("We found 2 existing logins:"),
-            "summary headline: {text}"
-        );
-        // Every detected login is listed with a checkmark (read-only summary).
-        assert!(text.contains("OpenAI/Codex"), "provider 1: {text}");
-        assert!(text.contains("Codex auth.json"), "source 1: {text}");
-        assert!(text.contains("Claude"), "provider 2: {text}");
-        assert!(text.contains('✓'), "detected checkmark: {text}");
-        // The two action pills: "Continue" (preselected) and "Import less",
-        // drawn as lozenges with half-circle end caps (◖ ◗).
-        assert!(text.contains("Continue"), "continue pill label: {text}");
-        assert!(text.contains("Import less"), "import-less pill: {text}");
-        assert!(
-            text.contains('\u{25D6}') && text.contains('\u{25D7}'),
-            "pill rounded end caps: {text}"
-        );
-        // The summary is read-only: no per-row choice circles yet.
-        assert!(!text.contains('●'), "no choice circles on summary: {text}");
-    }
-
-    // 2b. Choose mode: the per-login checkbox list (opened via the "Choose
-    // what to import" pill) still renders the labeled two-column list.
-    {
-        let mut review = ImportReview::new(vec![
-            ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-            ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-        ])
-        .unwrap();
-        review.enter_choose_mode();
-        let app = app_in_phase(OnboardingPhase::Login {
-            import: Some(review),
-        });
-        let text = render_onboarding_text(&app, width, height);
-        dump("Login (import choose mode, 2 logins)", &text);
-        // The section is labeled "Import:" (lean header; the list itself shows
-        // how many and which logins were found).
-        assert!(text.contains("Import:"), "import label: {text}");
-        // Both logins are listed at once, each with a Yes/No choice.
-        assert!(text.contains("OpenAI/Codex"), "provider 1: {text}");
-        assert!(text.contains("Codex auth.json"), "source 1: {text}");
-        assert!(text.contains("Claude"), "provider 2: {text}");
-        // A Yes/No header sits above the per-login circle columns, with the
-        // filled circle marking the current (pre-selected: Yes) choice.
-        assert!(text.contains("Yes") && text.contains("No"), "yes/no header: {text}");
-        assert!(text.contains('●'), "filled choice circle: {text}");
-        assert!(text.contains('○'), "hollow choice circle: {text}");
-        // A navigable "Continue" pill sits above the list (between the label and
-        // the rows) so the user can reach the commit action by arrowing out of
-        // the list. It is drawn as a real lozenge: half-circle end caps (◖ ◗)
-        // around the label.
-        assert!(text.contains("Continue"), "continue pill label: {text}");
-        assert!(
-            text.contains('\u{25D6}') && text.contains('\u{25D7}'),
-            "continue pill rounded end caps: {text}"
-        );
-    }
-
-    // 2c. A single detected login still renders the summary + one row.
-    {
-        let review =
-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("Cursor", "Cursor")])
-                .unwrap();
-        let app = app_in_phase(OnboardingPhase::Login {
-            import: Some(review),
-        });
-        let text = render_onboarding_text(&app, width, height);
-        dump("Login (import summary, single login)", &text);
-        assert!(
-            text.contains("We found 1 existing login:"),
-            "singular headline: {text}"
-        );
-        assert!(text.contains("Cursor"), "single login row: {text}");
-        assert!(text.contains("Continue"), "continue pill: {text}");
-    }
-
-    // 4. Continue prompt (resume an external session).
-    {
-        let app = app_in_phase(OnboardingPhase::ContinuePrompt {
-            cli: ExternalCli::Codex,
-            yes_highlighted: true,
-            shown_at: std::time::Instant::now(),
-        });
-        let text = render_onboarding_text(&app, width, height);
-        dump("ContinuePrompt (Codex)", &text);
-        assert!(
-            text.contains("Continue where you left off in Codex?"),
-            "continue prompt: {text}"
-        );
-        assert!(
-            text.contains("\u{25D6} Yes \u{25D7}") && text.contains("\u{25D6} No \u{25D7}"),
-            "continue prompt Yes/No lozenge pills: {text}"
-        );
-        assert!(
-            text.contains("Opens the resume menu automatically in"),
-            "resume-menu hint: {text}"
-        );
-    }
-
-    // 5. Suggestions (resting state).
+    // 2. Suggestions (resting state).
     {
         let app = app_in_phase(OnboardingPhase::Suggestions);
         let text = render_onboarding_text(&app, width, height);
@@ -229,22 +100,16 @@ fn onboarding_golden_walks_every_phase() {
     }
 }
 
-/// Comprehensive state-space walkthrough that also covers the async-wait and
-/// failure screens the basic golden walk omits (the "Importing your logins..."
-/// progress screen and the failure-aware recovery screen), and enforces polish
-/// invariants on every guided screen:
+/// Guided-screen polish walk: enforces polish invariants on every guided
+/// screen that remains in the config-driven flow:
 ///
 ///   * It always renders the welcome title + tagline (no blank/garbled card).
 ///   * Every guided screen advertises the universal Esc escape hatch, so the
 ///     user can always see a way out (the liveness guarantee, made visible).
-///   * The failure screen states what went wrong AND the concrete next step.
 ///
-/// Run with `--nocapture` to eyeball every screen, including the edge states.
+/// Run with `--nocapture` to eyeball every screen.
 #[test]
 fn onboarding_golden_walks_failure_and_async_states() {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
     let width = 80u16;
     let height = 32u16;
 
@@ -260,84 +125,15 @@ fn onboarding_golden_walks_failure_and_async_states() {
         );
     };
 
-    // (a) Import committed, async LoginCompleted not yet arrived: progress card.
+    // The "Configure a model provider?" prompt must advertise the Esc escape
+    // hatch (polish invariant across guided screens).
     {
-        let mut app = app_in_phase(OnboardingPhase::Login { import: None });
-        app.onboarding_import_in_progress = Some(std::time::Instant::now());
-        let text = render_onboarding_text(&app, width, height);
-        dump("Login (importing in progress)", &text);
-        assert!(
-            text.contains("Importing your logins"),
-            "progress headline: {text}"
-        );
-        assert!(
-            text.contains("Hang tight"),
-            "progress reassurance: {text}"
-        );
-        // The progress screen must NOT show the manual-login recovery copy.
-        assert!(
-            !text.contains("Press Enter to pick who to log in with"),
-            "progress screen must not tell the user to log in again: {text}"
-        );
-        assert_guided_polish("Login (importing in progress)", &text);
-    }
-
-    // (b) Import failed: failure-aware recovery card with reason + next step.
-    {
-        let mut app = app_in_phase(OnboardingPhase::Login { import: None });
-        app.onboarding_import_error =
-            Some("the saved credential was rejected".to_string());
-        let text = render_onboarding_text(&app, width, height);
-        dump("Login (import failed, recovery)", &text);
-        assert!(
-            text.contains("We couldn't import those logins."),
-            "failure headline: {text}"
-        );
-        assert!(
-            text.contains("the saved credential was rejected"),
-            "failure reason must be shown verbatim: {text}"
-        );
-        assert!(
-            text.contains("you can log in directly"),
-            "failure must offer a concrete recovery: {text}"
-        );
-        assert!(
-            text.contains("Press Enter to choose a provider"),
-            "failure must state the exact next key: {text}"
-        );
-        assert_guided_polish("Login (import failed, recovery)", &text);
-    }
-
-    // (c) The import list, recovery, OpenAI prompt, and continue prompt must all
-    // advertise the Esc escape hatch (polish invariant across guided screens).
-    {
-        let review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
-            "OpenAI/Codex",
-            "Codex auth.json",
-        )])
-        .unwrap();
-        let app = app_in_phase(OnboardingPhase::Login {
-            import: Some(review),
-        });
-        let text = render_onboarding_text(&app, width, height);
-        dump("Login (import list, Esc hint)", &text);
-        assert_guided_polish("Login (import list)", &text);
-    }
-    {
-        let app = app_in_phase(OnboardingPhase::LoginOpenAi {
+        let app = app_in_phase(OnboardingPhase::ConfigureProvider {
             yes_highlighted: true,
         });
         let text = render_onboarding_text(&app, width, height);
-        assert_guided_polish("LoginOpenAi", &text);
-    }
-    {
-        let app = app_in_phase(OnboardingPhase::ContinuePrompt {
-            cli: ExternalCli::Codex,
-            yes_highlighted: true,
-            shown_at: std::time::Instant::now(),
-        });
-        let text = render_onboarding_text(&app, width, height);
-        assert_guided_polish("ContinuePrompt", &text);
+        dump("ConfigureProvider (Esc hint)", &text);
+        assert_guided_polish("ConfigureProvider", &text);
     }
 }
 
