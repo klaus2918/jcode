@@ -316,16 +316,33 @@ impl ActiveCredentialOverrides {
 
 /// Configured providers with their full labels, in display order.
 ///
-/// Config-driven (Reasonix-aligned) mode: only the providers named by
-/// `provider.model_picker_providers` (plus the generic `openai-compatible`
-/// entry) are advertised. Built-in third-party providers (Anthropic/OpenAI/
-/// OpenRouter/...) were removed source-level, so they never appear here even
-/// when unconfigured.
+/// Config-driven (Reasonix-aligned) mode: the header lists the providers the
+/// user actually configured. Named providers (`[[providers]]` / `[providers.x]`
+/// in config.toml) are listed first with their credential state; built-in
+/// on-ramps (the generic `openai-compatible` entry, plus any allowlist-named
+/// built-in) follow. When nothing is configured, the built-in on-ramps are
+/// advertised as add-able rows, matching the default (unrestricted) behavior.
 fn auth_full_specs(
     auth: &AuthStatus,
     _active: ActiveCredentialOverrides,
 ) -> Vec<(String, AuthState)> {
-    crate::provider_catalog::auth_status_login_providers_filtered()
+    let cfg = crate::config::config();
+    let mut specs = Vec::new();
+
+    // Named providers (resonix ?? `[[providers]]` ??? `[providers.x]`
+    // ??) ?????????????????????
+    for (name, profile) in &cfg.providers {
+        let state = if crate::provider_catalog::named_provider_profile_is_configured(name, profile)
+        {
+            AuthState::Available
+        } else {
+            AuthState::NotConfigured
+        };
+        specs.push((name.clone(), state));
+    }
+
+    let allowlist = crate::provider_catalog::configured_picker_provider_allowlist();
+    let builtin = crate::provider_catalog::auth_status_login_providers_filtered()
         .into_iter()
         .filter(|provider| {
             !matches!(
@@ -333,11 +350,37 @@ fn auth_full_specs(
                 crate::provider_catalog::LoginProviderTarget::AutoImport
             )
         })
+        // ??? named providers ??????? openai-compatible on-ramp ?
+        // ?????????????????? provider ??????????
+        .filter(|provider| {
+            if cfg.providers.is_empty() {
+                return true;
+            }
+            if matches!(
+                provider.target,
+                crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile)
+                    if profile.id == crate::provider_catalog::OPENAI_COMPAT_PROFILE.id
+            ) {
+                return true;
+            }
+            allowlist.as_deref().is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    provider.id.eq_ignore_ascii_case(entry)
+                        || provider.display_name.eq_ignore_ascii_case(entry)
+                        || provider
+                            .aliases
+                            .iter()
+                            .any(|alias| alias.eq_ignore_ascii_case(entry))
+                })
+            })
+        })
         .map(|provider| {
             let state = auth.state_for_provider(provider);
             (provider.display_name.to_string(), state)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    specs.extend(builtin);
+    specs
 }
 
 /// Vertical auth inventory: one line per provider. Configured providers get
@@ -1578,6 +1621,31 @@ mod tests {
 
     #[test]
     fn auth_status_lines_show_all_providers_with_state_dots() {
+        // Isolate from the developer machine's real ~/.jcode config and
+        // provider key env vars: this test exercises the default
+        // (nothing configured) header, so JCODE_HOME must point at a temp dir
+        // with no config.toml and no provider keys may resolve.
+        let _env_guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let saved_keys = [
+            "DEEPSEEK_API_KEY",
+            "KIMI_API_KEY",
+            "MINIMAX_API_KEY",
+            "GLM_API_KEY",
+            "OPENROUTER_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+        ]
+        .into_iter()
+        .map(|key| (key, std::env::var_os(key)))
+        .collect::<Vec<_>>();
+        crate::env::set_var("JCODE_HOME", temp.path());
+        for (key, _) in &saved_keys {
+            crate::env::remove_var(key);
+        }
+        crate::config::invalidate_config_cache();
+
         let auth = AuthStatus::default();
 
         let rendered = build_auth_status_lines(&auth, ActiveCredentialOverrides::default())
@@ -1610,6 +1678,19 @@ mod tests {
             rendered.contains("OpenAI-compatible"),
             "generic openai-compatible on-ramp should be listed: {rendered}"
         );
+
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        for (key, value) in saved_keys {
+            match value {
+                Some(value) => crate::env::set_var(key, value),
+                None => crate::env::remove_var(key),
+            }
+        }
+        crate::config::invalidate_config_cache();
     }
 
     #[test]
@@ -1620,6 +1701,104 @@ mod tests {
             !lines.is_empty(),
             "allowlisted providers should be listed: {lines:?}"
         );
+    }
+
+    #[test]
+    fn auth_status_lines_list_configured_named_providers_and_hide_unused_on_ramps() {
+        // ??? resonix ?? `[[providers]]` ?? provider ??header ????
+        // ????? provider?????????????? openai-compatible
+        // on-ramp???? Jcode Subscription / LM Studio / Ollama ?????
+        // ??????????
+        let _env_guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp.path());
+        std::fs::write(
+            temp.path().join("config.toml"),
+            r#"
+[provider]
+default_provider = "deepseek-flash"
+default_model = "deepseek-v4-flash"
+
+[[providers]]
+name        = "deepseek-flash"
+kind        = "anthropic"
+base_url    = "http://cch.skytech.io"
+models      = ["deepseek-v4-flash"]
+default     = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[providers]]
+name        = "kimi-1M"
+kind        = "anthropic"
+base_url    = "http://cch.skytech.io"
+models      = ["kimi-k3"]
+default     = "kimi-k3"
+api_key_env = "KIMI_API_KEY"
+"#,
+        )
+        .expect("write test config.toml");
+        // ????? config ??/??????????????????????
+        crate::config::invalidate_config_cache();
+
+        // ?? provider key ???????????? DEEPSEEK_API_KEY ???
+        // ?????????? `[[providers]]` ?? provider ? header ????
+        // ??????????/key ????
+        let saved_keys = [
+            "DEEPSEEK_API_KEY",
+            "KIMI_API_KEY",
+            "MINIMAX_API_KEY",
+            "GLM_API_KEY",
+        ]
+        .into_iter()
+        .map(|key| (key, std::env::var_os(key)))
+        .collect::<Vec<_>>();
+        for (key, _) in &saved_keys {
+            crate::env::remove_var(key);
+        }
+
+        let rendered =
+            build_auth_status_lines(&AuthStatus::default(), ActiveCredentialOverrides::default())
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+        // ????? provider ??? header??? key ?????????????
+        assert!(
+            rendered.contains("deepseek-flash"),
+            "configured named provider must be listed: {rendered}"
+        );
+        assert!(
+            rendered.contains("kimi-1M"),
+            "configured named provider must be listed: {rendered}"
+        );
+        // ?? openai-compatible on-ramp ?????????? profile ? key??
+        assert!(
+            rendered.contains("OpenAI-compatible"),
+            "generic openai-compatible on-ramp should stay: {rendered}"
+        );
+        // ?????????? on-ramp ?????
+        for hidden in ["Jcode Subscription", "LM Studio", "Ollama"] {
+            assert!(
+                !rendered.contains(hidden),
+                "unused built-in on-ramp `{hidden}` must be hidden: {rendered}"
+            );
+        }
+
+        for (key, value) in saved_keys {
+            match value {
+                Some(value) => crate::env::set_var(key, value),
+                None => crate::env::remove_var(key),
+            }
+        }
+        if let Some(prev_home) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        crate::config::invalidate_config_cache();
     }
 
     #[test]
