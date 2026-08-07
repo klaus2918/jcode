@@ -4,10 +4,7 @@
 //! the driving methods off `App` so the rest of the TUI can advance the flow in
 //! response to login, model selection, key presses, and the auto-advance timer.
 
-use super::onboarding_flow::{
-    ExternalCli, ImportReview, OnboardingFlow, OnboardingPendingValidation, OnboardingPhase,
-    SummaryPill,
-};
+use super::onboarding_flow::{OnboardingFlow, OnboardingPendingValidation, OnboardingPhase};
 use super::{App, DisplayMessage, SessionPickerMode};
 use crate::import::repo_ranking::{self, SessionLocation};
 use crate::tui::session_picker::{SessionPicker, load_sessions};
@@ -15,16 +12,9 @@ use crossterm::event::KeyCode;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 impl App {
-    /// How long the onboarding flow waits on an in-flight login import before
-    /// the tick watchdog assumes the async `LoginCompleted` event is never
-    /// coming and recovers into the failure screen. Generous enough that a slow
-    /// (network) credential validation completes normally, short enough that a
-    /// genuinely wedged import can't trap a first-run user.
-    const ONBOARDING_IMPORT_WATCHDOG: Duration = Duration::from_secs(20);
-
     /// Whether the guided onboarding flow is currently driving the UI.
     pub(super) fn onboarding_flow_active(&self) -> bool {
         self.onboarding_flow
@@ -41,14 +31,16 @@ impl App {
             .map(|flow| &flow.phase)
     }
 
-    /// Gate + start the flow after a successful login. Only fires for brand-new
-    /// users (no prior onboarding flow this session) so returning users who
-    /// re-auth aren't dragged through onboarding.
-    pub(super) fn maybe_begin_onboarding_flow_after_login(&mut self) {
-        // If the flow is already running, a successful login means we should
-        // leave the in-TUI `Login` phase and continue into model selection.
+    /// Gate + start the flow after a successful auth change (login/import or
+    /// provider setup). Only fires for brand-new users (no prior onboarding
+    /// flow this session) so returning users who re-auth aren't dragged through
+    /// onboarding.
+    pub(super) fn maybe_begin_onboarding_flow_after_auth(&mut self) {
+        // If the flow is already running, a successful auth change means we
+        // should leave the in-TUI configure phase and continue into model
+        // selection.
         if self.onboarding_flow.is_some() {
-            self.onboarding_after_login();
+            self.onboarding_advance_from_configure();
             return;
         }
         if !self.onboarding_preview_mode
@@ -112,14 +104,14 @@ impl App {
         }
         // Fresh installs no longer log in at the CLI before the TUI launches.
         // If we boot without working credentials, start the flow at the in-TUI
-        // `Login` phase. If credentials already exist, start the post-login
-        // onboarding path directly; we no longer ask first-run users to choose a
-        // model before they can get started.
+        // "configure a model provider?" phase. If credentials already exist,
+        // start the post-auth onboarding path directly; we no longer ask
+        // first-run users to choose a model before they can get started.
         self.onboarding_startup_checked = true;
         if crate::auth::AuthStatus::check_fast().has_any_available() {
             self.begin_onboarding_flow();
         } else {
-            self.begin_onboarding_flow_at_login();
+            self.begin_onboarding_flow_at_configure();
         }
     }
 
@@ -189,74 +181,49 @@ impl App {
         self.onboarding_after_model_select();
     }
 
-    /// Begin the guided flow at the in-TUI `Login` phase. Used on a fresh
-    /// install that booted without working credentials (the CLI no longer logs
-    /// in before the TUI launches).
-    ///
-    /// If we detect importable external logins (Codex/Claude/Cursor/etc.), we
-    /// arm a per-candidate yes/no walkthrough so the user can step through each
-    /// detected login and choose whether to import it. Otherwise we ask a simple
-    /// "Log in to OpenAI?" Yes/No.
+    /// Begin the guided flow at the "configure a model provider?" prompt. Used
+    /// on a fresh install that booted without working credentials (the CLI no
+    /// longer logs in before the TUI launches). Model access is config-driven:
+    /// the welcome screen asks whether to configure a provider now and points at
+    /// `jcode provider add`. No external-login (Anthropic/Codex/...) import
+    /// walkthrough is offered.
     ///
     /// No-op if a flow is already running.
-    pub(super) fn begin_onboarding_flow_at_login(&mut self) {
+    pub(super) fn begin_onboarding_flow_at_configure(&mut self) {
         if self.onboarding_flow.is_some() {
             return;
         }
-        // Detect importable external logins and, if any, build a per-candidate
-        // yes/no walkthrough rendered by the onboarding welcome screen.
-        let import = match crate::external_auth::pending_external_auth_review_candidates() {
-            Ok(candidates) => ImportReview::new(candidates),
-            Err(err) => {
-                crate::logging::error(&format!(
-                    "onboarding: failed to inspect external login sources: {err}"
-                ));
-                None
-            }
-        };
-        let had_imports = import.is_some();
-        self.onboarding_flow = Some(OnboardingFlow::begin_at_login(import));
+        self.onboarding_flow = Some(OnboardingFlow::begin_at_configure());
         // The login prompt is rendered by the onboarding welcome screen
         // (`onboarding_welcome_kind`) so it survives in remote mode.
-        if had_imports {
-            self.set_status_notice(
-                "Welcome to jcode: review detected logins (arrows/hl to move, Enter to choose)",
-            );
-        } else {
-            self.set_status_notice(
-                "Log in to OpenAI? Yes/No - hl to move, Enter to choose (No skips for now)",
-            );
-        }
+        self.set_status_notice(
+            "Configure a model provider now? Yes/No - hl to move, Enter to choose (No skips for now)",
+        );
     }
 
     /// Start the default first-run provider setup.
     /// Config-driven (Reasonix-aligned) mode: models are connected via
     /// `[[providers]]` config entries + a unified `~/.jcode/.env`, so the
     /// guided flow points at `jcode provider add` instead of interactive login.
-    pub(super) fn onboarding_start_default_login(&mut self) {
+    pub(super) fn onboarding_start_provider_setup(&mut self) {
         self.push_display_message(DisplayMessage::system(
             "Model access is configured, not logged in. Run `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>` to connect a provider, then pick it in /model."
                 .to_string(),
         ));
         self.set_status_notice("Configure a provider: jcode provider add");
-        self.onboarding_after_login();
+        self.onboarding_advance_from_configure();
     }
 
-    /// Advance out of a login phase once credentials are available. Prompt and
-    /// transcript content sharing stays off unless the user explicitly opted in
-    /// on the "Telemetry settings" page, so we only write the default when no
-    /// choice has been recorded. Advance straight to model selection.
-    /// No-op unless the flow is in a login phase.
-    pub(super) fn onboarding_after_login(&mut self) {
+    /// Advance out of the "configure a model provider?" phase once provider
+    /// setup is done. Advance straight to model selection.
+    /// No-op unless the flow is in the configure phase.
+    pub(super) fn onboarding_advance_from_configure(&mut self) {
         if !matches!(
             self.onboarding_phase(),
-            Some(OnboardingPhase::Login { .. }) | Some(OnboardingPhase::LoginOpenAi { .. })
+            Some(OnboardingPhase::ConfigureProvider { .. })
         ) {
             return;
         }
-        // The import (if any) has resolved; leave the progress state.
-        self.onboarding_import_in_progress = None;
-        self.onboarding_import_error = None;
         if let Some(flow) = self.onboarding_flow.as_mut() {
             flow.phase = OnboardingPhase::ModelSelect;
         }
@@ -272,153 +239,55 @@ impl App {
         self.onboarding_open_start_choice();
     }
 
-    /// Enter the "Continue where you left off?" phase. Highlightable Yes/No
-    /// with a [`DECISION_TIMEOUT`] countdown; the default (and timeout choice)
-    /// is "Yes" so the resume menu opens unless the user declines.
-    ///
-    /// Retained for compatibility with replay/test fixtures and the
-    /// `ContinuePrompt` rendering/key/tick paths. The live onboarding flow now
-    /// opens the two-action start choice directly.
-    #[allow(dead_code)]
-    fn onboarding_enter_continue_prompt(&mut self, cli: ExternalCli) {
-        if let Some(flow) = self.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::ContinuePrompt {
-                cli,
-                yes_highlighted: true,
-                shown_at: Instant::now(),
-            };
-        }
-        // The continue prompt is rendered by the onboarding welcome screen
-        // (`onboarding_welcome_kind`) so it survives in remote mode.
-        self.update_onboarding_continue_prompt_status(cli);
-    }
-
-    /// Refresh the status notice with the continue-prompt countdown.
-    fn update_onboarding_continue_prompt_status(&mut self, cli: ExternalCli) {
-        let remaining = self
-            .onboarding_flow
-            .as_ref()
-            .and_then(OnboardingFlow::decision_seconds_remaining)
-            .unwrap_or(0);
-        self.set_status_notice(format!(
-            "Continue a session where you left off in {}? Opens the resume menu in {remaining}s (Yes/No)",
-            cli.label()
-        ));
-    }
-
-    /// Answer the continue prompt. `true` -> open the transcript picker;
-    /// `false` -> fall through to the suggestion cards.
-    pub(super) fn onboarding_answer_continue(&mut self, wants_continue: bool) {
-        let cli = match self.onboarding_phase() {
-            Some(OnboardingPhase::ContinuePrompt { cli, .. }) => *cli,
-            _ => return,
-        };
-        if wants_continue {
-            let _ = cli;
-            self.onboarding_open_start_choice();
-        } else {
-            self.onboarding_show_suggestions();
-        }
-    }
-
     /// Intercept keys for the guided onboarding welcome phases:
     /// - `ModelSelect`: we tell the user to run /model; Enter is also a
     ///   shortcut that opens the model picker from the welcome screen.
-    /// - `ContinuePrompt`: Y/Enter continues, N/Esc declines.
-    /// - `LoginOpenAi`: Left/h -> Yes, Right/l -> No, toggle with
+    /// - `ConfigureProvider`: Left/h -> Yes, Right/l -> No, toggle with
     ///   Up/Down/k/j/Tab; y/n commit directly, Enter/Space commit the
-    ///   highlighted default (Yes -> OpenAI sign-in, No -> finish onboarding).
+    ///   highlighted default (Yes -> configure a provider now, No -> finish
+    ///   onboarding).
     ///
     /// Returns true if the key was consumed.
     pub(super) fn handle_onboarding_continue_prompt_key(&mut self, code: KeyCode) -> bool {
         // While a provider login is awaiting typed input (an API key, env var
         // value, endpoint, etc.) the onboarding flow is still parked in a
-        // `Login`/`LoginOpenAi` phase, but the user is now typing into the
-        // pending-login prompt rather than driving the welcome-screen Yes/No.
-        // If we kept intercepting keys here, Enter would re-open the provider
-        // picker (the reported "pick provider -> enter key -> asks again" loop)
-        // and characters like h/l/j/k/y/n would be eaten as navigation. Let the
-        // normal input path handle everything until the pending entry resolves.
+        // pre-ready phase, but the user is now typing into the pending prompt
+        // rather than driving the welcome-screen Yes/No. If we kept intercepting
+        // keys here, Enter would re-open the picker and characters like h/l/j/
+        // k/y/n would be eaten as navigation. Let the normal input path handle
+        // everything until the pending entry resolves.
         if self.pending_ssh_remote_name.is_some() {
             return false;
         }
         // Universal escape hatch. From any guided pre-ready phase, Esc always
         // leaves onboarding to the normal new-session screen. This is the last
-        // line of the liveness guarantee: no matter what state the flow is in
-        // (including async-wait states), one key the user always has gets them
-        // out. We only handle it on the welcome card itself; when an inline
-        // overlay (picker / sign-in) is open we let Esc close that first.
+        // line of the liveness guarantee: no matter what state the flow is in,
+        // one key the user always has gets them out. We only handle it on the
+        // welcome card itself; when an inline overlay (picker / sign-in) is
+        // open we let Esc close that first.
         if code == KeyCode::Esc
             && self.inline_interactive_state.is_none()
             && self.session_picker_overlay.is_none()
-            && self.session_picker_overlay.is_none()
             && matches!(
                 self.onboarding_phase(),
-                Some(
-                    OnboardingPhase::Login { .. }
-                        | OnboardingPhase::LoginOpenAi { .. }
-                        | OnboardingPhase::ModelSelect
-                        | OnboardingPhase::ContinuePrompt { .. }
-                )
+                Some(OnboardingPhase::ConfigureProvider { .. } | OnboardingPhase::ModelSelect)
             )
         {
-            self.onboarding_import_in_progress = None;
-            self.onboarding_import_error = None;
             self.onboarding_finish();
-            let login = Self::onboarding_login_suggestion();
+            let login = Self::onboarding_provider_add_hint();
             self.set_status_notice(format!(
                 "Onboarding skipped - run {login} when you're ready"
             ));
             return true;
         }
         match self.onboarding_phase() {
-            Some(OnboardingPhase::Login { import }) => {
-                // No detected imports remaining: this is the recovery fallback
-                // (an import failed or the user declined every detected login).
-                // Point them at the provider picker. Only intercept Enter from
-                // the welcome screen; if an overlay is already open let it commit.
-                if import.is_none() {
-                    return match code {
-                        KeyCode::Enter if self.inline_interactive_state.is_none() => {
-                            // Clear the failure notice now that the user is acting
-                            // on it, so a later retry starts from a clean screen.
-                            self.onboarding_import_error = None;
-                            self.push_display_message(DisplayMessage::system(
-                                "No providers configured. Run `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>` to connect one."
-                                    .to_string(),
-                            ));
-                            self.set_status_notice("Configure a provider: jcode provider add");
-                            // resonix 化：没有交互式登录 picker 可打开，直接结束
-                            // onboarding 到正常会话屏幕，配置引导由消息承担。
-                            self.onboarding_finish();
-                            true
-                        }
-                        // On the failure screen, H hands the fix to a coding
-                        // agent the user recently used (prepares a repair brief).
-                        KeyCode::Char('h') | KeyCode::Char('H')
-                            if self.onboarding_import_error.is_some() =>
-                        {
-                            self.onboarding_prepare_agent_repair_brief();
-                            true
-                        }
-                        _ => false,
-                    };
-                }
-                // A per-candidate import walkthrough is active. Drive it with the
-                // arrow / vim keys; Enter or Space commits the highlighted Yes/No
-                // and advances. Don't intercept once an inline overlay is open.
+            Some(OnboardingPhase::ConfigureProvider { .. }) => {
+                // Don't intercept once an inline overlay (the provider picker)
+                // is already open.
                 if self.inline_interactive_state.is_some() {
                     return false;
                 }
-                self.handle_onboarding_import_review_key(code)
-            }
-            Some(OnboardingPhase::LoginOpenAi { .. }) => {
-                // Don't intercept once an inline overlay (the OpenAI sign-in or
-                // the provider picker) is already open.
-                if self.inline_interactive_state.is_some() {
-                    return false;
-                }
-                self.handle_onboarding_login_openai_key(code)
+                self.handle_onboarding_configure_key(code)
             }
             Some(OnboardingPhase::ModelSelect) => match code {
                 // Enter opens the model picker, but only from the welcome
@@ -430,44 +299,33 @@ impl App {
                 }
                 _ => false,
             },
-            Some(OnboardingPhase::ContinuePrompt { .. }) => {
-                self.handle_onboarding_continue_choice_key(code)
-            }
             _ => false,
         }
     }
 
-    /// Handle a key while the "continue where you left off?" prompt is up.
-    /// Yes/No sit side by side (default highlight is "Yes"), matching the
-    /// import and telemetry-consent prompts:
+    /// Handle a key while the "Configure a model provider?" prompt is up.
+    /// Yes/No sit side by side (default highlight is "Yes"):
     ///   - Left / h  -> highlight "Yes"
     ///   - Right / l -> highlight "No"
     ///   - Up / Down / k / j / Tab -> toggle
-    ///   - y / Y -> continue;  n / N / Esc -> decline (both commit)
+    ///   - y / Y -> configure a provider now;  n / N -> skip and finish onboarding
     ///   - Enter / Space -> commit the highlighted choice
-    fn handle_onboarding_continue_choice_key(&mut self, code: KeyCode) -> bool {
-        let cli = match self.onboarding_phase() {
-            Some(OnboardingPhase::ContinuePrompt { cli, .. }) => *cli,
-            _ => return false,
-        };
+    fn handle_onboarding_configure_key(&mut self, code: KeyCode) -> bool {
         let Some(flow) = self.onboarding_flow.as_mut() else {
             return false;
         };
-        let OnboardingPhase::ContinuePrompt {
-            yes_highlighted, ..
-        } = &mut flow.phase
-        else {
+        let OnboardingPhase::ConfigureProvider { yes_highlighted } = &mut flow.phase else {
             return false;
         };
         match code {
             KeyCode::Left | KeyCode::Char('h') => {
                 *yes_highlighted = true;
-                self.update_onboarding_continue_prompt_status(cli);
+                self.update_onboarding_configure_status();
                 true
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 *yes_highlighted = false;
-                self.update_onboarding_continue_prompt_status(cli);
+                self.update_onboarding_configure_status();
                 true
             }
             KeyCode::Up
@@ -476,148 +334,20 @@ impl App {
             | KeyCode::Char('j')
             | KeyCode::Tab => {
                 *yes_highlighted = !*yes_highlighted;
-                self.update_onboarding_continue_prompt_status(cli);
+                self.update_onboarding_configure_status();
                 true
             }
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                self.onboarding_answer_continue(true);
-                true
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                self.onboarding_answer_continue(false);
-                true
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                let wants_continue = *yes_highlighted;
-                self.onboarding_answer_continue(wants_continue);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Handle a key while the single-screen import list is active.
-    /// Returns true if the key was consumed.
-    ///
-    /// The screen has two modes:
-    ///   * Summary (default): a read-only list of everything we detected, with
-    ///     two pills below it. "Continue" (preselected) imports everything;
-    ///     "Choose what to import" switches to the checkbox list. Arrows/Tab
-    ///     move between the pills, Enter/Space commit the focused pill.
-    ///   * Choose (checkbox list): per-login Yes/No rows.
-    ///     - Up / Down / k / j -> move the cursor between logins
-    ///     - Left / h / y -> choose "Yes" (import) for the highlighted login
-    ///     - Right / l / n -> choose "No" (skip) for the highlighted login
-    ///     - Space -> toggle the highlighted login between Yes and No
-    ///     - Enter -> import every "Yes" login and finish
-    fn handle_onboarding_import_review_key(&mut self, code: KeyCode) -> bool {
-        // `finished` means the user committed the import (so we kick it off
-        // outside the borrow).
-        let mut finished = false;
-        {
-            let Some(review) = self.onboarding_import_review_mut() else {
-                return false;
-            };
-            if !review.choosing {
-                // Summary mode: two pills, "Continue" (preselected) and
-                // "Import less". Left/Right (and Tab) move between them;
-                // Enter/Space commit the focused one.
-                match code {
-                    KeyCode::Left
-                    | KeyCode::Up
-                    | KeyCode::BackTab
-                    | KeyCode::Char('h')
-                    | KeyCode::Char('k') => review.summary_step(false),
-                    KeyCode::Right
-                    | KeyCode::Down
-                    | KeyCode::Tab
-                    | KeyCode::Char('j')
-                    | KeyCode::Char('l') => review.summary_step(true),
-                    // c is a direct shortcut into choose mode.
-                    KeyCode::Char('c') | KeyCode::Char('C') => review.enter_choose_mode(),
-                    // y = "yes, import everything" regardless of pill focus, so
-                    // the timeout is never a forced wait.
-                    KeyCode::Char('y') | KeyCode::Char('Y') => finished = true,
-                    KeyCode::Enter | KeyCode::Char(' ') => match review.summary_pill {
-                        SummaryPill::Continue => finished = true,
-                        SummaryPill::ImportLess => review.enter_choose_mode(),
-                    },
-                    _ => return false,
-                }
-            } else {
-                match code {
-                    KeyCode::Up | KeyCode::Char('k') => review.cursor_up(),
-                    KeyCode::Down | KeyCode::Char('j') => review.cursor_down(),
-                    // Left = Yes (import), Right = No (skip), for the highlighted row.
-                    KeyCode::Left
-                    | KeyCode::Char('h')
-                    | KeyCode::Char('y')
-                    | KeyCode::Char('Y') => review.set_current(true),
-                    KeyCode::Right
-                    | KeyCode::Char('l')
-                    | KeyCode::Char('n')
-                    | KeyCode::Char('N') => review.set_current(false),
-                    // Space toggles the highlighted row between Yes and No.
-                    KeyCode::Char(' ') => review.toggle_current(),
-                    // Enter commits the whole list (import all chosen logins).
-                    KeyCode::Enter => finished = true,
-                    _ => return false,
-                }
-            }
-        }
-        if finished {
-            self.onboarding_finish_import_review();
-        } else {
-            self.update_onboarding_import_review_status();
-        }
-        true
-    }
-
-    /// Handle a key while the "Log in to OpenAI?" prompt is up. Yes/No sit side
-    /// by side (default highlight is "Yes"):
-    ///   - Left / h  -> highlight "Yes"
-    ///   - Right / l -> highlight "No"
-    ///   - Up / Down / k / j / Tab -> toggle
-    ///   - y / Y -> log in to OpenAI;  n / N -> skip and finish onboarding
-    ///   - Enter / Space -> commit the highlighted choice
-    fn handle_onboarding_login_openai_key(&mut self, code: KeyCode) -> bool {
-        let Some(flow) = self.onboarding_flow.as_mut() else {
-            return false;
-        };
-        let OnboardingPhase::LoginOpenAi { yes_highlighted } = &mut flow.phase else {
-            return false;
-        };
-        match code {
-            KeyCode::Left | KeyCode::Char('h') => {
-                *yes_highlighted = true;
-                self.update_onboarding_login_openai_status();
-                true
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                *yes_highlighted = false;
-                self.update_onboarding_login_openai_status();
-                true
-            }
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::Char('k')
-            | KeyCode::Char('j')
-            | KeyCode::Tab => {
-                *yes_highlighted = !*yes_highlighted;
-                self.update_onboarding_login_openai_status();
-                true
-            }
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                self.onboarding_answer_login_openai(true);
+                self.onboarding_answer_configure(true);
                 true
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
-                self.onboarding_answer_login_openai(false);
+                self.onboarding_answer_configure(false);
                 true
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 let wants_openai = *yes_highlighted;
-                self.onboarding_answer_login_openai(wants_openai);
+                self.onboarding_answer_configure(wants_openai);
                 true
             }
             _ => false,
@@ -627,15 +357,15 @@ impl App {
     /// Answer the "Configure a provider?" prompt. Yes starts the config-guided
     /// setup; No exits onboarding and drops the user on the normal new-session
     /// screen with a system message telling them how to connect a provider.
-    pub(super) fn onboarding_answer_login_openai(&mut self, wants_openai: bool) {
+    pub(super) fn onboarding_answer_configure(&mut self, wants_openai: bool) {
         if !matches!(
             self.onboarding_phase(),
-            Some(OnboardingPhase::LoginOpenAi { .. })
+            Some(OnboardingPhase::ConfigureProvider { .. })
         ) {
             return;
         }
         if wants_openai {
-            self.onboarding_start_default_login();
+            self.onboarding_start_provider_setup();
         } else {
             self.onboarding_finish();
             self.push_display_message(DisplayMessage::system(
@@ -646,11 +376,11 @@ impl App {
         }
     }
 
-    /// Refresh the status notice for the "Log in to OpenAI?" prompt.
-    fn update_onboarding_login_openai_status(&mut self) {
+    /// Refresh the status notice for the "Configure a model provider?" prompt.
+    fn update_onboarding_configure_status(&mut self) {
         let yes = matches!(
             self.onboarding_phase(),
-            Some(OnboardingPhase::LoginOpenAi {
+            Some(OnboardingPhase::ConfigureProvider {
                 yes_highlighted: true
             })
         );
@@ -658,135 +388,6 @@ impl App {
         self.set_status_notice(format!(
             "Configure a model provider now? [{choice}] - hl to move, Enter to choose (No skips for now)"
         ));
-    }
-
-    /// Mutable access to the active import walkthrough, if any.
-    fn onboarding_import_review_mut(&mut self) -> Option<&mut ImportReview> {
-        match self.onboarding_flow.as_mut()?.phase {
-            OnboardingPhase::Login {
-                import: Some(ref mut review),
-            } => Some(review),
-            _ => None,
-        }
-    }
-
-    /// Whether the import screen's telemetry settings sub-page is currently
-    /// showing. Used so Esc means "go back" there rather than "leave
-    /// onboarding", and so the import countdown pauses while it is open.
-    /// Refresh the status notice to reflect the current import-list selection.
-    fn update_onboarding_import_review_status(&mut self) {
-        if let Some(review) = self.onboarding_import_review_mut() {
-            let checked = review.checked_count();
-            let total = review.total();
-            let secs = review.seconds_remaining();
-            let notice = if !review.choosing {
-                format!(
-                    "Found {total} login{} - Enter imports all (auto in {secs}s), or pick \"Import less\"",
-                    if total == 1 { "" } else { "s" },
-                )
-            } else {
-                format!(
-                    "Import {checked} of {total} login{} - Space toggles, arrows move, Enter imports (auto in {secs}s)",
-                    if total == 1 { "" } else { "s" },
-                )
-            };
-            self.set_status_notice(notice);
-        }
-    }
-
-    /// The walkthrough is complete: run the import for the approved candidates
-    /// (if any), then either advance the flow or wait for the import result.
-    fn onboarding_finish_import_review(&mut self) {
-        // Take the candidates and approved indices out of the phase, then clear
-        // the import sub-state so the welcome card stops rendering the prompt.
-        let (candidates, approved) = match self.onboarding_import_review_mut() {
-            Some(review) => (review.candidates.clone(), review.approved_indices()),
-            None => return,
-        };
-        if let Some(flow) = self.onboarding_flow.as_mut()
-            && let OnboardingPhase::Login { ref mut import } = flow.phase
-        {
-            *import = None;
-        }
-
-        if approved.is_empty() {
-            // The user declined every detected login. Fall back to manual login
-            // so they can still authenticate.
-            self.onboarding_import_in_progress = None;
-            self.set_status_notice("No logins imported. Press Enter to choose a provider.");
-            return;
-        }
-
-        // Mark the import as in-flight so the welcome card shows an "Importing
-        // your logins..." progress state (not the manual-login recovery copy)
-        // until the async LoginCompleted event advances or fails the flow.
-        self.onboarding_import_in_progress = Some(Instant::now());
-        // Remember the first approved login's provider so a later failure can
-        // target the agent repair brief at the right `jcode auth-test --provider`.
-        self.onboarding_import_failed_provider = approved
-            .first()
-            .and_then(|&i| candidates.get(i))
-            .and_then(|c| {
-                crate::external_auth::import_provider_labels(c)
-                    .first()
-                    .map(|p| p.to_string())
-            });
-        // Kick off the import on the runtime; the LoginCompleted event advances
-        // onboarding and activates the provider.
-        self.set_status_notice("Login: importing selected logins...");
-        // Grab the runtime handle explicitly: this path is reachable straight
-        // from a key handler (Enter/y on the summary screen), and a bare
-        // `tokio::spawn` would panic if no runtime is running (tests, exotic
-        // embeddings). Failing the import gracefully keeps the liveness
-        // guarantee: the user lands on the recovery screen, not a crash.
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            self.onboarding_handle_login_failed(Some(
-                "The import could not start (no async runtime).".to_string(),
-            ));
-            return;
-        };
-        runtime.spawn(async move {
-            let outcome = match crate::external_auth::run_external_auth_auto_import_candidates(
-                &candidates,
-                &approved,
-            )
-            .await
-            {
-                Ok(outcome) => outcome,
-                Err(err) => {
-                    crate::bus::Bus::global().publish(crate::bus::BusEvent::LoginCompleted(
-                        crate::bus::LoginCompleted {
-                            provider: "auto-import".to_string(),
-                            success: false,
-                            message: format!("Auto import failed: {}", err),
-                        },
-                    ));
-                    return;
-                }
-            };
-            // Auto-import bypasses the manual login-input path, so record
-            // `auth_success` here for each imported provider. Without this the
-            // onboarding activation funnel undercounts every imported login
-            // (the happy path of the guided first-run flow).
-            // Preserve which runtime should become the first-run default. The old
-            // synthetic `auto-import` provider discarded this information, so the
-            // auth-refresh path kept the stale pre-import provider and validation
-            // immediately failed. Prefer the exact OAuth/API-key route reported by
-            // AuthStatus, then fall back to the deterministic imported-label order.
-            let imported_provider = crate::auth::lifecycle::preferred_frontier_auth_provider(
-                &crate::auth::AuthStatus::check_fast(),
-            )
-            .or_else(|| outcome.preferred_activation_provider())
-            .unwrap_or("auto-import")
-            .to_string();
-            crate::bus::Bus::global().publish(crate::bus::BusEvent::LoginCompleted(
-                crate::bus::LoginCompleted {
-                    provider: imported_provider,
-                    success: outcome.imported > 0,
-                    message: outcome.render_markdown(),
-                },
-            ));
-        });
     }
 
     /// Open the action-only onboarding choice. Session history remains available
@@ -1233,7 +834,7 @@ impl App {
 
     /// resonix 化后没有交互式登录可建议：模型接入只走 `[[providers]]` 配置 +
     /// 统一 `.env`。返回配置引导命令供文案引用。
-    pub(super) fn onboarding_login_suggestion() -> String {
+    pub(super) fn onboarding_provider_add_hint() -> String {
         "`jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>`".to_string()
     }
 
@@ -1329,7 +930,7 @@ impl App {
             for row in &attention {
                 body.push_str(&format!("- ✕ {row}\n"));
             }
-            let login = Self::onboarding_login_suggestion();
+            let login = Self::onboarding_provider_add_hint();
             let fix_hint = if looks_like_auth || !ready.is_empty() {
                 format!("Run {login} to fix provider credentials, or /model to pick another.")
             } else {
@@ -1361,7 +962,7 @@ impl App {
             let hint = if looks_like_auth {
                 format!(
                     "{} to fix credentials, or /model",
-                    Self::onboarding_login_suggestion()
+                    Self::onboarding_provider_add_hint()
                 )
             } else {
                 "type anything to try, or /model".to_string()
@@ -1378,99 +979,6 @@ impl App {
         if let Some(flow) = self.onboarding_flow.as_mut() {
             flow.phase = OnboardingPhase::Done;
         }
-    }
-
-    /// A login/import attempt failed while onboarding was driving the Login
-    /// phase. Without this, the welcome card stays up (still spinning the donut)
-    /// while a red error message renders behind it, which looks broken. Reset
-    /// the Login phase to the clean manual-login prompt so the user can pick a
-    /// provider and try again; the pushed error message tells them what went
-    /// wrong.
-    pub(super) fn onboarding_handle_login_failed(&mut self, reason: Option<String>) {
-        let in_login_phase = matches!(
-            self.onboarding_flow.as_ref().map(|f| &f.phase),
-            Some(OnboardingPhase::Login { .. })
-        );
-        if !in_login_phase {
-            return;
-        }
-        if let Some(flow) = self.onboarding_flow.as_mut()
-            && let OnboardingPhase::Login { ref mut import } = flow.phase
-        {
-            *import = None;
-        }
-        self.onboarding_import_in_progress = None;
-        // Remember a short reason so the recovery screen can explain what went
-        // wrong; fall back to a generic line when no detail is available.
-        self.onboarding_import_error = Some(
-            reason
-                .map(|r| Self::summarize_import_error(&r))
-                .unwrap_or_else(|| "We couldn't import those logins.".to_string()),
-        );
-        self.set_status_notice(
-            "Import failed. Press Enter to choose a provider and log in manually.",
-        );
-    }
-
-    /// Condense a (possibly multi-line markdown) import-failure message into a
-    /// single short sentence suitable for the recovery screen. Keeps the first
-    /// meaningful line and trims markdown/marker noise.
-    fn summarize_import_error(raw: &str) -> String {
-        let cleaned = raw
-            .lines()
-            .map(|l| l.trim())
-            .find(|l| {
-                !l.is_empty() && !l.starts_with("**") && !l.eq_ignore_ascii_case("Logins imported")
-            })
-            .unwrap_or("We couldn't import those logins.")
-            .trim_start_matches(['✕', '✓', '-', ' '])
-            .trim();
-        let cleaned = if cleaned.is_empty() {
-            "We couldn't import those logins."
-        } else {
-            cleaned
-        };
-        // Keep it to a single, screen-friendly line, and capitalize the first
-        // letter so a lowercase validator message reads as a clean sentence.
-        let truncated: String = cleaned.chars().take(120).collect();
-        let mut s = String::with_capacity(truncated.len() + 1);
-        let mut chars = truncated.chars();
-        if let Some(first) = chars.next() {
-            s.extend(first.to_uppercase());
-            s.push_str(chars.as_str());
-        }
-        if cleaned.chars().count() > 120 {
-            s.push('…');
-        }
-        s
-    }
-
-    /// Prepare the agent-assisted repair brief for the import-failure recovery
-    /// screen (triggered by `H`). We detect the coding agent the user used most
-    /// recently, build a plain-text brief listing the exact non-interactive
-    /// commands the agent can run (`jcode auth-test --json`, `jcode login
-    /// --api-key-stdin`, `jcode provider add`), copy it to the clipboard, and
-    /// surface it as a system message so the user can paste it into that agent.
-    fn onboarding_prepare_agent_repair_brief(&mut self) {
-        use crate::tui::app::onboarding_repair;
-        let Some(failure) = self.onboarding_import_error.clone() else {
-            return;
-        };
-        let agent = onboarding_repair::detect_preferred_repair_agent();
-        let provider = self.onboarding_import_failed_provider.as_deref();
-        let mut brief = onboarding_repair::build_repair_brief(agent, &failure, provider);
-        // Persist the brief to a stable path so a helper agent launched in this
-        // directory can read it directly (cat it) instead of relying on a paste.
-        if let Some(path) = onboarding_repair::persist_repair_brief(&brief) {
-            brief.push_str(&format!("\nThis brief is saved at: {}\n", path.display()));
-        }
-        let copied = super::helpers::copy_to_clipboard(&brief);
-        // Show the brief in the transcript so it is visible even if the
-        // clipboard is unavailable (SSH, no display server).
-        self.push_display_message(DisplayMessage::system(format!(
-            "Agent repair brief (paste into your coding agent):\n\n{brief}"
-        )));
-        self.set_status_notice(onboarding_repair::repair_brief_status(agent, copied));
     }
 
     /// Drive auto-advancing phases. Call once per tick/redraw. Returns true if
@@ -1497,72 +1005,6 @@ impl App {
         if self.onboarding_tick_model_validation() {
             changed = true;
         }
-        if !self.onboarding_flow_active() {
-            return changed;
-        }
-
-        // Watchdog: the login-import runs asynchronously and advances the flow
-        // only when its `LoginCompleted` event arrives. If that event never
-        // lands (a wedged runtime, a dropped bus event, a sandbox with no
-        // runtime), the user would otherwise be stranded forever on the
-        // "Importing your logins..." screen. After a hard timeout we recover the
-        // flow into the failure-aware recovery screen so the user always has a
-        // way forward (Enter -> provider picker).
-        if let Some(started_at) = self.onboarding_import_in_progress {
-            if started_at.elapsed() >= Self::ONBOARDING_IMPORT_WATCHDOG
-                && matches!(
-                    self.onboarding_phase(),
-                    Some(OnboardingPhase::Login { import: None })
-                )
-            {
-                self.onboarding_handle_login_failed(Some(
-                    "The import is taking longer than expected.".to_string(),
-                ));
-                return true;
-            }
-            // Keep redrawing so the progress screen animates while we wait.
-            changed = true;
-        }
-
-        // Drive the longer (60s) yes/no decision phases: the login-import
-        // walkthrough and the telemetry consent prompt. On timeout we pick the
-        // highlighted default; otherwise we keep the countdown notice fresh.
-        let decision_timed_out = self
-            .onboarding_flow
-            .as_ref()
-            .map(OnboardingFlow::decision_timed_out)
-            .unwrap_or(false);
-        match self.onboarding_phase().cloned() {
-            Some(OnboardingPhase::Login {
-                import: Some(_), ..
-            }) => {
-                if decision_timed_out {
-                    // Timeout default: import every currently-checked login.
-                    self.onboarding_finish_import_review();
-                    return true;
-                }
-                // Keep the countdown notice fresh.
-                self.update_onboarding_import_review_status();
-                return true;
-            }
-            Some(OnboardingPhase::ContinuePrompt {
-                yes_highlighted,
-                cli,
-                ..
-            }) => {
-                if decision_timed_out {
-                    // Timeout default is the highlighted option (Yes by default).
-                    self.onboarding_answer_continue(yes_highlighted);
-                    return true;
-                }
-                self.update_onboarding_continue_prompt_status(cli);
-                return true;
-            }
-            _ => {}
-        }
-
-        // The action picker waits for an explicit choice. Return `changed` so the
-        // import-progress watchdog keeps the screen repainting while it waits.
         changed
     }
 }

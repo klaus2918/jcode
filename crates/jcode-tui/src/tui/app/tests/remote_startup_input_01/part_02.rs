@@ -217,7 +217,9 @@ fn test_remote_runtime_activity_notification_renders_as_system_message() {
 fn test_remote_auth_activity_notification_is_status_only_during_onboarding() {
     let mut app = create_test_app();
     let mut flow = crate::tui::app::onboarding_flow::OnboardingFlow::begin();
-    flow.phase = crate::tui::app::onboarding_flow::OnboardingPhase::Login { import: None };
+    flow.phase = crate::tui::app::onboarding_flow::OnboardingPhase::ConfigureProvider {
+        yes_highlighted: true,
+    };
     app.onboarding_flow = Some(flow);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -308,7 +310,9 @@ fn test_remote_auth_model_change_does_not_add_a_third_visible_line() {
 fn test_remote_onboarding_catalog_activity_completes_model_setup_without_chat_noise() {
     let mut app = create_test_app();
     let mut flow = crate::tui::app::onboarding_flow::OnboardingFlow::begin();
-    flow.phase = crate::tui::app::onboarding_flow::OnboardingPhase::Login { import: None };
+    flow.phase = crate::tui::app::onboarding_flow::OnboardingPhase::ConfigureProvider {
+        yes_highlighted: true,
+    };
     app.onboarding_flow = Some(flow);
     app.auth_catalog_refresh_pending = true;
     let rt = tokio::runtime::Runtime::new().unwrap();

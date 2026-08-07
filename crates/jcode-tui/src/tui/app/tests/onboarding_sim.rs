@@ -19,17 +19,17 @@ fn onboarding_sim_starts_steps_and_exits() {
         app.onboarding_welcome_active(),
         "sim should render the onboarding welcome screen"
     );
-    // First screen is the LoginOpenAi prompt.
+    // First screen is the ConfigureProvider prompt.
     assert!(matches!(
         app.onboarding_phase(),
-        Some(OnboardingPhase::LoginOpenAi { .. })
+        Some(OnboardingPhase::ConfigureProvider { .. })
     ));
 
-    // Tab advances to the import-review screen.
+    // Tab advances to the action-only start choice.
     app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
     assert!(matches!(
         app.onboarding_phase(),
-        Some(OnboardingPhase::Login { import: Some(_) })
+        Some(OnboardingPhase::StartChoice { .. })
     ));
 
     // Esc exits and clears all onboarding state.
@@ -43,13 +43,13 @@ fn onboarding_sim_highlight_toggles_without_real_action() {
     let mut app = create_test_app();
     app.start_onboarding_simulator();
 
-    // On the LoginOpenAi screen, 'l' previews the "No" highlight and 'h' the
+    // On the ConfigureProvider screen, 'l' previews the "No" highlight and 'h' the
     // "Yes" highlight. Neither triggers a real login (no overlay opens).
     app.handle_key(KeyCode::Char('l'), KeyModifiers::NONE)
         .unwrap();
     assert!(matches!(
         app.onboarding_phase(),
-        Some(OnboardingPhase::LoginOpenAi {
+        Some(OnboardingPhase::ConfigureProvider {
             yes_highlighted: false
         })
     ));
@@ -57,7 +57,7 @@ fn onboarding_sim_highlight_toggles_without_real_action() {
         .unwrap();
     assert!(matches!(
         app.onboarding_phase(),
-        Some(OnboardingPhase::LoginOpenAi {
+        Some(OnboardingPhase::ConfigureProvider {
             yes_highlighted: true
         })
     ));
@@ -96,9 +96,6 @@ fn alt_5_resets_onboarding_sim_to_a_pristine_first_screen() {
 
     // Seed every transient field that could make a restarted simulation look
     // like a half-completed or failed real onboarding attempt.
-    app.onboarding_import_in_progress = Some(std::time::Instant::now());
-    app.onboarding_import_error = Some("stale import error".to_string());
-    app.onboarding_import_failed_provider = Some("stale-provider".to_string());
     app.onboarding_pending_model_validation = Some(
         crate::tui::app::onboarding_flow::OnboardingPendingValidation::new(
             "stale-session".to_string(),
@@ -118,13 +115,10 @@ fn alt_5_resets_onboarding_sim_to_a_pristine_first_screen() {
     assert!(app.onboarding_preview_mode);
     assert!(matches!(
         app.onboarding_phase(),
-        Some(OnboardingPhase::LoginOpenAi {
+        Some(OnboardingPhase::ConfigureProvider {
             yes_highlighted: true
         })
     ));
-    assert!(app.onboarding_import_in_progress.is_none());
-    assert!(app.onboarding_import_error.is_none());
-    assert!(app.onboarding_import_failed_provider.is_none());
     assert!(app.onboarding_pending_model_validation.is_none());
     assert!(app.help_scroll.is_none());
     assert!(app.model_status_scroll.is_none());
@@ -146,27 +140,4 @@ fn altgr_5_does_not_start_onboarding_simulator() {
     )
     .unwrap();
     assert!(!app.onboarding_sim_active());
-}
-
-
-#[test]
-fn onboarding_sim_summary_arrows_preview_the_three_pills() {
-    use crate::tui::app::onboarding_flow::SummaryPill;
-    let mut app = create_test_app();
-    app.start_onboarding_simulator();
-    // Screen 2 is the read-only import summary.
-    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-
-    let pill = |app: &App| match app.onboarding_phase() {
-        Some(OnboardingPhase::Login {
-            import: Some(review),
-        }) => review.summary_pill,
-        other => panic!("expected import summary, got {other:?}"),
-    };
-    assert_eq!(pill(&app), SummaryPill::Continue);
-    app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-    assert_eq!(pill(&app), SummaryPill::ImportLess);
-    app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-    app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
-    assert_eq!(pill(&app), SummaryPill::ImportLess);
 }

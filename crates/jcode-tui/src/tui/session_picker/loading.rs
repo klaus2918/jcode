@@ -2906,26 +2906,6 @@ pub fn load_sessions_grouped() -> Result<(Vec<ServerGroup>, Vec<SessionInfo>)> {
     Ok((groups, orphan_sessions))
 }
 
-/// Load only the sessions for a single external CLI (Codex or Claude Code),
-/// returned as orphan [`SessionInfo`] grouped output compatible with
-/// `SessionPicker::new_grouped`.
-///
-/// Kept as a focused test helper for the external transcript importers.
-#[cfg(test)]
-pub(crate) fn load_external_cli_sessions_grouped(
-    cli: crate::tui::app::onboarding_flow::ExternalCli,
-) -> (Vec<ServerGroup>, Vec<SessionInfo>) {
-    use crate::tui::app::onboarding_flow::ExternalCli;
-    let scan_limit = session_scan_limit();
-    let sessions = match cli {
-        ExternalCli::Codex => load_external_codex_sessions(scan_limit),
-        ExternalCli::ClaudeCode => load_external_claude_code_sessions(scan_limit),
-        ExternalCli::Pi => load_external_pi_sessions(scan_limit),
-        ExternalCli::OpenCode => load_external_opencode_sessions(scan_limit),
-    };
-    (Vec::new(), sessions)
-}
-
 #[cfg(test)]
 #[path = "loading_tests.rs"]
 mod tests;

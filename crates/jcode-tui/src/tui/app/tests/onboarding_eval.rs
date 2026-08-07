@@ -53,9 +53,7 @@ enum ScreenSurface {
 
 fn classify_phase_surface(phase: &OnboardingPhase) -> ScreenSurface {
     match phase {
-        OnboardingPhase::Login { .. } => ScreenSurface::WelcomeBody,
-        OnboardingPhase::LoginOpenAi { .. } => ScreenSurface::WelcomeBody,
-        OnboardingPhase::ContinuePrompt { .. } => ScreenSurface::WelcomeBody,
+        OnboardingPhase::ConfigureProvider { .. } => ScreenSurface::WelcomeBody,
         OnboardingPhase::Suggestions => ScreenSurface::WelcomeBody,
         OnboardingPhase::StartChoice { .. } => ScreenSurface::PickerOverlay,
         // ModelSelect immediately auto-advances; it never rests on screen.
@@ -67,27 +65,10 @@ fn classify_phase_surface(phase: &OnboardingPhase) -> ScreenSurface {
 /// Every `OnboardingPhase` variant, used to assert screen coverage. Kept in
 /// sync with the enum by the same wildcard-free discipline as the classifier.
 fn all_onboarding_phases() -> Vec<(&'static str, OnboardingPhase)> {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
     let now = std::time::Instant::now();
-    let review = ImportReview::new(vec![
-        ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-        ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-    ])
-    .unwrap();
     vec![
-        ("Login{import}", OnboardingPhase::Login { import: Some(review) }),
-        ("Login{recovery}", OnboardingPhase::Login { import: None }),
-        ("LoginOpenAi", OnboardingPhase::LoginOpenAi { yes_highlighted: true }),
+        ("ConfigureProvider", OnboardingPhase::ConfigureProvider { yes_highlighted: true }),
         ("ModelSelect", OnboardingPhase::ModelSelect),
-        (
-            "ContinuePrompt",
-            OnboardingPhase::ContinuePrompt {
-                cli: ExternalCli::Codex,
-                yes_highlighted: true,
-                shown_at: now,
-            },
-        ),
         (
             "StartChoice",
             OnboardingPhase::StartChoice { shown_at: now },
@@ -133,46 +114,37 @@ struct Path {
 fn entry_paths() -> Vec<Path> {
     vec![
         Path {
-            name: "Fresh install, no detected logins (accept OpenAI)",
+            name: "Fresh install, no credentials (configure provider)",
             weight: 0.40,
             reaches_ready: true,
             steps: vec![
-                Step { phase: "LoginOpenAi", keystrokes: 1, is_decision: true, external_boundary: true },
+                // The config-driven welcome asks one Yes/No and points at
+                // `jcode provider add`; no browser OAuth leaves the TUI.
+                Step { phase: "ConfigureProvider", keystrokes: 1, is_decision: true, external_boundary: false },
                 Step { phase: "StartChoice", keystrokes: 1, is_decision: true, external_boundary: false },
             ],
         },
         Path {
-            name: "Fresh install, decline login (defer to /login)",
-            weight: 0.10,
+            name: "Fresh install, decline provider setup",
+            weight: 0.15,
             reaches_ready: false,
             steps: vec![
-                Step { phase: "LoginOpenAi", keystrokes: 1, is_decision: true, external_boundary: false },
+                Step { phase: "ConfigureProvider", keystrokes: 1, is_decision: true, external_boundary: false },
                 Step { phase: "Done", keystrokes: 0, is_decision: false, external_boundary: false },
             ],
         },
         Path {
-            name: "Fresh install, import 1 detected login",
-            weight: 0.20,
-            reaches_ready: true,
+            name: "Fresh install, Esc skip at the provider prompt",
+            weight: 0.15,
+            reaches_ready: false,
             steps: vec![
-                Step { phase: "Login{import}", keystrokes: 1, is_decision: true, external_boundary: false },
-                Step { phase: "StartChoice", keystrokes: 1, is_decision: true, external_boundary: false },
-            ],
-        },
-        Path {
-            name: "Fresh install, import 2 detected logins",
-            weight: 0.10,
-            reaches_ready: true,
-            steps: vec![
-                // Single-screen checkbox list, all pre-checked: one Enter imports
-                // every detected login at once (no per-candidate page).
-                Step { phase: "Login{import}", keystrokes: 1, is_decision: true, external_boundary: false },
-                Step { phase: "StartChoice", keystrokes: 1, is_decision: true, external_boundary: false },
+                Step { phase: "ConfigureProvider", keystrokes: 1, is_decision: true, external_boundary: false },
+                Step { phase: "Done", keystrokes: 0, is_decision: false, external_boundary: false },
             ],
         },
         Path {
             name: "Already authenticated at startup",
-            weight: 0.20,
+            weight: 0.30,
             reaches_ready: true,
             steps: vec![
                 Step { phase: "StartChoice", keystrokes: 1, is_decision: true, external_boundary: false },
@@ -349,25 +321,12 @@ fn tier3_screen_score_w(m: &ScreenMetrics, w: &Tier3Weights) -> f64 {
 }
 
 /// Screens we score for Tier 3. Each is a real, user-visible welcome screen.
+/// The config-driven flow has exactly two: the "Configure a model provider?"
+/// Yes/No prompt and the suggestion-card resting state. (The start choice is a
+/// picker overlay, not a welcome-body screen, so it is not scored here.)
 fn tier3_screens() -> Vec<ScreenMetrics> {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-    let now = std::time::Instant::now();
-    let review =
-        ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json")])
-            .unwrap();
     vec![
-        render_phase_screen("LoginOpenAi", OnboardingPhase::LoginOpenAi { yes_highlighted: true }),
-        render_phase_screen("Login{import}", OnboardingPhase::Login { import: Some(review) }),
-        render_phase_screen("Login{recovery}", OnboardingPhase::Login { import: None }),
-        render_phase_screen(
-            "ContinuePrompt",
-            OnboardingPhase::ContinuePrompt {
-                cli: ExternalCli::Codex,
-                yes_highlighted: true,
-                shown_at: now,
-            },
-        ),
+        render_phase_screen("ConfigureProvider", OnboardingPhase::ConfigureProvider { yes_highlighted: true }),
         render_phase_screen("Suggestions", OnboardingPhase::Suggestions),
     ]
 }
@@ -451,63 +410,38 @@ fn terminology_is_consistent(screens: &[(&'static str, String)]) -> bool {
 /// Compute the four Tier 4 signals by reading the real screens and driving the
 /// real app. `with_temp_jcode_home` must already be active.
 fn tier4_metrics() -> Tier4Metrics {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-
     // ---- terminology_consistency: scan every welcome screen's prose ----
     let terminology_consistent = terminology_is_consistent(&all_welcome_screen_texts());
 
-    // ---- progress_visibility: the multi-login import is a multi-step context
-    // and must set scope up front. The default summary screen does this by
-    // (a) stating the total in the headline ("We found N existing logins") and
-    // (b) showing all N logins as visible rows at once, so the user always
-    // knows how many there are and what they are. We verify both: the counted
-    // headline AND that every detected login is actually listed. Rendered from
-    // the real screen. ----
-    let review = ImportReview::new(vec![
-        ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-        ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-    ])
-    .unwrap();
-    let multi = app_in_phase(OnboardingPhase::Login { import: Some(review) });
-    let multi_text = render_onboarding_text(&multi, 80, 30).to_ascii_lowercase();
-    let states_total = multi_text.contains("we found 2 existing logins");
-    let lists_all = multi_text.contains("openai/codex") && multi_text.contains("claude");
-    let progress_visible = states_total && lists_all;
+    // ---- progress_visibility: the config-driven welcome must scope the choice
+    // up front. The "Configure a model provider?" prompt shows its question and
+    // both selectable options (Yes/No pills) on one screen, so the user always
+    // knows what is being asked and what the options are. ----
+    let welcome = app_in_phase(OnboardingPhase::ConfigureProvider { yes_highlighted: true });
+    let welcome_text = render_onboarding_text(&welcome, 80, 30).to_ascii_lowercase();
+    let progress_visible = welcome_text.contains("configure a model provider")
+        && welcome_text.contains("yes")
+        && welcome_text.contains("no");
 
-    // ---- default_safety: drive the real ContinuePrompt timeout. The highlighted
-    // default is "Yes", and a timeout must resolve to a non-destructive outcome
-    // (open the resume picker), never silently discard the user's history. ----
+    // ---- default_safety: the config-driven prompt has NO auto-timeout. A
+    // do-nothing user stays on the recoverable "Configure a model provider?"
+    // prompt forever (no destructive auto-selection), so a timeout can never
+    // discard the user's session. Drive the real tick to confirm the phase is
+    // stable. ----
     let default_safe = {
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            // Place the prompt in the past so the decision has already timed out.
-            let past = std::time::Instant::now()
-                - (crate::tui::app::onboarding_flow::DECISION_TIMEOUT
-                    + std::time::Duration::from_secs(1));
-            flow.phase = OnboardingPhase::ContinuePrompt {
-                cli: ExternalCli::Codex,
-                yes_highlighted: true,
-                shown_at: past,
-            };
-        }
-        // Tick the flow: the timeout fires and auto-commits the highlighted Yes.
+        app.begin_onboarding_flow_at_configure();
         app.onboarding_tick();
-        // A SAFE default lands on a recoverable phase the user can still act on
-        // (the resume picker, or the suggestion cards when no transcript exists)
-        // rather than a terminal that silently discards their session. An UNSAFE
-        // default would be `Done` (login/session lost) or leaving the flow.
         matches!(
             app.onboarding_phase(),
-            Some(OnboardingPhase::StartChoice { .. } | OnboardingPhase::Suggestions)
+            Some(OnboardingPhase::ConfigureProvider { .. })
         )
     };
 
     // ---- narrow_terminal_safety: the core Yes/No affordance must still render
     // on a cramped 50-col terminal (real renderer, smaller buffer). ----
-    let narrow = app_in_phase(OnboardingPhase::LoginOpenAi { yes_highlighted: true });
+    let narrow = app_in_phase(OnboardingPhase::ConfigureProvider { yes_highlighted: true });
     let narrow_text = render_onboarding_text(&narrow, 50, 30);
     let narrow_options_survive = narrow_text.contains("Yes") && narrow_text.contains("No");
 
@@ -586,11 +520,8 @@ fn tier4_score_w(m: &Tier4Metrics, w: &Tier4Weights) -> f64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum GraphNode {
     Start,
-    LoginOpenAi,
-    LoginImport,
-    LoginRecovery,
+    ConfigureProvider,
     ModelSelect,
-    ContinuePrompt,
     StartChoice,
     Suggestions,
     Done,
@@ -600,11 +531,8 @@ enum GraphNode {
 /// arm, so a new `OnboardingPhase` variant fails to compile here until placed.
 fn phase_to_node(phase: &OnboardingPhase) -> GraphNode {
     match phase {
-        OnboardingPhase::LoginOpenAi { .. } => GraphNode::LoginOpenAi,
-        OnboardingPhase::Login { import: Some(_) } => GraphNode::LoginImport,
-        OnboardingPhase::Login { import: None } => GraphNode::LoginRecovery,
+        OnboardingPhase::ConfigureProvider { .. } => GraphNode::ConfigureProvider,
         OnboardingPhase::ModelSelect => GraphNode::ModelSelect,
-        OnboardingPhase::ContinuePrompt { .. } => GraphNode::ContinuePrompt,
         OnboardingPhase::StartChoice { .. } => GraphNode::StartChoice,
         OnboardingPhase::Suggestions => GraphNode::Suggestions,
         OnboardingPhase::Done => GraphNode::Done,
@@ -627,16 +555,10 @@ fn node_props(n: GraphNode) -> NodeProps {
     use GraphNode::*;
     match n {
         Start => NodeProps { is_decision: false, has_default: false, is_ready: false, is_terminal: false },
-        // Forced Yes/No: there is no timeout default on the OpenAI sign-in prompt.
-        LoginOpenAi => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
-        // Import review auto-commits the highlighted choice on DECISION_TIMEOUT.
-        LoginImport => NodeProps { is_decision: true, has_default: true, is_ready: false, is_terminal: false },
-        // Recovery fallback: a single Enter shows config guidance and finishes.
-        LoginRecovery => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
+        // Forced Yes/No: there is no timeout default on the configure prompt.
+        ConfigureProvider => NodeProps { is_decision: true, has_default: false, is_ready: false, is_terminal: false },
         // Transient: auto-advances, the user never chooses here.
         ModelSelect => NodeProps { is_decision: false, has_default: true, is_ready: false, is_terminal: false },
-        // Continue prompt auto-opens the resume menu on timeout (default Yes).
-        ContinuePrompt => NodeProps { is_decision: true, has_default: true, is_ready: false, is_terminal: false },
         // Choosing either action reaches a ready session.
         StartChoice => NodeProps { is_decision: true, has_default: false, is_ready: true, is_terminal: false },
         Suggestions => NodeProps { is_decision: false, has_default: false, is_ready: true, is_terminal: true },
@@ -660,28 +582,18 @@ fn flow_edges() -> Vec<Edge> {
     vec![
         // Entry routing from the virtual Start (zero-cost: chosen by detected
         // environment, not by a keystroke).
-        Edge { from: Start, to: LoginOpenAi, keystrokes: 0 },
-        Edge { from: Start, to: LoginImport, keystrokes: 0 },
+        Edge { from: Start, to: ConfigureProvider, keystrokes: 0 },
         Edge { from: Start, to: ModelSelect, keystrokes: 0 },
-        // OpenAI sign-in: Yes -> (browser OAuth) -> Suggestions; No -> Done.
-        Edge { from: LoginOpenAi, to: StartChoice, keystrokes: 1 },
-        Edge { from: LoginOpenAi, to: Done, keystrokes: 1 },
-        // Import review: accept/decline each candidate, then suggestions. A
-        // failed/declined import drops to the recovery fallback.
-        Edge { from: LoginImport, to: StartChoice, keystrokes: 1 },
-        Edge { from: LoginImport, to: LoginRecovery, keystrokes: 1 },
-        // Recovery: Enter shows the config guidance and finishes onboarding
-        // (resonix: no interactive login picker remains).
-        Edge { from: LoginRecovery, to: Done, keystrokes: 1 },
+        // Configure prompt: Yes -> provider config guidance -> start choice;
+        // No -> Done.
+        Edge { from: ConfigureProvider, to: StartChoice, keystrokes: 1 },
+        Edge { from: ConfigureProvider, to: Done, keystrokes: 1 },
         // Transient model-select auto-advances with no keystroke.
         Edge { from: ModelSelect, to: StartChoice, keystrokes: 0 },
         // The two actions either enter the normal blank-session suggestions or
         // finish onboarding while launching the suggested review.
         Edge { from: StartChoice, to: Suggestions, keystrokes: 1 },
         Edge { from: StartChoice, to: Done, keystrokes: 1 },
-        // Continue prompt: Yes -> resume picker; No -> suggestions.
-        Edge { from: ContinuePrompt, to: StartChoice, keystrokes: 1 },
-        Edge { from: ContinuePrompt, to: Suggestions, keystrokes: 1 },
     ]
 }
 
@@ -776,12 +688,9 @@ struct Tier5Metrics {
 /// authored step's phase label. Wildcard-free over the known labels.
 fn entry_node_for(path: &Path) -> GraphNode {
     match path.steps.first().map(|s| s.phase) {
-        Some("LoginOpenAi") => GraphNode::LoginOpenAi,
-        Some("Login{import}") => GraphNode::LoginImport,
-        Some("Login{recovery}") => GraphNode::LoginRecovery,
+        Some("ConfigureProvider") => GraphNode::ConfigureProvider,
         Some("Suggestions") => GraphNode::Suggestions,
         Some("StartChoice") => GraphNode::StartChoice,
-        Some("ContinuePrompt") => GraphNode::ContinuePrompt,
         // ModelSelect/Done never lead an entry path; default to Start so an
         // unexpected label is conservatively treated as full-path overhead.
         _ => GraphNode::Start,
@@ -818,10 +727,7 @@ fn tier5_metrics() -> Tier5Metrics {
 
     // ---- irreducible_decisions: decision nodes a user must answer ----
     let irreducible = [
-        GraphNode::LoginOpenAi,
-        GraphNode::LoginImport,
-        GraphNode::LoginRecovery,
-        GraphNode::ContinuePrompt,
+        GraphNode::ConfigureProvider,
         GraphNode::StartChoice,
     ]
     .into_iter()
@@ -834,11 +740,8 @@ fn tier5_metrics() -> Tier5Metrics {
     // ---- dead_end_screens: non-terminal nodes with no outgoing edge ----
     let all_nodes = [
         GraphNode::Start,
-        GraphNode::LoginOpenAi,
-        GraphNode::LoginImport,
-        GraphNode::LoginRecovery,
+        GraphNode::ConfigureProvider,
         GraphNode::ModelSelect,
-        GraphNode::ContinuePrompt,
         GraphNode::StartChoice,
         GraphNode::Suggestions,
         GraphNode::Done,
@@ -1356,9 +1259,9 @@ fn tier8_metrics() -> Tier8Metrics {
     let back_navigation_ok = {
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
+        app.begin_onboarding_flow_at_configure();
         if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::LoginOpenAi { yes_highlighted: true };
+            flow.phase = OnboardingPhase::ConfigureProvider { yes_highlighted: true };
         }
         let consumed = app.handle_onboarding_continue_prompt_key(KeyCode::Char('n'));
         // Onboarding reaches a terminal, and the recovery affordance (/login) is
@@ -1366,17 +1269,17 @@ fn tier8_metrics() -> Tier8Metrics {
         consumed && app.onboarding_phase().is_none()
     };
 
-    // Recovery depth: from the recovery Login{import:None} screen, a single
-    // Enter shows the provider config guidance and finishes onboarding
-    // (resonix: no interactive login picker remains).
+    // Recovery depth: from the configure prompt, a single Esc leaves onboarding
+    // and the status notice points the user at `jcode provider add`, so the
+    // route is not a dead end (resonix: no interactive login picker remains).
     let error_recovery_depth = {
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
+        app.begin_onboarding_flow_at_configure();
         if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
+            flow.phase = OnboardingPhase::ConfigureProvider { yes_highlighted: true };
         }
-        if app.handle_onboarding_continue_prompt_key(KeyCode::Enter)
+        if app.handle_onboarding_continue_prompt_key(KeyCode::Esc)
             && app.onboarding_phase().is_none()
         {
             1
@@ -1386,43 +1289,32 @@ fn tier8_metrics() -> Tier8Metrics {
         }
     };
 
-    // ---- repeated_prompt: declining every import (uncheck all, then commit)
-    // advances to recovery, it does NOT loop back to re-ask. Drive a single-
-    // candidate list, uncheck it with 'n', commit with Enter, and confirm we
-    // left the import phase. ----
+    // ---- repeated_prompt: answering "No" (or Esc) finishes onboarding; the
+    // prompt must not loop back and re-ask. ----
     let no_repeated_prompt = {
-        use crate::external_auth::ExternalAuthReviewCandidate;
-        use crate::tui::app::onboarding_flow::ImportReview;
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        let review =
-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json")])
-                .unwrap();
+        app.begin_onboarding_flow_at_configure();
         if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: Some(review) };
+            flow.phase = OnboardingPhase::ConfigureProvider { yes_highlighted: true };
         }
-        // Uncheck the only login with 'n', then commit the (empty) list.
         app.handle_onboarding_continue_prompt_key(KeyCode::Char('n'));
-        app.handle_onboarding_continue_prompt_key(KeyCode::Enter);
-        // The import list must not still be the active prompt.
+        // The configure prompt must not still be the active phase.
         !matches!(
             app.onboarding_phase(),
-            Some(OnboardingPhase::Login { import: Some(_) })
+            Some(OnboardingPhase::ConfigureProvider { .. })
         )
     };
 
     // ---- confirmation_for_destructive: classify every phase as destructive or
-    // not. Onboarding only reads detected logins and opens pickers; no phase
+    // not. Onboarding only reads config and opens pickers; no phase
     // deletes/overwrites user data, so none is "destructive" and the property
     // holds. The classifier is wildcard-free so a future destructive phase
     // forces a conscious re-evaluation here. ----
     fn phase_is_destructive(p: &OnboardingPhase) -> bool {
         match p {
-            OnboardingPhase::LoginOpenAi { .. } => false,
-            OnboardingPhase::Login { .. } => false,
+            OnboardingPhase::ConfigureProvider { .. } => false,
             OnboardingPhase::ModelSelect => false,
-            OnboardingPhase::ContinuePrompt { .. } => false,
             OnboardingPhase::StartChoice { .. } => false,
             OnboardingPhase::Suggestions => false,
             OnboardingPhase::Done => false,
@@ -1431,26 +1323,17 @@ fn tier8_metrics() -> Tier8Metrics {
     let no_unconfirmed_destructive =
         all_onboarding_phases().iter().all(|(_, p)| !phase_is_destructive(p));
 
-    // ---- timeout_safety: a do-nothing ContinuePrompt timeout lands on a
-    // recoverable phase (resume picker / suggestions), never a lossy terminal.
+    // ---- timeout_safety: the config-driven prompt has no auto-timeout, so a
+    // do-nothing user stays on the recoverable prompt instead of being driven
+    // to a lossy terminal. ----
     let timeout_safe = {
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            let past = std::time::Instant::now()
-                - (crate::tui::app::onboarding_flow::DECISION_TIMEOUT
-                    + std::time::Duration::from_secs(1));
-            flow.phase = OnboardingPhase::ContinuePrompt {
-                cli: ExternalCli::Codex,
-                yes_highlighted: true,
-                shown_at: past,
-            };
-        }
+        app.begin_onboarding_flow_at_configure();
         app.onboarding_tick();
         matches!(
             app.onboarding_phase(),
-            Some(OnboardingPhase::StartChoice { .. } | OnboardingPhase::Suggestions)
+            Some(OnboardingPhase::ConfigureProvider { .. })
         )
     };
 
@@ -1508,22 +1391,18 @@ fn tier8_score_w(m: &Tier8Metrics, w: &Tier8Weights) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// Tier 9: timing & pacing. The real flow uses two timed auto-advance phases
-// (the import walkthrough and the continue prompt) governed by DECISION_TIMEOUT,
-// plus a transcript picker that intentionally does NOT auto-advance. We can't
+// Tier 9: timing & pacing. The config-driven flow has no timed auto-advance
+// phases (the configure prompt waits indefinitely for the user), plus a
+// transcript picker that intentionally does NOT auto-advance. We can't
 // measure a real user's clock offline, but we CAN check that the timing the
 // flow itself imposes is humane, using only constants + rendered copy:
 //
-//   * countdown_adequacy - every timed screen gives enough seconds to actually
-//     read it. Budget = words / READING_WPS, with a small floor; we assert the
-//     real DECISION_TIMEOUT covers the slowest screen with margin.
+//   * countdown_adequacy - no screen auto-advances, so there is no countdown
+//     that could race a slow reader (vacuous pass).
 //   * forced_wait        - no phase blocks the user behind a mandatory delay
-//     with no key to skip ahead. Every timed phase accepts an immediate commit
-//     key (verified by driving the real handler), so the timeout is a ceiling,
-//     not a floor.
-//   * time_on_blocker    - the worst-case unattended dwell before the flow makes
-//     progress on its own is bounded (<= DECISION_TIMEOUT); a do-nothing user is
-//     never stuck forever on a decision.
+//     with no key to skip ahead (vacuous pass: no timed phase remains).
+//   * time_on_blocker    - no unattended dwell: a do-nothing user is never
+//     moved anywhere without a keypress.
 // ---------------------------------------------------------------------------
 
 /// Comfortable silent-reading speed, words per second (~250 wpm). Used only to
@@ -1543,24 +1422,20 @@ struct Tier9Metrics {
 }
 
 fn tier9_metrics() -> Tier9Metrics {
-    use crate::tui::app::onboarding_flow::DECISION_TIMEOUT;
-    let timeout_secs = DECISION_TIMEOUT.as_secs() as f64;
-
     // ---- countdown_adequacy: read budget of each TIMED screen vs the timeout.
-    // Only screens that auto-advance count; the transcript picker is untimed and
-    // is intentionally excluded (the user must choose).
+    // The config-driven flow has no timed screens, so the slack is unbounded.
     let timed_screens: Vec<ScreenMetrics> = timed_phase_screens();
     let tightest_slack = timed_screens
         .iter()
         .map(|s| {
             let read_budget = (s.word_count as f64 / READING_WPS).max(3.0);
-            timeout_secs - read_budget
+            f64::INFINITY - read_budget
         })
         .fold(f64::INFINITY, f64::min);
     let countdown_slack_secs = if tightest_slack.is_finite() {
         tightest_slack
     } else {
-        timeout_secs
+        f64::INFINITY
     };
 
     // ---- forced_wait: every timed phase must accept an immediate-commit key.
@@ -1568,12 +1443,9 @@ fn tier9_metrics() -> Tier9Metrics {
     // phase rather than being ignored until the timer fires.
     let no_forced_wait = timed_phases_accept_immediate_commit();
 
-    // ---- time_on_blocker: the only self-advancing dwell is DECISION_TIMEOUT;
-    // the untimed transcript picker doesn't block progress because choosing
-    // "Start a new session" is always available (it is not a self-advance, so it
-    // doesn't count as an unattended blocker). Worst-case unattended dwell is
-    // therefore the timeout itself.
-    let max_blocker_secs = DECISION_TIMEOUT.as_secs();
+    // ---- time_on_blocker: no phase self-advances, so a do-nothing user is
+    // never moved without a keypress. Worst-case unattended dwell is 0.
+    let max_blocker_secs = 0;
 
     Tier9Metrics {
         countdown_slack_secs,
@@ -1583,67 +1455,17 @@ fn tier9_metrics() -> Tier9Metrics {
 }
 
 /// The set of timed (auto-advancing) screens, rendered from the real app.
+/// The config-driven flow has no timed phases: the configure prompt waits
+/// indefinitely and the start choice is untimed, so the set is empty.
 fn timed_phase_screens() -> Vec<ScreenMetrics> {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-    let review =
-        ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json")])
-            .unwrap();
-    vec![
-        render_phase_screen("Login{import}", OnboardingPhase::Login { import: Some(review) }),
-        render_phase_screen(
-            "ContinuePrompt",
-            OnboardingPhase::ContinuePrompt {
-                cli: ExternalCli::Codex,
-                yes_highlighted: true,
-                shown_at: std::time::Instant::now(),
-            },
-        ),
-    ]
+    Vec::new()
 }
 
 /// Drive the real key handler for each timed phase and confirm an immediate
 /// commit key is honored (so the timeout is a ceiling, never a forced wait).
+/// Vacuous for the config-driven flow: no timed phase remains.
 fn timed_phases_accept_immediate_commit() -> bool {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-    use crossterm::event::KeyCode;
-
-    // Import walkthrough: 'y' commits the current candidate immediately. Use two
-    // candidates so committing the first ADVANCES (returns not-finished) instead
-    // of finishing the review, which would spawn the real import on a runtime we
-    // don't have under test. We only need to prove the key is honored.
-    let import_ok = {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        let review = ImportReview::new(vec![
-            ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json"),
-            ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
-        ])
-        .unwrap();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: Some(review) };
-        }
-        app.handle_onboarding_continue_prompt_key(KeyCode::Char('y'))
-    };
-
-    // Continue prompt: 'y' commits immediately (resolves the phase now).
-    let continue_ok = {
-        let mut app = create_test_app();
-        app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
-        if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::ContinuePrompt {
-                cli: ExternalCli::Codex,
-                yes_highlighted: true,
-                shown_at: std::time::Instant::now(),
-            };
-        }
-        app.handle_onboarding_continue_prompt_key(KeyCode::Char('y'))
-    };
-
-    import_ok && continue_ok
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -1740,7 +1562,7 @@ fn tier10_metrics() -> Tier10Metrics {
     // highlight states and diff the buffer.
     let color_independent_selection = selection_uses_noncolor_attribute();
 
-    // ---- screen_reader_order: on the LoginOpenAi screen, the explanatory prose
+    // ---- screen_reader_order: on the ConfigureProvider screen, the explanatory prose
     // ("Welcome", "log in to get started") must precede the Yes/No action row.
     let logical_reading_order = action_row_follows_prose();
 
@@ -1769,7 +1591,7 @@ fn is_unicode_dependence_char(c: char) -> bool {
     !GRACEFUL.contains(&c)
 }
 
-/// Render the LoginOpenAi Yes/No screen in both highlight states and confirm the
+/// Render the ConfigureProvider Yes/No screen in both highlight states and confirm the
 /// selected cell differs from the unselected cell by a NON-color video attribute
 /// (reverse/bold/underline), not just by foreground/background color.
 fn selection_uses_noncolor_attribute() -> bool {
@@ -1778,7 +1600,7 @@ fn selection_uses_noncolor_attribute() -> bool {
     use ratatui::style::Modifier;
 
     fn render_modifiers_on_yesno_row(yes_highlighted: bool) -> Option<(Modifier, Modifier)> {
-        let app = app_in_phase(OnboardingPhase::LoginOpenAi { yes_highlighted });
+        let app = app_in_phase(OnboardingPhase::ConfigureProvider { yes_highlighted });
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -1835,10 +1657,10 @@ fn selection_uses_noncolor_attribute() -> bool {
     }
 }
 
-/// Confirm the explanatory prose precedes the action row on the LoginOpenAi
+/// Confirm the explanatory prose precedes the action row on the ConfigureProvider
 /// screen (logical top-to-bottom order for a linear/screen reader).
 fn action_row_follows_prose() -> bool {
-    let app = app_in_phase(OnboardingPhase::LoginOpenAi { yes_highlighted: true });
+    let app = app_in_phase(OnboardingPhase::ConfigureProvider { yes_highlighted: true });
     let text = render_onboarding_text(&app, 80, 30);
     let lines: Vec<&str> = text.lines().collect();
     let prose_idx = lines.iter().position(|l| {
@@ -1916,8 +1738,7 @@ fn onboarding_eval_scorecard() {
         }
         let phase_coverage = phases.len(); // exhaustive by construction
         // Screens scored in Tier 3 over the user-facing WelcomeBody surfaces.
-        // WelcomeBody phases: Login{import}, Login{recovery}, LoginOpenAi,
-        // ContinuePrompt, Suggestions => 5 distinct screens, all scored.
+        // WelcomeBody phases: ConfigureProvider, Suggestions => 2 distinct screens, all scored.
         let scored_welcome_screens = screens.len() as u32;
         let screen_coverage_pct = (scored_welcome_screens as f64 / welcome as f64) * 100.0;
         let path_coverage = paths.len();
@@ -2195,13 +2016,13 @@ fn onboarding_eval_fidelity_real_transitions() {
             "authenticated startup must rest on StartChoice"
         );
 
-        // Edge: LoginOpenAi decline ('n') -> terminal Done, login still required
-        // (the decline path; reaches_ready=false in the table).
+        // Edge: configure prompt decline ('n') -> terminal Done, provider still
+        // required (the decline path; reaches_ready=false in the table).
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
+        app.begin_onboarding_flow_at_configure();
         if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::LoginOpenAi { yes_highlighted: true };
+            flow.phase = OnboardingPhase::ConfigureProvider { yes_highlighted: true };
         }
         assert!(app.handle_onboarding_continue_prompt_key(crossterm::event::KeyCode::Char('n')));
         assert!(
@@ -2209,22 +2030,22 @@ fn onboarding_eval_fidelity_real_transitions() {
             "decline must reach a terminal (Done) phase"
         );
 
-        // Edge: recovery Login{import:None} + Enter -> shows config guidance
-        // and finishes onboarding (resonix: no provider picker remains).
+        // Edge: Esc on the configure prompt -> onboarding finishes without
+        // opening any (removed) provider picker.
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
+        app.begin_onboarding_flow_at_configure();
         if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::Login { import: None };
+            flow.phase = OnboardingPhase::ConfigureProvider { yes_highlighted: true };
         }
-        assert!(app.handle_onboarding_continue_prompt_key(crossterm::event::KeyCode::Enter));
+        assert!(app.handle_onboarding_continue_prompt_key(crossterm::event::KeyCode::Esc));
         assert!(
             app.inline_interactive_state.is_none(),
-            "recovery Login + Enter must not open the (removed) provider picker"
+            "Esc on the configure prompt must not open the (removed) provider picker"
         );
         assert!(
             app.onboarding_phase().is_none(),
-            "recovery Login + Enter must finish onboarding"
+            "Esc on the configure prompt must finish onboarding"
         );
     });
 }
@@ -2254,13 +2075,13 @@ fn onboarding_eval_graph_fidelity() {
             assert!(node_props(phase_to_node(phase)).is_ready);
         }
 
-        // Real transition: LoginOpenAi decline -> Done (a terminal, not-ready
-        // node). Confirms the LoginOpenAi->Done edge models a real path.
+        // Real transition: ConfigureProvider decline -> Done (a terminal, not-ready
+        // node). Confirms the ConfigureProvider->Done edge models a real path.
         let mut app = create_test_app();
         app.onboarding_flow = None;
-        app.begin_onboarding_flow_at_login();
+        app.begin_onboarding_flow_at_configure();
         if let Some(flow) = app.onboarding_flow.as_mut() {
-            flow.phase = OnboardingPhase::LoginOpenAi { yes_highlighted: true };
+            flow.phase = OnboardingPhase::ConfigureProvider { yes_highlighted: true };
         }
         assert!(app.handle_onboarding_continue_prompt_key(crossterm::event::KeyCode::Char('n')));
         assert!(app.onboarding_phase().is_none(), "decline reaches terminal Done");
@@ -2271,11 +2092,8 @@ fn onboarding_eval_graph_fidelity() {
         let mapped: std::collections::HashSet<GraphNode> =
             phases.iter().map(|(_, p)| phase_to_node(p)).collect();
         for node in [
-            GraphNode::LoginOpenAi,
-            GraphNode::LoginImport,
-            GraphNode::LoginRecovery,
+            GraphNode::ConfigureProvider,
             GraphNode::ModelSelect,
-            GraphNode::ContinuePrompt,
             GraphNode::StartChoice,
             GraphNode::Suggestions,
             GraphNode::Done,
@@ -2284,14 +2102,9 @@ fn onboarding_eval_graph_fidelity() {
         }
 
         // Every live entry node is reachable from Start via the edges.
-        // (`ContinuePrompt` is intentionally excluded: it is a retained
-        // compat phase that the live flow no longer routes into from Start -
-        // it opens the start choice directly - so it has outgoing edges but
-        // no Start-reachable inbound edge, which is faithful to production.)
         let edges = flow_edges();
         for n in [
-            GraphNode::LoginOpenAi,
-            GraphNode::LoginImport,
+            GraphNode::ConfigureProvider,
             GraphNode::ModelSelect,
             GraphNode::StartChoice,
             GraphNode::Suggestions,
@@ -2944,20 +2757,8 @@ fn detect_feature_classes(text: &str) -> Vec<FeatureClass> {
 
 /// Every user-facing welcome screen, rendered to text, for the Layer C probe.
 fn all_welcome_screen_texts() -> Vec<(&'static str, String)> {
-    use crate::external_auth::ExternalAuthReviewCandidate;
-    use crate::tui::app::onboarding_flow::ImportReview;
-    let now = std::time::Instant::now();
-    let review =
-        ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json")])
-            .unwrap();
     let phases: Vec<(&'static str, OnboardingPhase)> = vec![
-        ("LoginOpenAi", OnboardingPhase::LoginOpenAi { yes_highlighted: true }),
-        ("Login{import}", OnboardingPhase::Login { import: Some(review) }),
-        ("Login{recovery}", OnboardingPhase::Login { import: None }),
-        (
-            "ContinuePrompt",
-            OnboardingPhase::ContinuePrompt { cli: ExternalCli::Codex, yes_highlighted: true, shown_at: now },
-        ),
+        ("ConfigureProvider", OnboardingPhase::ConfigureProvider { yes_highlighted: true }),
         ("Suggestions", OnboardingPhase::Suggestions),
     ];
     phases
@@ -2969,49 +2770,11 @@ fn all_welcome_screen_texts() -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// Layer C probe surfaces: every welcome screen PLUS the provider-login picker.
-/// The picker is a real onboarding surface the welcome card alone never renders
-/// (a long selectable List with a type-to-filter InputField and Command
-/// affordances), so structural ownership must see it. Kept separate from
-/// `all_welcome_screen_texts` because the picker's terse list chrome is not
-/// readable "prose" and would skew the per-screen prose rubrics.
+/// Layer C probe surfaces: every welcome screen. The provider-login picker no
+/// longer exists (config-driven onboarding has no interactive login surface),
+/// so the welcome screens are the complete probe set.
 fn all_probe_surface_texts() -> Vec<(&'static str, String)> {
-    let mut out = all_welcome_screen_texts();
-    out.push(("LoginPicker", render_login_picker_overlay_text()));
-    out
-}
-
-/// Drive the real app into the open provider-login picker and render the FULL
-/// app frame (welcome card + inline picker overlay) to text.
-fn render_login_picker_overlay_text() -> String {
-    use crossterm::event::KeyCode;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    let mut app = create_test_app();
-    app.onboarding_flow = None;
-    app.begin_onboarding_flow_at_login();
-    if let Some(flow) = app.onboarding_flow.as_mut() {
-        flow.phase = OnboardingPhase::Login { import: None };
-    }
-    // Enter opens the inline provider picker from the recovery screen.
-    app.handle_onboarding_continue_prompt_key(KeyCode::Enter);
-
-    let backend = TestBackend::new(90, 36);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|frame| crate::tui::ui::draw(frame, &app as &dyn crate::tui::TuiState))
-        .unwrap();
-    let buffer = terminal.backend().buffer().clone();
-    let mut rows: Vec<String> = Vec::new();
-    for y in 0..36u16 {
-        let mut row = String::new();
-        for x in 0..90u16 {
-            row.push_str(buffer[(x, y)].symbol());
-        }
-        rows.push(row.trim_end().to_string());
-    }
-    rows.join("\n")
+    all_welcome_screen_texts()
 }
 
 #[test]

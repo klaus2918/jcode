@@ -1,12 +1,8 @@
 use anyhow::Result;
-use jcode::auth::{AuthState, AuthStatus};
+use jcode::auth::AuthStatus;
 use jcode::provider::Provider;
-use jcode::provider_catalog::{
-    OPENAI_COMPAT_LOGIN_PROVIDER, login_providers, openai_compatible_profiles,
-};
-use jcode::tui::login_picker::{LoginPicker, LoginPickerItem, LoginPickerSummary};
+use jcode::provider_catalog::{login_providers, openai_compatible_profiles};
 use jcode_provider_openrouter_runtime::OpenRouterProvider;
-use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -493,58 +489,6 @@ fn live_model_catalog_failure_keeps_static_and_selected_model_picker_fallbacks()
     );
     let request = server.requests.recv_timeout(Duration::from_secs(2))?;
     assert_models_request(&request);
-
-    Ok(())
-}
-
-fn buffer_to_text(buffer: &Buffer) -> String {
-    let area = buffer.area;
-    let mut out = String::new();
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            out.push_str(buffer[(x, y)].symbol());
-        }
-        out.push('\n');
-    }
-    out
-}
-
-#[test]
-fn login_picker_renders_openai_compatible_setup_copy() -> Result<()> {
-    let mut picker = LoginPicker::with_summary(
-        " Login ",
-        vec![LoginPickerItem::new(
-            1,
-            OPENAI_COMPAT_LOGIN_PROVIDER,
-            AuthState::Available,
-            "http://localhost:11434/v1 configured; no API key required",
-        )],
-        LoginPickerSummary {
-            ready_count: 1,
-            recommended_count: 0,
-            ..LoginPickerSummary::default()
-        },
-    );
-
-    let backend = TestBackend::new(120, 44);
-    let mut terminal = Terminal::new(backend)?;
-    terminal.draw(|frame| picker.render(frame))?;
-    let text = buffer_to_text(terminal.backend().buffer());
-
-    for expected in [
-        "OpenAI-compatible",
-        "/login openai-compatible",
-        "API key / CLI",
-        "Detected setup",
-        "http://localhost:11434/v1 configured; no API key required",
-        "custom endpoint setup: base URL first, then API key",
-        "Press Enter to begin login.",
-    ] {
-        assert!(
-            text.contains(expected),
-            "login picker should render expected copy {expected:?}; rendered:\n{text}"
-        );
-    }
 
     Ok(())
 }
