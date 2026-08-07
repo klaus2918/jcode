@@ -1485,13 +1485,13 @@ impl MultiProvider {
             if self.allowlist_allows_label(allowlist, &profile_name) {
                 return Ok(());
             }
-        } else if let Some((target, prefix, _model)) = explicit_model_provider_prefix(requested) {
-            let label = prefix.trim_end_matches(':');
-            if self.allowlist_allows_label(allowlist, label)
-                || self.allowlist_allows_label(allowlist, jcode_provider_core::provider_key(target))
-            {
-                return Ok(());
-            }
+        } else if explicit_model_provider_prefix(requested).is_some() {
+            // Explicit routing prefixes (`openai:`, `claude-api:`, `openrouter:`,
+            // ...) are direct user intent: they resolve through the target
+            // runtime's own credential/model validation. The allowlist governs
+            // what the /model picker lists, not whether an explicit switch
+            // request is attempted.
+            return Ok(());
         } else if requested
             .rsplit_once('@')
             .is_some_and(|(_, pin)| !pin.trim().is_empty())
@@ -1980,8 +1980,8 @@ impl Provider for MultiProvider {
         // make them unreachable by cycle even though the picker shows them.
         // The built-in (non-allowlist) path below still scopes to the active
         // provider, matching the legacy single-endpoint behavior.
-        let allowlist = crate::provider_catalog::configured_picker_provider_allowlist()
-            .unwrap_or_default();
+        let allowlist =
+            crate::provider_catalog::configured_picker_provider_allowlist().unwrap_or_default();
         let has_allowlist = !allowlist.iter().all(|entry| entry.trim().is_empty());
         let models = if has_allowlist {
             // Allowlist path: reuse the already-filtered catalog (it contains
