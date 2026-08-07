@@ -401,10 +401,7 @@ fn insert_opt_usize(
 /// Render a resonix `price` / `prices` inline table.
 fn price_to_value(price: &ProviderPrice) -> toml::Value {
     let mut table = toml::map::Map::new();
-    table.insert(
-        "cache_hit".to_string(),
-        toml::Value::Float(price.cache_hit),
-    );
+    table.insert("cache_hit".to_string(), toml::Value::Float(price.cache_hit));
     table.insert("input".to_string(), toml::Value::Float(price.input));
     table.insert("output".to_string(), toml::Value::Float(price.output));
     if let Some(currency) = price.currency.as_deref().filter(|c| !c.is_empty()) {
@@ -467,12 +464,43 @@ struct NamedProviderArrayEntry {
         alias = "format"
     )]
     api_format: Option<ProviderApiFormat>,
-    #[serde(default, alias = "model")]
+    #[serde(default, alias = "model", alias = "default")]
     default_model: Option<String>,
     #[serde(default, deserialize_with = "deserialize_array_models")]
     models: Vec<NamedProviderModelConfig>,
     #[serde(default)]
     api_key_env: Option<String>,
+    /// 可选 HTTP(S) 代理（与 `[providers.<name>]` 表格的 `proxy` 字段一致）。
+    #[serde(default)]
+    proxy: Option<String>,
+    /// 密钥所在分散 env 文件（默认走统一 `~/.jcode/.env`，仅显式指定时生效）。
+    #[serde(default)]
+    env_file: Option<String>,
+    /// 内联 API key（deprecated，优先用 api_key_env 指向统一 .env）。
+    #[serde(default)]
+    api_key: Option<String>,
+    /// 显式声明是否需要 API key。缺省时按 base_url 是否 localhost 推断。
+    #[serde(default)]
+    requires_api_key: Option<bool>,
+    #[serde(default)]
+    provider_routing: bool,
+    #[serde(default)]
+    model_catalog: bool,
+    #[serde(default)]
+    allow_provider_pinning: bool,
+    /// 额外请求体 JSON（合并进每次 chat/completions 请求）。
+    #[serde(default)]
+    extra_body: Option<serde_json::Value>,
+    /// 是否支持 DeepSeek 风格顶层 reasoning_effort 字段。
+    #[serde(default)]
+    supports_reasoning_effort: Option<bool>,
+    /// `auth` 选择器（"none"/"bearer"/"header"）。缺省时保持 Bearer 旧行为，
+    /// 因此无 key 的本地网关（cc-switch 等）必须显式写 `auth = "none"`，
+    /// 否则运行时因找不到 key 直接报错。
+    #[serde(default)]
+    auth: Option<NamedProviderAuth>,
+    #[serde(default)]
+    auth_header: Option<String>,
     /// Provider-wide fallback context window applied to every declared model
     /// that does not set its own.
     #[serde(default, alias = "context-window", alias = "context_window")]
@@ -554,8 +582,20 @@ impl NamedProviderArrayEntry {
             provider_type: self.provider_type,
             base_url: self.base_url,
             api_format: self.api_format,
+            // 数组条目显式写 `auth` 时生效；缺省保持 Bearer（与默认一致）。
+            auth: self.auth.unwrap_or(NamedProviderAuth::Bearer),
+            auth_header: self.auth_header,
             default_model: self.default_model,
             api_key_env: self.api_key_env,
+            proxy: self.proxy,
+            env_file: self.env_file,
+            api_key: self.api_key,
+            requires_api_key: self.requires_api_key,
+            provider_routing: self.provider_routing,
+            model_catalog: self.model_catalog,
+            allow_provider_pinning: self.allow_provider_pinning,
+            extra_body: self.extra_body,
+            supports_reasoning_effort: self.supports_reasoning_effort,
             models,
             price: self.price,
             prices: self.prices,
@@ -1098,7 +1138,7 @@ pub struct Config {
     /// Desktop notifications for interactive sessions (e.g. turn completion)
     pub notifications: NotificationsConfig,
 
-    /// WebSocket gateway configuration (for iOS/web clients)
+    /// WebSocket gateway configuration (for remote clients)
     pub gateway: GatewayConfig,
 
     /// Compaction configuration

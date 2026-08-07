@@ -1243,29 +1243,4 @@ mod tests {
 
         assert!(remote_openai_compatible_route_for_model("gemini-live-only-model").is_none());
     }
-
-    fn save_openrouter_catalog_cache(model_ids: &[&str]) {
-        let jcode_home = std::env::var_os("JCODE_HOME").expect("JCODE_HOME set");
-        let cache_dir = std::path::PathBuf::from(jcode_home).join("cache");
-        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
-        let cache = jcode_provider_openrouter::DiskCache {
-            cached_at: jcode_provider_openrouter::current_unix_secs().expect("current unix time"),
-            source_api_base: None,
-            models: model_ids
-                .iter()
-                .map(|id| jcode_provider_openrouter::ModelInfo {
-                    id: (*id).to_string(),
-                    name: String::new(),
-                    context_length: None,
-                    pricing: jcode_provider_openrouter::ModelPricing::default(),
-                    created: None,
-                })
-                .collect(),
-        };
-        std::fs::write(
-            cache_dir.join("openrouter_models.json"),
-            serde_json::to_string(&cache).expect("serialize cache"),
-        )
-        .expect("write cache");
-    }
 }

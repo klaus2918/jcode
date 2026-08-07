@@ -490,6 +490,38 @@ fn named_provider_profile_reports_malformed_config_instead_of_unknown_profile() 
 }
 
 #[test]
+fn named_provider_profile_is_configured_reads_key_from_unified_env() {
+    // resonix 对齐：统一 `<jcode home>/.env` 是密钥权威来源。profile 只声明
+    // `api_key_env`（不写 `env_file`）时，key 存在统一 .env 里就算已配置，
+    // 不能只看进程环境变量（回归测试）。
+    let _lock = crate::storage::lock_test_env();
+    let _guard = EnvGuard::save(&["JCODE_HOME", "PROFILE_UNIFIED_ENV_KEY"]);
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", temp.path());
+    crate::env::remove_var("PROFILE_UNIFIED_ENV_KEY");
+    std::fs::write(
+        temp.path().join(".env"),
+        "PROFILE_UNIFIED_ENV_KEY=sk-unified\n",
+    )
+    .expect("write unified .env");
+
+    let profile = crate::config::NamedProviderConfig {
+        base_url: "https://gateway.example.com".to_string(),
+        api_key_env: Some("PROFILE_UNIFIED_ENV_KEY".to_string()),
+        env_file: None,
+        ..Default::default()
+    };
+    assert!(
+        named_provider_profile_is_configured("test-gw", &profile),
+        "key in unified .env must count as configured"
+    );
+
+    // 进程环境变量路径仍可用（回退链不变）。
+    crate::env::set_var("PROFILE_UNIFIED_ENV_KEY", "sk-proc-env");
+    assert!(named_provider_profile_is_configured("test-gw", &profile));
+}
+
+#[test]
 fn named_provider_profile_maps_to_openai_compatible_runtime_env() {
     let _lock = crate::storage::lock_test_env();
     let _guard = EnvGuard::save(&[
@@ -873,8 +905,6 @@ fn quality_tier_ranks_flagship_above_bare_above_cheap() {
         2
     );
 }
-
-#[test]
 
 /// Exhaustiveness guard: every model shipped in a profile's static catalog must
 /// resolve to a concrete context window. Open-weight gateways frequently omit

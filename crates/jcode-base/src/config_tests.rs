@@ -97,7 +97,7 @@ fn resonix_array_config_round_trips_losslessly() {
         name = "self-deepseek"
         kind = "openai"
         base_url = "https://api.deepseek.com"
-        model = "deepseek-v4-flash"
+        default = "deepseek-v4-flash"
         api_key_env = "DEEPSEEK_API_KEY"
         context_window = 1000000
         models = ["deepseek-v4-flash", "deepseek-v4-pro"]
@@ -110,7 +110,16 @@ fn resonix_array_config_round_trips_losslessly() {
     let round = reparsed.providers.get("self-deepseek").expect("round-trip");
     assert_eq!(original.base_url, round.base_url);
     assert_eq!(original.api_format, round.api_format);
-    assert_eq!(original.default_model, round.default_model);
+    assert_eq!(
+        original.default_model.as_deref(),
+        Some("deepseek-v4-flash"),
+        "resonix `default = ...` key must parse into default_model"
+    );
+    assert_eq!(
+        round.default_model.as_deref(),
+        Some("deepseek-v4-flash"),
+        "default_model must survive the round-trip (serialized as `default = ...`)"
+    );
     assert_eq!(original.api_key_env, round.api_key_env);
     assert_eq!(original.models.len(), 2);
     assert_eq!(round.models.len(), 2);
@@ -164,16 +173,36 @@ fn resonix_array_config_round_trips_advanced_fields() {
 
     let original = config.providers.get("my-anth-gw").expect("original");
     let round = reparsed.providers.get("my-anth-gw").expect("round-trip");
-    assert_eq!(original.api_format, round.api_format);
-    assert_eq!(original.proxy, round.proxy);
-    assert_eq!(original.auth, round.auth);
-    assert_eq!(original.auth_header, round.auth_header);
-    assert_eq!(original.requires_api_key, round.requires_api_key);
-    assert_eq!(original.provider_routing, round.provider_routing);
-    assert_eq!(original.model_catalog, round.model_catalog);
     assert_eq!(
-        original.allow_provider_pinning,
-        round.allow_provider_pinning
+        original.auth,
+        super::NamedProviderAuth::Header,
+        "array entry `auth = \"header\"` must actually take effect"
+    );
+    // 每个字段都要在 round-trip 后的值上断言（而不是只比较 original/round
+    // 相等：两边同时丢字段也会相等，静默掩盖回归）。
+    assert_eq!(original.api_format, round.api_format);
+    assert_eq!(
+        round.api_format,
+        Some(super::ProviderApiFormat::Anthropic),
+        "kind = \"anthropic\" must survive the round-trip"
+    );
+    assert_eq!(
+        round.proxy.as_deref(),
+        Some("http://127.0.0.1:7890"),
+        "proxy must survive the round-trip"
+    );
+    assert_eq!(round.auth, super::NamedProviderAuth::Header);
+    assert_eq!(round.auth_header.as_deref(), Some("x-api-key"));
+    assert_eq!(
+        round.requires_api_key,
+        Some(true),
+        "requires_api_key must survive the round-trip"
+    );
+    assert!(round.provider_routing, "provider_routing must survive");
+    assert!(round.model_catalog, "model_catalog must survive");
+    assert!(
+        round.allow_provider_pinning,
+        "allow_provider_pinning must survive"
     );
     assert_eq!(original.models.len(), round.models.len());
     assert_eq!(round.models[0].id, "claude-sonnet-4-6");
@@ -187,6 +216,204 @@ fn resonix_array_config_round_trips_advanced_fields() {
         Some(&["low".to_string(), "high".to_string()][..])
     );
     assert_eq!(round.models[1].default_effort.as_deref(), Some("low"));
+}
+
+#[test]
+fn cc_switch_array_entry_keeps_no_auth() {
+    // cc-switch 本地网关走 `[[providers]]` 数组条目（不能用 `[providers.cc-switch]`
+    // 表格：与数组混用会让整个 config.toml 解析失败）。`auth = "none"` 必须真实
+    // 生效——被静默丢弃会退化成 Bearer+无 key，运行时首次请求即报错。
+    let toml_str = r#"
+        [provider]
+        default_provider = "cc-switch"
+
+        [[providers]]
+        name = "cc-switch"
+        kind = "anthropic"
+        base_url = "http://127.0.0.1:15721"
+        auth = "none"
+        models = ["deepseek-v4-flash"]
+    "#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+
+    assert_eq!(config.provider.default_provider.as_deref(), Some("cc-switch"));
+    let cc = config.providers.get("cc-switch").expect("cc-switch entry");
+    assert_eq!(cc.api_format, Some(super::ProviderApiFormat::Anthropic));
+    assert_eq!(
+        cc.auth,
+        super::NamedProviderAuth::None,
+        "`auth = \"none\"` must survive the array-entry parse"
+    );
+    assert_eq!(cc.models.len(), 1);
+    assert_eq!(cc.models[0].id, "deepseek-v4-flash");
+
+    // 保存后 round-trip：auth 仍是 none，不能丢。
+    let rendered = toml::to_string_pretty(&config).unwrap();
+    assert!(rendered.contains("[[providers]]"));
+    assert!(rendered.contains("auth = \"none\""));
+    let reparsed: Config = toml::from_str(&rendered).unwrap();
+    assert_eq!(
+        reparsed.providers.get("cc-switch").unwrap().auth,
+        super::NamedProviderAuth::None
+    );
+}
+
+#[test]
+fn providers_table_and_array_mixing_fails_to_parse() {
+    // 坑：`[providers.cc-switch]` 表格与 `[[providers]]` 数组在同一文件里混用
+    // 违反 TOML 键唯一性（providers 不能同时是表格和数组），整个配置解析失败。
+    // （错误文案随 toml 版本变化，这里只锁定"必须失败"这一行为。）
+    let toml_str = r#"
+        [providers.cc-switch]
+        type = "openai-compatible"
+        base_url = "http://127.0.0.1:15721"
+
+        [[providers]]
+        name = "deepseek"
+        kind = "openai"
+        base_url = "https://api.deepseek.com"
+    "#;
+    assert!(toml::from_str::<Config>(toml_str).is_err());
+}
+
+#[test]
+fn resonix_style_full_user_config_parses_and_round_trips() {
+    // 用户报告的真实配置：`[provider]` 默认表 + 6 个 `[[providers]]` 数组条目
+    // （reasonix 网关 cch.skytech.io 直连 + cc-switch 本地代理）。之前
+    // `default = ...` 键解析时被静默丢弃、price/prices/vision_models/
+    // model_overrides 等字段 round-trip 丢失，导致 /model 模型列表与切换
+    // 行为不完整。此测试锁定完整配置的解析与无损 round-trip。
+    let toml_str = r#"
+        [provider]
+        default_provider = "deepseek-flash"
+        default_model = "deepseek-v4-flash"
+
+        [[providers]]
+        name        = "deepseek-flash"
+        kind        = "anthropic"
+        base_url    = "http://cch.skytech.io"
+        models      = ["deepseek-v4-flash"]
+        default     = "deepseek-v4-flash"
+        api_key_env = "DEEPSEEK_API_KEY"
+        context_window = 1000000
+        price       = { cache_hit = 0.02, input = 1, output = 2, currency = "¥" }
+        thinking    = "adaptive"
+        effort      = "max"
+
+        [[providers]]
+        name        = "deepseek-pro"
+        kind        = "anthropic"
+        base_url    = "http://cch.skytech.io"
+        models      = ["deepseek-v4-pro"]
+        default     = "deepseek-v4-pro"
+        api_key_env = "DEEPSEEK_API_KEY"
+        context_window = 1000000
+        price       = { cache_hit = 0.025, input = 3, output = 6, currency = "¥" }
+        thinking    = "adaptive"
+        effort      = "max"
+
+        [[providers]]
+        name        = "minimax-1M"
+        kind        = "anthropic"
+        base_url    = "http://cch.skytech.io"
+        models      = ["MiniMax-M3"]
+        default     = "MiniMax-M3"
+        api_key_env = "MINIMAX_API_KEY"
+        context_window = 1000000
+        price       = { cache_hit = 0.84, input = 4.2, output = 16.8, currency = "¥" }
+        thinking    = "adaptive"
+        vision_models = ["MiniMax-M3"]
+        model_overrides   = { "MiniMax-M3" = { context_window = 1000000 } }
+
+        [[providers]]
+        name        = "GLM-1M"
+        kind        = "anthropic"
+        base_url    = "http://cch.skytech.io"
+        models      = ["glm-5.2"]
+        default     = "glm-5.2"
+        api_key_env = "GLM_API_KEY"
+        context_window = 1000000
+        price       = { cache_hit = 0, input = 8, output = 28, currency = "¥" }
+        thinking    = "adaptive"
+        effort      = "max"
+
+        [[providers]]
+        name        = "kimi-1M"
+        kind        = "anthropic"
+        base_url    = "http://cch.skytech.io"
+        models      = ["kimi-k3", "kimi-k2.7"]
+        default     = "kimi-k3"
+        api_key_env = "KIMI_API_KEY"
+        context_window = 1000000
+        prices      = { "kimi-k2.7" = { cache_hit = 1.3, input = 6.5, output = 27, currency = "¥" }, "kimi-k3" = { cache_hit = 2, input = 20, output = 100, currency = "¥" } }
+        thinking    = "adaptive"
+        effort      = "max"
+        vision_models = ["kimi-k2.7", "kimi-k3"]
+        model_overrides   = { "kimi-k2.7" = { context_window = 1000000 }, "kimi-k3" = { context_window = 1000000 } }
+
+        [[providers]]
+        name        = "cc-switch"
+        type        = "openai-compatible"
+        kind        = "anthropic"
+        base_url    = "http://127.0.0.1:15721"
+        auth        = "none"
+        models      = ["deepseek-v4-flash"]
+        default     = "deepseek-v4-flash"
+        model_overrides   = { "deepseek-v4-flash" = { context_window = 1000000 } }
+    "#;
+    let config: Config = toml::from_str(toml_str).expect("user config must parse");
+
+    assert_eq!(config.provider.default_provider.as_deref(), Some("deepseek-flash"));
+    assert_eq!(config.provider.default_model.as_deref(), Some("deepseek-v4-flash"));
+
+    let names = config.providers.keys().cloned().collect::<Vec<_>>();
+    for expected in ["deepseek-flash", "deepseek-pro", "minimax-1M", "GLM-1M", "kimi-1M", "cc-switch"] {
+        assert!(config.providers.contains_key(expected), "missing provider {expected}: {names:?}");
+    }
+
+    let flash = config.providers.get("deepseek-flash").expect("deepseek-flash");
+    assert_eq!(flash.api_format, Some(super::ProviderApiFormat::Anthropic));
+    assert_eq!(flash.default_model.as_deref(), Some("deepseek-v4-flash"));
+    assert_eq!(flash.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+    assert_eq!(flash.models.len(), 1);
+    assert_eq!(flash.models[0].context_window, Some(1_000_000));
+    assert_eq!(flash.effort.as_deref(), Some("max"));
+    assert_eq!(flash.thinking.as_deref(), Some("adaptive"));
+    let price = flash.price.as_ref().expect("provider-wide price");
+    assert_eq!(price.cache_hit, 0.02);
+    assert_eq!(price.input, 1.0);
+    assert_eq!(price.output, 2.0);
+    assert_eq!(price.currency.as_deref(), Some("¥"));
+
+    let kimi = config.providers.get("kimi-1M").expect("kimi-1M");
+    assert_eq!(kimi.models.len(), 2);
+    let k3 = kimi.models.iter().find(|m| m.id == "kimi-k3").expect("kimi-k3 model");
+    assert_eq!(k3.context_window, Some(1_000_000));
+    assert_eq!(k3.vision, Some(true), "vision_models must mark models image-capable");
+    let k27 = kimi.models.iter().find(|m| m.id == "kimi-k2.7").expect("kimi-k2.7 model");
+    assert_eq!(k27.vision, Some(true));
+    let prices = kimi.prices.as_ref().expect("per-model prices");
+    assert_eq!(prices.len(), 2);
+    assert_eq!(prices.get("kimi-k3").expect("k3 price").input, 20.0);
+    assert_eq!(prices.get("kimi-k2.7").expect("k2.7 price").output, 27.0);
+
+    let mini = config.providers.get("minimax-1M").expect("minimax-1M");
+    assert_eq!(mini.models[0].vision, Some(true));
+    assert_eq!(mini.vision_models.as_deref(), Some(&["MiniMax-M3".to_string()][..]));
+
+    let cc = config.providers.get("cc-switch").expect("cc-switch");
+    assert_eq!(cc.auth, super::NamedProviderAuth::None);
+    assert_eq!(cc.models[0].context_window, Some(1_000_000));
+
+    // 无损 round-trip：保存后再解析，所有关键字段保持。
+    let rendered = toml::to_string_pretty(&config).unwrap();
+    let reparsed: Config = toml::from_str(&rendered).expect("reparsed config must parse");
+    assert_eq!(reparsed.providers.len(), 6);
+    for name in ["deepseek-flash", "deepseek-pro", "minimax-1M", "GLM-1M", "kimi-1M", "cc-switch"] {
+        let original = config.providers.get(name).expect("original entry");
+        let round = reparsed.providers.get(name).expect("round entry");
+        assert_eq!(original, round, "provider {name} must round-trip losslessly");
+    }
 }
 
 #[test]

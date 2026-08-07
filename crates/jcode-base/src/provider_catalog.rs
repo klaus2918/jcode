@@ -1,8 +1,7 @@
 pub use jcode_provider_env::{
     load_api_key_from_env_or_config, load_env_value_from_config_file,
     load_env_value_from_env_or_config, maybe_migrate_legacy_env_files,
-    register_api_key_fallback_resolver, save_env_value_to_env_file,
-    unified_env_file_path,
+    register_api_key_fallback_resolver, save_env_value_to_env_file, unified_env_file_path,
 };
 pub use jcode_provider_metadata::*;
 use std::collections::{HashMap, HashSet};
@@ -876,17 +875,17 @@ pub fn named_provider_profile_is_configured(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
             {
-                if let Some(env_file) = profile
+                // 统一 `<jcode home>/.env` 是密钥的权威来源（resonix 对齐）。
+                // 未配置 env_file 时也要查统一 .env，而不是只看进程环境变量；
+                // 用安全回退文件名让 `load_api_key_from_env_or_config` 的
+                // 查找顺序生效：统一 .env -> 进程环境变量 -> 旧分散文件。
+                let env_file = profile
                     .env_file
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                {
-                    return load_api_key_from_env_or_config(env_key, env_file).is_some();
-                }
-                return std::env::var(env_key)
-                    .map(|value| !value.trim().is_empty())
-                    .unwrap_or(false);
+                    .unwrap_or("named-provider.env");
+                return load_api_key_from_env_or_config(env_key, env_file).is_some();
             }
 
             profile
@@ -1000,30 +999,53 @@ fn dedup_sources(sources: Vec<(String, String)>) -> Vec<(String, String)> {
     deduped
 }
 
-/// Filter a login-provider list by `provider.model_picker_providers`.
+/// 当前生效的 /model 与 header 的 provider 白名单（scope）。
 ///
-/// In the config-driven (Reasonix-aligned) model, `model_picker_providers`
-/// declares the only providers the user works with. When it is set, `/login`
-/// should not advertise unrelated built-in providers (Anthropic/OpenRouter/
-/// OpenAI/OAuth accounts the user never configured) -- it should offer only:
+/// 优先级：
+/// 1. 显式 `provider.model_picker_providers`：用户显式声明的白名单。
+/// 2. 配置了 named providers（resonix 风格 `[[providers]]` 数组或
+///    `[providers.<name>]` 表格，见 `config.providers`）：自动以它们为
+///    scope。这样配置驱动的用户无需手动设置 `model_picker_providers`，
+///    `/model` 与 header 也只展示自己配置的 provider，而不是回退到内置
+///    的通用登录入口（Jcode Subscription / LM Studio / Ollama / ...）。
+/// 3. 都没有：返回 `None`（展示全部内置入口，默认行为）。
+pub fn configured_picker_provider_allowlist() -> Option<Vec<String>> {
+    let cfg = crate::config::config();
+    if let Some(entries) = cfg.provider.model_picker_providers.as_deref() {
+        let explicit = entries
+            .iter()
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect::<Vec<_>>();
+        if !explicit.is_empty() {
+            return Some(explicit);
+        }
+    }
+    if !cfg.providers.is_empty() {
+        return Some(cfg.providers.keys().cloned().collect());
+    }
+    None
+}
+
+/// Filter a login-provider list by the effective picker allowlist.
+///
+/// In the config-driven (Reasonix-aligned) model, the allowlist (explicit
+/// `provider.model_picker_providers`, or automatically the configured named
+/// providers) declares the only providers the user works with. When one is
+/// active, `/login` should not advertise unrelated built-in providers
+/// (Anthropic/OpenRouter/OpenAI/OAuth accounts the user never configured) --
+/// it should offer only:
 /// - the generic `openai-compatible` entry (how a named profile gets its API
 ///   key configured), and
 /// - any built-in login provider that the allowlist explicitly names.
 ///
-/// A missing/empty allowlist leaves the list unchanged (default behavior).
+/// No allowlist leaves the list unchanged (default behavior).
 pub fn filter_login_providers_by_allowlist(
     providers: Vec<LoginProviderDescriptor>,
 ) -> Vec<LoginProviderDescriptor> {
-    let Some(allowlist) = crate::config::config()
-        .provider
-        .model_picker_providers
-        .as_deref()
-    else {
+    let Some(allowlist) = configured_picker_provider_allowlist() else {
         return providers;
     };
-    if allowlist.iter().all(|entry| entry.trim().is_empty()) {
-        return providers;
-    }
 
     providers
         .into_iter()

@@ -184,19 +184,17 @@ fn load_named_profile_api_key(
     env_key: &str,
     profile: &jcode_base::config::NamedProviderConfig,
 ) -> Option<String> {
-    if let Some(env_file) = profile
+    // 统一 `<jcode home>/.env` 是密钥的权威来源（resonix 对齐），无论是否
+    // 配置 env_file 都必须先查它。未配置 env_file 时使用一个安全但通常
+    // 不存在的回退文件名，让 `load_api_key_from_env_or_config` 的查找顺序
+    // 生效：统一 .env -> 进程环境变量 -> 旧分散文件（缺失时静默回退）。
+    let env_file = profile
         .env_file
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        return load_api_key_from_env_or_config(env_key, env_file);
-    }
-
-    std::env::var(env_key)
-        .ok()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
+        .unwrap_or("named-provider.env");
+    load_api_key_from_env_or_config(env_key, env_file)
 }
 
 fn parse_env_bool(value: &str) -> Option<bool> {

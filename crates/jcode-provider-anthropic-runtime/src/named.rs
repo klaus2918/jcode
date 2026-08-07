@@ -63,6 +63,70 @@ impl NamedAnthropicAuth {
     }
 }
 
+/// GET `{base}/v1/models` 拉取网关模型目录，返回模型 id 列表。
+///
+/// 兼容两种目录格式：
+/// - Anthropic 标准：`{"data": [{"id": "..."}]}`
+/// - cc-switch 本地网关：`{"models": [{"slug": "...", "display_name": "..."}]}`
+///
+/// 独立于 `NamedAnthropicProvider` 的方法，便于重试任务（`tokio::spawn`
+/// 需要 `'static`）内直接刷新目录，跟随 cc-switch 面板切换的 provider。
+async fn fetch_gateway_catalog(
+    client: &Client,
+    api_base: &str,
+    auth: &NamedAnthropicAuth,
+) -> Result<Vec<String>> {
+    let url = jcode_base::provider::anthropic::models_url_from_api_base(api_base);
+    let response = auth
+        .apply(client.get(&url).header("anthropic-version", "2023-06-01"))
+        .await?
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to send Anthropic-compatible model catalog request\n  endpoint: {}",
+                url
+            )
+        })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = jcode_base::util::http_error_body(response, "HTTP error").await;
+        anyhow::bail!(
+            "Anthropic-compatible model catalog request failed\n  endpoint: {}\n  auth: {}\n  status: {}\n  response: {}\nHint: verify the base URL resolves to the Anthropic `/v1/models` endpoint and the key is valid.",
+            url,
+            auth.label(),
+            status,
+            body
+        );
+    }
+
+    let data: Value = response
+        .json()
+        .await
+        .context("Failed to parse Anthropic model catalog")?;
+    let models = data
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+        .chain(
+            data.get("models")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.get("slug").and_then(Value::as_str)),
+        )
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        anyhow::bail!("Anthropic-compatible model catalog response did not contain any model ids");
+    }
+    Ok(models)
+}
+
 /// Anthropic Messages API runtime for a user-defined named provider profile.
 pub struct NamedAnthropicProvider {
     client: Client,
@@ -103,58 +167,29 @@ impl NamedAnthropicProvider {
     }
 
     async fn fetch_models(&self) -> Result<Vec<String>> {
-        let url = jcode_base::provider::anthropic::models_url_from_api_base(&self.api_base);
-        let response = self
-            .auth
-            .apply(
-                self.client
-                    .get(&url)
-                    .header("anthropic-version", "2023-06-01"),
-            )
-            .await?
-            .send()
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to send Anthropic-compatible model catalog request\n  endpoint: {}",
-                    url
-                )
-            })?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = jcode_base::util::http_error_body(response, "HTTP error").await;
-            anyhow::bail!(
-                "Anthropic-compatible model catalog request failed\n  endpoint: {}\n  auth: {}\n  status: {}\n  response: {}\nHint: verify the base URL resolves to the Anthropic `/v1/models` endpoint and the key is valid.",
-                url,
-                self.auth.label(),
-                status,
-                body
-            );
-        }
-
-        let data: Value = response
-            .json()
-            .await
-            .context("Failed to parse Anthropic model catalog")?;
-        let models = data
-            .get("data")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| entry.get("id").and_then(Value::as_str))
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        if models.is_empty() {
-            anyhow::bail!(
-                "Anthropic-compatible model catalog response did not contain any model ids"
-            );
-        }
+        let models = fetch_gateway_catalog(&self.client, &self.api_base, &self.auth).await?;
         if let Ok(mut cache) = self.models_cache.try_write() {
             *cache = models.clone();
         }
         Ok(models)
+    }
+
+    /// 未配置默认模型（`default_model` 为空）时，从模型目录自动选择当前
+    /// 可用的第一个模型。
+    ///
+    /// 典型场景：cc-switch 本地网关。模型名跟随 cc-switch 面板切换的
+    /// provider 自动变化，jcode 无需在配置里写死；显式指定 `default_model`
+    /// 或 `--model` 后本方法直接返回 `false`，不会覆盖显式选择。
+    async fn auto_select_model(&self) -> Result<bool> {
+        if !self.model().trim().is_empty() {
+            return Ok(false);
+        }
+        let models = self.fetch_models().await?;
+        let first = models
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("model catalog reported no models"))?;
+        self.set_model(first)?;
+        Ok(true)
     }
 
     fn resolve_named_key(profile: &NamedProviderConfig) -> Option<String> {
@@ -164,24 +199,20 @@ impl NamedAnthropicProvider {
             .map(str::trim)
             .filter(|v| !v.is_empty());
         if let Some(env_key) = env_key {
-            return match profile
+            // 统一 `<jcode home>/.env` 是密钥的权威来源（resonix 对齐），
+            // 无论是否配置 env_file 都必须先查它。未配置 env_file 时使用
+            // 一个安全但通常不存在的回退文件名，让
+            // `load_api_key_from_env_or_config` 的查找顺序生效：统一 .env
+            // -> 进程环境变量 -> 旧分散文件（缺失时静默回退）。
+            let env_file = profile
                 .env_file
                 .as_deref()
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
-            {
-                Some(env_file) => {
-                    jcode_base::provider_catalog::load_api_key_from_env_or_config(env_key, env_file)
-                }
-                // No env file configured: read the environment variable
-                // directly. Passing an empty file name to
-                // `load_api_key_from_env_or_config` fails its safe-name
-                // validation and would lose the key entirely.
-                None => std::env::var(env_key)
-                    .ok()
-                    .map(|key| key.trim().to_string())
-                    .filter(|key| !key.is_empty()),
-            };
+                .unwrap_or("named-provider.env");
+            return jcode_base::provider_catalog::load_api_key_from_env_or_config(
+                env_key, env_file,
+            );
         }
         profile.api_key.clone()
     }
@@ -427,7 +458,17 @@ impl NamedAnthropicProvider {
                                 "Anthropic-format model '{}' is not available ({}); retrying with best available model",
                                 model_name, e
                             ));
-                            let fallback = anthropic_fallback_model(&tried_models, &error_str);
+                            // 本地网关（cc-switch 等）场景：面板切换 provider 后
+                            // 模型名会变化，先刷新模型目录、选择目录内未尝试过的
+                            // 模型跟随切换；目录不可用（刷新失败）时再回退到内置
+                            // Claude 模型列表。
+                            let fallback =
+                                match fetch_gateway_catalog(&client, &api_base, &auth).await {
+                                    Ok(models) => models.into_iter().find(|model| {
+                                        !tried_models.iter().any(|tried| tried == model)
+                                    }),
+                                    Err(_) => anthropic_fallback_model(&tried_models, &error_str),
+                                };
                             if let Some(fallback) = fallback {
                                 let _ = tx
                                     .send(Ok(StreamEvent::StatusDetail {
@@ -669,6 +710,16 @@ impl Provider for NamedAnthropicProvider {
         system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        // 未配置默认模型（cc-switch 本地网关等）：首次请求前自动发现并
+        // 跟随当前 provider 的模型，避免发送空 `model` 字段。
+        if self.model().trim().is_empty() {
+            self.auto_select_model().await.map_err(|err| {
+                anyhow::anyhow!(
+                    "No model is configured for provider '{}' and automatic model discovery failed: {err:#}. Set `default_model` in the provider profile or pass `--model <id>`.",
+                    self.profile_name
+                )
+            })?;
+        }
         let model = self
             .model
             .read()
@@ -773,6 +824,24 @@ impl Provider for NamedAnthropicProvider {
     }
 
     fn available_models_display(&self) -> Vec<String> {
+        // 动态目录缓存优先：cc-switch 本地网关自动发现 / `model_catalog`
+        // 刷新后，模型列表跟随当前 provider 变化，`/model` 切换可用。
+        let mut models = self
+            .models_cache
+            .try_read()
+            .map(|cache| cache.clone())
+            .unwrap_or_default();
+        if !models.is_empty() {
+            for model in &self.static_models {
+                if !models.contains(model) {
+                    models.push(model.clone());
+                }
+            }
+            if models.is_empty() {
+                models.push(self.model());
+            }
+            return models;
+        }
         if !self.supports_model_catalog {
             if !self.static_models.is_empty() {
                 return self.static_models.clone();
@@ -801,10 +870,28 @@ impl Provider for NamedAnthropicProvider {
     }
 
     async fn prefetch_models(&self) -> Result<()> {
-        if !self.supports_model_catalog {
+        // 未指定默认模型（cc-switch 本地网关等）：自动发现并选择当前
+        // provider 的模型，跟随面板切换。其余场景仅 `model_catalog` 开启
+        // 时刷新目录缓存，失败不阻塞启动。
+        let needs_auto_model = self.model().trim().is_empty();
+        if !self.supports_model_catalog && !needs_auto_model {
             return Ok(());
         }
-        let _ = self.fetch_models().await;
+        match self.fetch_models().await {
+            Ok(models) => {
+                if needs_auto_model && let Some(first) = models.first() {
+                    let _ = self.set_model(first);
+                }
+            }
+            Err(err) => {
+                if needs_auto_model {
+                    jcode_base::logging::warn(&format!(
+                        "Automatic model discovery for '{}' failed: {err:#}",
+                        self.profile_name
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -856,6 +943,88 @@ impl Provider for NamedAnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jcode_base::config::{NamedProviderAuth, NamedProviderConfig, ProviderApiFormat};
+
+    /// One-shot `/models` mock: serves `body` to the first request.
+    fn spawn_models_server(body: &'static str) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake models server");
+        let addr = listener.local_addr().expect("fake models addr");
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            let mut buf = vec![0u8; 8192];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        format!("http://{addr}")
+    }
+
+    fn cc_switch_profile(base_url: String) -> NamedProviderConfig {
+        NamedProviderConfig {
+            base_url,
+            api_format: Some(ProviderApiFormat::Anthropic),
+            auth: NamedProviderAuth::None,
+            default_model: None,
+            ..NamedProviderConfig::default()
+        }
+    }
+
+    /// 统一 `<jcode home>/.env` 是密钥的权威来源：未配置 `env_file` 时，
+    /// named Anthropic provider 也必须从统一 .env 解析 `api_key_env` 指向
+    /// 的 key，而不是只看进程环境变量（resonix 对齐，回归测试）。
+    #[test]
+    fn named_profile_key_resolves_from_unified_env_without_env_file() {
+        let _guard = jcode_base::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        // 备份并隔离 JCODE_HOME 与测试 key 的进程环境变量。
+        let saved_home = std::env::var_os("JCODE_HOME");
+        let saved_key = std::env::var_os("JCODE_NAMED_ANTH_KEY_TEST");
+        jcode_base::env::set_var("JCODE_HOME", temp.path());
+        std::fs::write(
+            temp.path().join(".env"),
+            "JCODE_NAMED_ANTH_KEY_TEST=sk-from-unified-env\n",
+        )
+        .expect("write unified .env");
+
+        let profile = NamedProviderConfig {
+            base_url: "https://gateway.example.com".to_string(),
+            api_format: Some(ProviderApiFormat::Anthropic),
+            auth: NamedProviderAuth::Bearer,
+            api_key_env: Some("JCODE_NAMED_ANTH_KEY_TEST".to_string()),
+            // env_file 故意留空：必须走统一 .env 而非仅进程环境。
+            env_file: None,
+            default_model: Some("deepseek-v4-flash".to_string()),
+            ..NamedProviderConfig::default()
+        };
+        let provider = NamedAnthropicProvider::new_named("test-gw", &profile)
+            .expect("named anthropic provider should construct");
+        match &provider.auth {
+            NamedAnthropicAuth::Bearer { token, .. } => {
+                assert_eq!(token, "sk-from-unified-env");
+            }
+            other => panic!("expected Bearer auth resolved from unified .env, got: {other:?}"),
+        }
+
+        if let Some(home) = saved_home {
+            jcode_base::env::set_var("JCODE_HOME", home);
+        } else {
+            jcode_base::env::remove_var("JCODE_HOME");
+        }
+        match saved_key {
+            Some(key) => jcode_base::env::set_var("JCODE_NAMED_ANTH_KEY_TEST", key),
+            None => jcode_base::env::remove_var("JCODE_NAMED_ANTH_KEY_TEST"),
+        }
+    }
 
     #[test]
     fn messages_url_derivation() {
@@ -879,5 +1048,98 @@ mod tests {
             NamedAnthropicProvider::messages_url("https://host/anthropic"),
             "https://host/anthropic/v1/messages"
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_models_parses_cc_switch_gateway_format() {
+        let server = spawn_models_server(
+            r#"{"models":[{"slug":"deepseek-v4-flash","display_name":"DeepSeek V4 Flash"},{"slug":"deepseek-v4-pro","display_name":"DeepSeek V4 Pro"}]}"#,
+        );
+        let provider =
+            NamedAnthropicProvider::new_named("cc-switch", &cc_switch_profile(server)).unwrap();
+        let models = provider.fetch_models().await.unwrap();
+        assert_eq!(models, vec!["deepseek-v4-flash", "deepseek-v4-pro"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_models_parses_anthropic_standard_format() {
+        let server = spawn_models_server(
+            r#"{"data":[{"id":"claude-sonnet-4-6"},{"id":"claude-opus-4-6"}]}"#,
+        );
+        let provider =
+            NamedAnthropicProvider::new_named("cc-switch", &cc_switch_profile(server)).unwrap();
+        let models = provider.fetch_models().await.unwrap();
+        assert_eq!(models, vec!["claude-sonnet-4-6", "claude-opus-4-6"]);
+    }
+
+    #[tokio::test]
+    async fn auto_select_model_picks_first_discovered_model() {
+        let server = spawn_models_server(
+            r#"{"models":[{"slug":"deepseek-v4-flash"},{"slug":"deepseek-v4-pro"}]}"#,
+        );
+        let provider =
+            NamedAnthropicProvider::new_named("cc-switch", &cc_switch_profile(server)).unwrap();
+        assert!(provider.model().is_empty());
+        assert!(provider.auto_select_model().await.unwrap());
+        assert_eq!(provider.model(), "deepseek-v4-flash");
+    }
+
+    #[tokio::test]
+    async fn auto_select_model_never_overrides_explicit_default() {
+        let server = spawn_models_server(r#"{"models":[{"slug":"deepseek-v4-flash"}]}"#);
+        let mut profile = cc_switch_profile(server);
+        profile.default_model = Some("explicit-model".to_string());
+        let provider = NamedAnthropicProvider::new_named("cc-switch", &profile).unwrap();
+        assert_eq!(provider.model(), "explicit-model");
+        assert!(!provider.auto_select_model().await.unwrap());
+        assert_eq!(provider.model(), "explicit-model");
+    }
+
+    #[tokio::test]
+    async fn prefetch_models_auto_selects_model_for_gateway() {
+        let server = spawn_models_server(
+            r#"{"models":[{"slug":"deepseek-v4-flash"},{"slug":"deepseek-v4-pro"}]}"#,
+        );
+        // cc-switch 场景即使未开 model_catalog 也会自动选择。
+        let provider =
+            NamedAnthropicProvider::new_named("cc-switch", &cc_switch_profile(server)).unwrap();
+        provider.prefetch_models().await.unwrap();
+        assert_eq!(provider.model(), "deepseek-v4-flash");
+        let models = provider.available_models_display();
+        assert_eq!(models, vec!["deepseek-v4-flash", "deepseek-v4-pro"]);
+    }
+
+    #[tokio::test]
+    async fn prefetch_models_with_explicit_model_keeps_model_catalog_behavior() {
+        let server =
+            spawn_models_server(r#"{"models":[{"slug":"gateway-a"},{"slug":"gateway-b"}]}"#);
+        let mut profile = cc_switch_profile(server);
+        profile.model_catalog = true;
+        profile.default_model = Some("gateway-a".to_string());
+        let provider = NamedAnthropicProvider::new_named("cc-switch", &profile).unwrap();
+        provider.prefetch_models().await.unwrap();
+        // 显式 default_model 不被覆盖；目录缓存填充供 /model 切换。
+        assert_eq!(provider.model(), "gateway-a");
+        let models = provider.available_models_display();
+        assert_eq!(models, vec!["gateway-a", "gateway-b"]);
+    }
+
+    #[tokio::test]
+    async fn available_models_prefers_dynamic_catalog_after_discovery() {
+        let server = spawn_models_server(
+            r#"{"models":[{"slug":"deepseek-v4-flash"},{"slug":"deepseek-v4-pro"}]}"#,
+        );
+        let provider =
+            NamedAnthropicProvider::new_named("cc-switch", &cc_switch_profile(server)).unwrap();
+        // 目录未获取前：无 static models，回退内置 Claude 列表。
+        let before = provider.available_models_display();
+        assert!(
+            before.iter().any(|m| m.starts_with("claude-")),
+            "fallback should be built-in Claude models: {before:?}"
+        );
+        // 自动发现后：目录模型优先。
+        provider.prefetch_models().await.unwrap();
+        let after = provider.available_models_display();
+        assert_eq!(after, vec!["deepseek-v4-flash", "deepseek-v4-pro"]);
     }
 }

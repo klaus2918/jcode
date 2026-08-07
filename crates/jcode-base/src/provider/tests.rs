@@ -874,6 +874,89 @@ models = ["deepseek-v4-flash", "deepseek-v4-pro"]
     });
 }
 
+/// cc-switch 本地代理（resonix 风格 `[[providers]]` 数组 + `auth = "none"` +
+/// `kind = "anthropic"`）在**不写 `api_key_env`** 时也必须可用：被识别为
+/// 已配置、出现在 /model 列表、可切换。
+///
+/// 回归：旧版数组条目解析会静默丢弃 `auth` 字段（退化成 Bearer+无 key），
+/// 于是"没有 api_key_env = DEEPSEEK_API_KEY 就无法使用"——用户被迫在配置里
+/// 补一行指向统一 .env 的 api_key_env 才能绕过。
+#[test]
+fn resonix_array_cc_switch_auth_none_works_without_api_key_env() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            std::fs::write(
+                std::path::PathBuf::from(jcode_home).join("config.toml"),
+                r#"
+[provider]
+default_provider = "cc-switch"
+default_model = "deepseek-v4-flash"
+
+[[providers]]
+name        = "cc-switch"
+type        = "openai-compatible"
+kind        = "anthropic"
+base_url    = "http://127.0.0.1:15721"   # cc-switch 本地代理地址
+auth        = "none"                     # cc-switch 在代理侧注入真实 API key
+models      = ["deepseek-v4-flash"]
+default     = "deepseek-v4-flash"
+model_overrides   = { "deepseek-v4-flash" = { context_window = 1000000 } }
+"#,
+            )
+            .expect("write test config.toml");
+            // 故意不设置任何 API key：auth=none 本地网关不应需要 key。
+            crate::env::remove_var("DEEPSEEK_API_KEY");
+            crate::config::invalidate_config_cache();
+
+            let cfg = crate::config::config();
+            let profile = cfg.providers.get("cc-switch").expect("cc-switch entry parsed");
+            assert_eq!(profile.auth, crate::config::NamedProviderAuth::None);
+            assert_eq!(
+                profile.api_format,
+                Some(crate::config::ProviderApiFormat::Anthropic)
+            );
+            assert_eq!(profile.default_model.as_deref(), Some("deepseek-v4-flash"));
+            assert_eq!(profile.api_key_env, None, "this config must not carry api_key_env");
+            assert_eq!(profile.models[0].context_window, Some(1_000_000));
+            assert!(
+                crate::provider_catalog::named_provider_profile_is_configured("cc-switch", profile),
+                "auth=none profile must count as configured without any API key"
+            );
+
+            let template = MultiProvider::new_fast();
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            assert_eq!(
+                ProviderRegistry::new(&template)
+                    .active_compatible_profile_id()
+                    .as_deref(),
+                Some("cc-switch")
+            );
+
+            let switching = template.available_models_for_switching();
+            assert!(
+                switching.iter().any(|m| m == "deepseek-v4-flash"),
+                "switching should list the configured model without a key: {switching:?}"
+            );
+
+            // /model 路由：cc-switch 路由必须 available（可切换）。
+            let routes = template.model_routes();
+            let cc_route = routes
+                .iter()
+                .find(|route| route.provider == "cc-switch")
+                .expect("cc-switch route must exist in the picker");
+            assert!(cc_route.available, "cc-switch route must be switchable");
+
+            let session = template.fork_for_new_session();
+            session
+                .set_model("cc-switch:deepseek-v4-flash")
+                .expect("in-session switch to the cc-switch model should succeed");
+            assert_eq!(session.model(), "deepseek-v4-flash");
+        });
+    });
+}
+
 /// Rendering the route catalog must never schedule network work.
 ///
 /// Regression guard for the "spawning a session refetches every provider
@@ -952,6 +1035,109 @@ fn slash_ref_routes_to_openai_subprovider_at_runtime() {
                 provider.active_provider(),
                 jcode_provider_core::ActiveProvider::OpenAI
             );
+        });
+    });
+}
+
+/// 用户报告场景：resonix 风格 `[[providers]]` 数组条目使用 `kind = "anthropic"`
+/// （Anthropic Messages 协议网关，如 cch.skytech.io 直连网关），API key 统一
+/// 存放在 `<jcode home>/.env`。必须满足：
+/// 1. 启动时按 `default_provider` + `default_model` 挂载默认命名 provider；
+/// 2. `/model` picker 的 route catalog 列出全部已配置 provider 的模型；
+/// 3. bare 模型 id 与 `<profile>:<model>` 前缀均能切换。
+#[test]
+fn resonix_anthropic_kind_profiles_support_picker_routes_and_switching() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            std::fs::write(
+                std::path::PathBuf::from(&jcode_home).join("config.toml"),
+                r#"
+[provider]
+default_provider = "deepseek-flash"
+default_model = "deepseek-v4-flash"
+
+[[providers]]
+name        = "deepseek-flash"
+kind        = "anthropic"
+base_url    = "http://cch.skytech.io"
+models      = ["deepseek-v4-flash"]
+default     = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 1000000
+price       = { cache_hit = 0.02, input = 1, output = 2, currency = "¥" }
+thinking    = "adaptive"
+effort      = "max"
+
+[[providers]]
+name        = "kimi-1M"
+kind        = "anthropic"
+base_url    = "http://cch.skytech.io"
+models      = ["kimi-k3", "kimi-k2.7"]
+default     = "kimi-k3"
+api_key_env = "KIMI_API_KEY"
+context_window = 1000000
+"#,
+            )
+            .expect("write test config.toml");
+            // 统一 `.env` 是密钥权威来源（resonix 对齐）：DEEPSEEK_API_KEY /
+            // KIMI_API_KEY 都写在这里，而不是进程环境变量。
+            std::fs::write(
+                std::path::PathBuf::from(jcode_home).join(".env"),
+                "DEEPSEEK_API_KEY=sk-test-deepseek\nKIMI_API_KEY=sk-test-kimi\n",
+            )
+            .expect("write unified .env");
+            crate::config::invalidate_config_cache();
+
+            let template = MultiProvider::new_fast();
+            // 启动即按 default_provider + default_model 挂载 deepseek-flash。
+            assert_eq!(template.model(), "deepseek-v4-flash");
+
+            // `/model` picker 的 route catalog 必须列出全部配置模型的模型。
+            let routes = template.model_routes();
+            let route_models: Vec<&str> = routes.iter().map(|r| r.model.as_str()).collect();
+            for expected in ["deepseek-v4-flash", "kimi-k3", "kimi-k2.7"] {
+                assert!(
+                    routes.iter().any(|r| r.model == expected),
+                    "route catalog must contain '{expected}': {route_models:?}"
+                );
+            }
+            // 命名 provider 的路由 provider 列必须是 profile 名，available 状态
+            // 必须为 true（key 已在统一 .env 中）。
+            let kimi_route = routes
+                .iter()
+                .find(|r| r.model == "kimi-k3")
+                .expect("kimi-k3 route");
+            assert_eq!(kimi_route.provider, "kimi-1M");
+            assert!(kimi_route.available, "configured kimi-1M must be available");
+
+            // 服务器会话 fork 同样可见配置模型。
+            let session = template.fork_for_new_session();
+            let switching = session.available_models_for_switching();
+            assert!(
+                switching.iter().any(|m| m == "kimi-k3"),
+                "session switching list must include kimi-k3: {switching:?}"
+            );
+
+            // bare 模型 id 切换（同一网关下模型属于哪个 profile 由静态模型表
+            // 决定，切换后仍应可用）。
+            session
+                .set_model("kimi-k3")
+                .expect("bare in-session switch should succeed");
+            assert_eq!(session.model(), "kimi-k3");
+
+            // picker 发出的 `<profile>:<model>` 前缀切换。
+            session
+                .set_model("kimi-1M:kimi-k2.7")
+                .expect("prefixed in-session switch should succeed");
+            assert_eq!(session.model(), "kimi-k2.7");
+
+            // 切回默认 profile 的前缀形式。
+            session
+                .set_model("deepseek-flash:deepseek-v4-flash")
+                .expect("switch back to deepseek-flash should succeed");
+            assert_eq!(session.model(), "deepseek-v4-flash");
         });
     });
 }
