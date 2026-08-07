@@ -454,7 +454,7 @@ pub enum ProviderApiFormat {
     Anthropic,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NamedProviderAuth {
     #[default]
