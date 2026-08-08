@@ -325,6 +325,16 @@ pub fn build_chat_messages(
                         ContentBlock::Reasoning { text } => {
                             reasoning_content.push_str(text);
                         }
+                        // Signed Anthropic thinking stored by the protocol-aware
+                        // storage layer also replays as the top-level
+                        // `reasoning_content` field on OpenAI-compatible endpoints
+                        // (e.g. DeepSeek-style chat completions). The signature is
+                        // intentionally not serialized here: `reasoning_content`
+                        // has no signature concept and the readable text is what
+                        // these endpoints echo back.
+                        ContentBlock::AnthropicThinking { thinking, .. } => {
+                            reasoning_content.push_str(thinking);
+                        }
                         ContentBlock::ToolUse {
                             id, name, input, ..
                         } => {
@@ -826,5 +836,98 @@ mod sanitize_schema_tests {
     fn type_arrays_including_object_are_sanitized() {
         let sanitized = sanitize_tool_parameters_schema(&json!({"type": ["object", "null"]}));
         assert_eq!(sanitized["properties"], json!({}));
+    }
+}
+
+#[cfg(test)]
+mod build_chat_messages_tests {
+    use super::*;
+
+    fn assistant_with(blocks: Vec<ContentBlock>) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: blocks,
+            timestamp: None,
+            tool_duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn anthropic_thinking_replays_as_top_level_reasoning_content() {
+        let messages = vec![assistant_with(vec![ContentBlock::AnthropicThinking {
+            thinking: "signed thought".to_string(),
+            signature: "sig".to_string(),
+        }])];
+        let api = build_chat_messages(&messages, "", true, true, true);
+        assert_eq!(api.len(), 1);
+        let msg = &api[0];
+        assert_eq!(msg["role"], "assistant");
+        // OpenAI-compatible endpoints receive the readable thinking as the
+        // top-level `reasoning_content` field; the Anthropic signature has no
+        // meaning there and must not leak into the payload.
+        assert_eq!(msg["reasoning_content"], "signed thought");
+        assert!(
+            msg.get("signature").is_none(),
+            "no signature field expected: {msg}"
+        );
+        assert_eq!(
+            msg["content"], "",
+            "bare reasoning message keeps empty content"
+        );
+    }
+
+    #[test]
+    fn reasoning_block_replays_as_top_level_reasoning_content() {
+        let messages = vec![assistant_with(vec![ContentBlock::Reasoning {
+            text: "openrouter thought".to_string(),
+        }])];
+        let api = build_chat_messages(&messages, "", true, true, true);
+        assert_eq!(api.len(), 1);
+        assert_eq!(api[0]["reasoning_content"], "openrouter thought");
+    }
+
+    #[test]
+    fn reasoning_trace_is_never_replayed() {
+        let messages = vec![assistant_with(vec![
+            ContentBlock::ReasoningTrace {
+                text: "history-only trace".to_string(),
+            },
+            ContentBlock::Text {
+                text: "visible answer".to_string(),
+                cache_control: None,
+            },
+        ])];
+        let api = build_chat_messages(&messages, "", true, true, true);
+        assert_eq!(api.len(), 1);
+        assert_eq!(api[0]["content"], "visible answer");
+        assert!(
+            api[0].get("reasoning_content").is_none(),
+            "history-only trace must not be replayed: {api:?}"
+        );
+    }
+
+    #[test]
+    fn anthropic_thinking_with_tool_call_keeps_reasoning_content() {
+        let messages = vec![assistant_with(vec![
+            ContentBlock::AnthropicThinking {
+                thinking: "planning".to_string(),
+                signature: "sig".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"cmd": "ls"}),
+                thought_signature: None,
+            },
+        ])];
+        let api = build_chat_messages(&messages, "", true, true, true);
+        // A dangling tool call also gets a synthetic tool output injected, so
+        // the assistant turn is the first message.
+        let assistant = api
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("assistant message");
+        assert_eq!(assistant["reasoning_content"], "planning");
+        assert!(assistant["tool_calls"].is_array());
     }
 }

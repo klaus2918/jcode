@@ -77,12 +77,7 @@ impl DeviceRegistry {
     }
 
     /// Register a new paired device. Returns the auth token.
-    pub fn pair_device(
-        &mut self,
-        device_id: String,
-        device_name: String,
-        apns_token: Option<String>,
-    ) -> String {
+    pub fn pair_device(&mut self, device_id: String, device_name: String) -> String {
         use rand::Rng;
         // Generate a random auth token
         let token_bytes: [u8; 32] = rand::rng().random();
@@ -101,7 +96,6 @@ impl DeviceRegistry {
         self.devices.push(PairedDevice {
             id: device_id,
             name: device_name,
-            apns_token,
             token_hash,
             paired_at: now.clone(),
             last_seen: now,

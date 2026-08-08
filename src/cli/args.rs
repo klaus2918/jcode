@@ -1,4 +1,5 @@
-﻿use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum GoogleAccessTierArg {
@@ -178,7 +179,13 @@ pub(crate) enum Command {
     Repl,
 
     /// Update jcode to the latest version
-    Update,
+    Update {
+        /// Install/update from a local package (.tar.gz or .exe) instead of
+        /// downloading from the official site. Use this for offline installs
+        /// and updates with a locally provided package.
+        #[arg(long, value_name = "PATH")]
+        local: Option<PathBuf>,
+    },
 
     /// Show build/version information in human or JSON form
     Version {
@@ -245,7 +252,7 @@ pub(crate) enum Command {
     #[command(subcommand)]
     Ambient(AmbientCommand),
 
-    /// Generate a pairing code for iOS/web client
+    /// Generate a pairing code for a remote client
     Pair {
         /// List paired devices instead of generating a code
         #[arg(long)]
@@ -516,9 +523,11 @@ pub(crate) enum ProviderCommand {
         #[arg(long, alias = "api-base")]
         base_url: String,
 
-        /// Default model id for this provider profile
+        /// Default model id for this provider profile. Optional: omit it for
+        /// gateways that expose a live /models catalog (e.g. CC Switch local
+        /// proxy), and jcode auto-discovers and follows the current model.
         #[arg(short, long)]
-        model: String,
+        model: Option<String>,
 
         /// Optional model context window in tokens
         #[arg(long)]

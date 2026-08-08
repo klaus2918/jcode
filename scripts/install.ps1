@@ -945,7 +945,28 @@ if (-not $Version) {
         }
         Write-Info "Detected local artifact version: $Version"
     } elseif ($ResolvedArtifactTgzPath) {
-        Write-Err "-Version is required when using -ArtifactTgzPath"
+        # 本地 tar.gz 也自动探测版本（与 -ArtifactExePath / install.sh / jcode
+        # update --local 对齐），免去手动 -Version：解压到临时目录，运行其中
+        # 二进制 --version 解析版本号。
+        $probeTemp = Join-Path $env:TEMP "jcode-install-$(Get-Random)"
+        New-Item -ItemType Directory -Path $probeTemp -Force | Out-Null
+        try {
+            $probeDownload = Join-Path $probeTemp "jcode.download"
+            Copy-Item -Path $ResolvedArtifactTgzPath -Destination $probeDownload -Force
+            tar xzf $probeDownload -C $probeTemp 2>$null
+            $probeBin = Get-ChildItem -LiteralPath $probeTemp -Filter "jcode*" -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -ne ".tar.gz" -and $_.Name -ne "jcode.download" -and $_.Extension -ne ".bin" } |
+                Select-Object -First 1
+            if ($probeBin) {
+                $Version = Get-JcodeVersionFromBinary $probeBin.FullName
+            }
+        } finally {
+            Remove-Item -Path $probeTemp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $Version) {
+            Write-Err "Could not detect a jcode version from '$ResolvedArtifactTgzPath'. Pass -Version explicitly if this is a trusted local build."
+        }
+        Write-Info "Detected local artifact version: $Version"
     } else {
         Write-Info "Fetching latest release..."
         $Version = Get-LatestJcodeReleaseTag
@@ -1028,6 +1049,13 @@ if ($DownloadMode -eq "tar") {
     Write-Info "Extracting..."
     tar xzf $DownloadPath -C $TempDir 2>$null
     $SrcBin = Join-Path $TempDir "$Artifact.exe"
+    if (-not (Test-Path $SrcBin)) {
+        # 本地安装包常带 git hash 后缀（jcode-windows-x86_64-2dc3213a6.exe）。
+        $found = Get-ChildItem -LiteralPath $TempDir -Filter "jcode*" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -ne ".tar.gz" -and $_.Name -ne "jcode.download" } |
+            Select-Object -First 1
+        if ($found) { $SrcBin = $found.FullName }
+    }
     if (-not (Test-Path $SrcBin)) {
         Write-Err "Downloaded archive did not contain expected binary: $Artifact.exe"
     }

@@ -1207,7 +1207,7 @@ impl Server {
         // Persist auxiliary discovery metadata after the server is already live.
         self.spawn_registry_metadata_publisher(registry_info);
 
-        // Spawn WebSocket gateway for iOS/web clients (if enabled)
+        // Spawn WebSocket gateway for remote clients (if enabled)
         self.spawn_gateway(runtime.clone()).await;
 
         // Startup recovery can be expensive in multi-session reloads. Run it

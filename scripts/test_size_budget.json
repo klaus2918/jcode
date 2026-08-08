@@ -14,7 +14,7 @@
     "crates/jcode-base/src/provider/tests/model_resolution.rs": 2253,
     "crates/jcode-base/src/session_tests/cases.rs": 2363,
     "crates/jcode-plan/src/dag/tests.rs": 1392,
-    "crates/jcode-provider-anthropic-runtime/src/anthropic_tests.rs": 1937,
+    "crates/jcode-provider-anthropic-runtime/src/anthropic_tests.rs": 2004,
     "crates/jcode-provider-openrouter-runtime/src/openrouter_tests.rs": 2895,
     "crates/jcode-tui/src/tui/app/tests.rs": 1752,
     "crates/jcode-tui/src/tui/app/tests/commands_accounts_01/part_01.rs": 1633,

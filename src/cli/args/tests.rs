@@ -1,5 +1,36 @@
 use super::*;
 
+    #[test]
+    fn update_command_parses_local_artifact_flag() {
+        // 本地安装包模式：jcode update --local <package>
+        let args = Args::try_parse_from([
+            "jcode",
+            "update",
+            "--local",
+            "D:\\dist\\jcode-windows-x86_64-2dc3213a6.exe",
+        ])
+        .expect("update --local should parse");
+        match args.command {
+            Some(Command::Update { local }) => {
+                let local = local.expect("local path should be set");
+                assert_eq!(
+                    local.as_os_str(),
+                    "D:\\dist\\jcode-windows-x86_64-2dc3213a6.exe"
+                );
+            }
+            other => panic!("unexpected command: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn update_command_parses_without_local_flag() {
+        let args = Args::try_parse_from(["jcode", "update"]).unwrap();
+        match args.command {
+            Some(Command::Update { local }) => assert!(local.is_none()),
+            other => panic!("unexpected command: {:?}", other),
+        }
+    }
+
 #[test]
 fn server_start_and_internal_keepalive_parse() {
     let args = Args::try_parse_from(["jcode", "server", "start", "--json"])
@@ -260,7 +291,7 @@ fn provider_add_subcommand_parses_agent_friendly_flags() {
         })) => {
             assert_eq!(name, "my-api");
             assert_eq!(base_url, "https://llm.example.com/v1");
-            assert_eq!(model, "model-a");
+            assert_eq!(model.as_deref(), Some("model-a"));
             assert_eq!(context_window, Some(128000));
             assert!(api_key_stdin);
             assert_eq!(auth, Some(ProviderAuthArg::Bearer));
@@ -304,7 +335,7 @@ fn provider_add_subcommand_parses_api_format_and_proxy() {
         })) => {
             assert_eq!(name, "anth-gw");
             assert_eq!(base_url, "https://gateway.example.com/v1");
-            assert_eq!(model, "claude-sonnet-4-6");
+            assert_eq!(model.as_deref(), Some("claude-sonnet-4-6"));
             assert_eq!(api, Some(ProviderApiFormatArg::Anthropic));
             assert_eq!(proxy.as_deref(), Some("http://127.0.0.1:7890"));
             assert!(json);
@@ -337,11 +368,10 @@ fn restart_save_auto_restore_flag_parses() {
     }
 }
 
-/// Contract test for the onboarding agent-repair brief (see
-/// `jcode-tui::tui::app::onboarding_repair::build_repair_brief`). The brief
-/// tells a coding agent to run these exact commands to diagnose and fix a
-/// failed login. If any flag here stops parsing, the brief would hand the agent
-/// a broken command, so this guards the agent-facing CLI contract.
+/// Contract test for the onboarding repair brief. The brief tells a coding
+/// agent to run these exact commands to diagnose and fix a failed login. If
+/// any flag here stops parsing, the brief would hand the agent a broken
+/// command, so this guards the agent-facing CLI contract.
 #[test]
 fn onboarding_repair_brief_commands_are_valid_cli() {
     // Diagnose.

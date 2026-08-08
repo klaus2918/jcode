@@ -35,9 +35,13 @@ pub(crate) enum ApiContentBlockStart {
     #[serde(rename = "thinking")]
     Thinking {
         #[serde(default, rename = "thinking")]
-        _thinking: String,
+        thinking: String,
+        /// Signature for this thinking block. Anthropic-compatible gateways
+        /// may deliver it either here (at `content_block_start`) or as a
+        /// `signature_delta`; the runtime must capture both so the stored
+        /// block can be replayed compliantly on later turns.
         #[serde(default, rename = "signature")]
-        _signature: Option<String>,
+        signature: Option<String>,
     },
     #[serde(rename = "redacted_thinking")]
     RedactedThinking {

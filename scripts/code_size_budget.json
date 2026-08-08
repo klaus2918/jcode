@@ -1,7 +1,7 @@
 {
   "threshold_loc": 1200,
   "tracked_files": {
-    "crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs": 1699,
+    "crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs": 1743,
     "crates/jcode-app-core/src/overnight.rs": 1275,
     "crates/jcode-app-core/src/server.rs": 2376,
     "crates/jcode-app-core/src/server/client_lifecycle.rs": 3179,
@@ -37,7 +37,7 @@
     "crates/jcode-import-core/src/lib.rs": 1645,
     "crates/jcode-plan/src/lib.rs": 1201,
     "crates/jcode-protocol/src/wire.rs": 1458,
-    "crates/jcode-provider-anthropic-runtime/src/lib.rs": 2407,
+    "crates/jcode-provider-anthropic-runtime/src/lib.rs": 2417,
     "crates/jcode-provider-bedrock/src/lib.rs": 1979,
     "crates/jcode-provider-core/src/capability.rs": 1502,
     "crates/jcode-provider-core/src/lib.rs": 1894,
@@ -72,7 +72,7 @@
     "crates/jcode-tui/src/tui/app/state_ui_input_helpers.rs": 2082,
     "crates/jcode-tui/src/tui/app/tui_lifecycle.rs": 1303,
     "crates/jcode-tui/src/tui/app/tui_state.rs": 2372,
-    "crates/jcode-tui/src/tui/app/turn.rs": 1481,
+    "crates/jcode-tui/src/tui/app/turn.rs": 1537,
     "crates/jcode-tui/src/tui/backend.rs": 1820,
     "crates/jcode-tui/src/tui/info_widget.rs": 2233,
     "crates/jcode-tui/src/tui/mod.rs": 1848,

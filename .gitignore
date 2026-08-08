@@ -6,6 +6,8 @@ ios_simulator_screenshot.png
 /tmp/
 # op 工作流变更目录（op skill 内部状态，不提交）
 /.op/
+# Reasonix 会话内部状态（任务记录，不提交）
+/.reasonix/
 # Local onboarding sandbox + auth fixtures. May contain REAL OAuth tokens copied
 # from $HOME (see scripts/onboarding_sandbox.sh seed-real-logins). Never commit.
 /.tmp/

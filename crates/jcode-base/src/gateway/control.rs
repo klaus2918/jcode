@@ -290,7 +290,6 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             token_hash: "hash".to_string(),
-            apns_token: None,
             paired_at: "2026-07-27".to_string(),
             last_seen: "2026-07-27".to_string(),
         }

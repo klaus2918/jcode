@@ -95,7 +95,7 @@ Both are triggered conditionally by the final `release` job. Homebrew updates on
 
 ### Windows signing prerequisites
 
-The full one-time setup is documented in [docs/Windows骞冲彴.md](docs/Windows骞冲彴.md#enable-authenticode-signing). The release repository needs:
+The full one-time setup is documented in [docs/Windows平台.md](docs/Windows平台.md#enable-authenticode-signing). The release repository needs:
 
 - Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
 - Variables: `WINDOWS_SIGNING_ENDPOINT`, `WINDOWS_SIGNING_ACCOUNT`, `WINDOWS_SIGNING_CERTIFICATE_PROFILE`
