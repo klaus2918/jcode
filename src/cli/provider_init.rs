@@ -408,17 +408,34 @@ async fn init_provider_with_options(
         ));
     }
 
-    // 未指定默认模型（cc-switch 本地网关等，`default_model` 为空）时自动
-    // 发现并跟随当前 provider 的模型，无需在配置里写死模型名。
+    // 命名 profile（cc-switch 等）表内没有 `default_model` 时，优先应用
+    // 配置层的默认模型（`[provider] default_model` / resonix 顶层
+    // `default_model`），避免 model 为空导致上下文窗口落到 200K 兜底。
     if model.is_none() && provider.model().trim().is_empty() {
-        let _ = provider.prefetch_models().await;
-        let selected = provider.model();
-        if !selected.trim().is_empty() {
+        let cfg = crate::config::config();
+        let config_default_model = cfg
+            .effective_default_model()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(default_model) = config_default_model
+            && provider.set_model(default_model).is_ok()
+        {
             init_notice(&format!(
-                "Using auto-discovered model for {}: {}",
-                provider.display_name(),
-                selected
+                "Using default model from config: {}",
+                default_model
             ));
+        } else {
+            // 自动发现兜底（cc-switch 本地网关等，配置未指定 default_model 时
+            // 跟随网关当前模型）。
+            let _ = provider.prefetch_models().await;
+            let selected = provider.model();
+            if !selected.trim().is_empty() {
+                init_notice(&format!(
+                    "Using auto-discovered model for {}: {}",
+                    provider.display_name(),
+                    selected
+                ));
+            }
         }
     }
 
