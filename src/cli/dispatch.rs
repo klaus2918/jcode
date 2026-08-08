@@ -1,4 +1,4 @@
-﻿#![cfg_attr(test, allow(clippy::await_holding_lock))]
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
 
 use anyhow::Result;
 use std::io::IsTerminal;
@@ -13,10 +13,7 @@ use crate::{
     agent, auth, build, provider, provider_catalog, server, session, startup_profile, tui,
 };
 
-use super::{
-    acp, commands, debug, hot_exec, output, provider_init, selfdev, terminal,
-    tui_launch,
-};
+use super::{acp, commands, debug, hot_exec, output, provider_init, selfdev, terminal, tui_launch};
 
 #[cfg(any(target_os = "linux", test))]
 fn is_file_controlled_debug_client() -> bool {

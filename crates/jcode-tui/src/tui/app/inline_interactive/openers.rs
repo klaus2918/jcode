@@ -65,8 +65,6 @@ impl App {
         self.cursor_pos = 0;
     }
 
-
-
     pub(crate) fn open_agent_model_picker(&mut self, target: AgentModelTarget) {
         let configured = load_agent_model_override(target);
         let inherit_summary = agent_model_default_summary(target, self);

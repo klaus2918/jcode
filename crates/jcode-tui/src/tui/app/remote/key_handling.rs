@@ -202,7 +202,6 @@ async fn handle_remote_rewind_command(
     Ok(true)
 }
 
-
 pub(in crate::tui::app) async fn handle_remote_key(
     app: &mut App,
     code: KeyCode,

@@ -7,8 +7,7 @@ use crate::provider::Provider;
 use crate::provider_catalog::{
     LoginProviderDescriptor, LoginProviderTarget, OpenAiCompatibleProfile,
     apply_openai_compatible_profile_env, force_apply_openai_compatible_profile_env,
-    is_safe_env_file_name, is_safe_env_key_name,
-    resolve_openai_compatible_profile,
+    is_safe_env_file_name, is_safe_env_key_name, resolve_openai_compatible_profile,
 };
 use crate::tool;
 
@@ -105,7 +104,6 @@ fn provider_label_for_api_key_env(env_key: &str) -> String {
         })
         .unwrap_or_else(|| env_key.to_string())
 }
-
 
 fn provider_login_hint_for_api_key_env(_env_key: &str) -> String {
     "jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>".to_string()

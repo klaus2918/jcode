@@ -40,4 +40,3 @@ pub(crate) fn save_openai_fast_setting_local(app: &mut App, enabled: bool) {
         ))),
     }
 }
-

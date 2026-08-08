@@ -459,7 +459,9 @@ pub(super) async fn run_usage_command(emit_json: bool) -> Result<()> {
         println!("No connected providers");
         println!();
         println!("Next steps:");
-        println!("- Add a model provider with `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>`.");
+        println!(
+            "- Add a model provider with `jcode provider add <name> --base-url <url> --api-key-env <ENV_VAR>`."
+        );
         println!("- Set the key in the unified ~/.jcode/.env and pick it with /model.");
         return Ok(());
     }

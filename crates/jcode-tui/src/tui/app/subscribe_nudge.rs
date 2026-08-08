@@ -165,7 +165,9 @@ pub(super) fn subscribe_pitch_markdown() -> String {
         ));
     }
 
-    message.push_str("\nStart: subscribe at the jcode dashboard, then set the router key in ~/.jcode/.env\n");
+    message.push_str(
+        "\nStart: subscribe at the jcode dashboard, then set the router key in ~/.jcode/.env\n",
+    );
     message.push_str("Details anytime: /subscription");
     message
 }

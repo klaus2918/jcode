@@ -2,9 +2,7 @@ use crate::tui::app::App;
 use crate::tui::{InlineInteractiveState, PickerKind};
 
 pub(super) enum InlinePickerPreviewRequest {
-    Model {
-        filter: String,
-    },
+    Model { filter: String },
 }
 
 impl InlinePickerPreviewRequest {

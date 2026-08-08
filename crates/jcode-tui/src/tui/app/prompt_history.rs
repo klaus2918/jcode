@@ -211,8 +211,7 @@ impl App {
     /// prompts and while an ssh input interception is pending
     /// (those inputs can contain secrets).
     pub(super) fn record_prompt_history(&mut self, text: &str) {
-        if self.pending_ssh_remote_name.is_some()
-        {
+        if self.pending_ssh_remote_name.is_some() {
             return;
         }
         let trimmed = text.trim();

@@ -70,15 +70,11 @@ impl App {
     }
 
     fn configured_remote_model_hint(&self) -> Option<String> {
-        Self::sanitize_remote_model_hint(
-            std::env::var("JCODE_MODEL")
-                .ok()
-                .or_else(|| {
-                    crate::config::config()
-                        .effective_default_model()
-                        .map(str::to_string)
-                }),
-        )
+        Self::sanitize_remote_model_hint(std::env::var("JCODE_MODEL").ok().or_else(|| {
+            crate::config::config()
+                .effective_default_model()
+                .map(str::to_string)
+        }))
     }
 
     pub(super) fn effective_remote_provider_model(&self) -> Option<String> {
