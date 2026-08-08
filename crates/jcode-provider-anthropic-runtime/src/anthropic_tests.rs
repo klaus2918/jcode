@@ -611,7 +611,14 @@ fn test_anthropic_thinking_sse_events() {
         .to_string(),
     };
     let events = process_sse_event(&start, &mut state, false);
-    assert!(matches!(events.as_slice(), [StreamEvent::ThinkingStart]));
+    // The signature may arrive on `content_block_start` (Anthropic-compatible
+    // gateways do not always send a later `signature_delta`); it must be
+    // surfaced so consumers can persist a replayable signed thinking block.
+    assert!(matches!(
+        events.as_slice(),
+        [StreamEvent::ThinkingStart, StreamEvent::ThinkingSignatureDelta(sig)]
+            if sig == "sig"
+    ));
     assert!(state.current_thinking_block);
 
     let delta = SseEvent {
@@ -638,9 +645,14 @@ fn test_anthropic_thinking_sse_events() {
         .to_string(),
     };
     let events = process_sse_event(&signature, &mut state, false);
+    // The signature was already surfaced from `content_block_start`; a
+    // repeated `signature_delta` must not be emitted again, otherwise the
+    // consumer would concatenate it and store an invalid double signature.
     assert!(
-        matches!(events.as_slice(), [StreamEvent::ThinkingSignatureDelta(sig)] if sig == "signed")
+        events.is_empty(),
+        "repeated signature_delta must be deduped: {events:?}"
     );
+    assert!(state.current_thinking_signature_surfaced);
 
     let stop = SseEvent {
         event_type: "content_block_stop".to_string(),
@@ -649,6 +661,61 @@ fn test_anthropic_thinking_sse_events() {
     let events = process_sse_event(&stop, &mut state, false);
     assert!(matches!(events.as_slice(), [StreamEvent::ThinkingEnd]));
     assert!(!state.current_thinking_block);
+}
+
+#[test]
+fn test_anthropic_content_block_start_without_signature_emits_no_signature_delta() {
+    let mut state = SseStreamState::default();
+    let start = SseEvent {
+        event_type: "content_block_start".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": "prefilled"}
+        })
+        .to_string(),
+    };
+    let events = process_sse_event(&start, &mut state, false);
+    assert!(matches!(
+        events.as_slice(),
+        [
+            StreamEvent::ThinkingStart,
+            StreamEvent::ThinkingDelta(text),
+        ] if text == "prefilled"
+    ));
+    assert!(state.current_thinking_block);
+}
+
+#[test]
+fn test_anthropic_signature_delta_surfaces_when_block_start_had_none() {
+    let mut state = SseStreamState::default();
+    let start = SseEvent {
+        event_type: "content_block_start".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""}
+        })
+        .to_string(),
+    };
+    let events = process_sse_event(&start, &mut state, false);
+    assert!(matches!(events.as_slice(), [StreamEvent::ThinkingStart]));
+    assert!(!state.current_thinking_signature_surfaced);
+
+    let signature = SseEvent {
+        event_type: "content_block_delta".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "signature_delta", "signature": "signed"}
+        })
+        .to_string(),
+    };
+    let events = process_sse_event(&signature, &mut state, false);
+    assert!(
+        matches!(events.as_slice(), [StreamEvent::ThinkingSignatureDelta(sig)] if sig == "signed")
+    );
+    assert!(state.current_thinking_signature_surfaced);
 }
 
 #[test]
@@ -671,6 +738,198 @@ fn test_anthropic_signed_thinking_replayed_in_request_blocks() {
                 "thinking": "reasoning text",
                 "signature": "signed"
             }
+        ])
+    );
+}
+
+/// Accumulate stream events into protocol-aware reasoning blocks exactly the
+/// way the turn consumers do (`turn_streaming_mpsc`/`turn_loops`): text and
+/// signature are buffered per block and closed out together on `ThinkingEnd`,
+/// preserving Anthropic's signature/text pairing across multi-block turns.
+fn collect_reasoning_blocks(
+    events: Vec<StreamEvent>,
+    blocks: &mut Vec<jcode_base::message::ReasoningBlock>,
+    current_text: &mut String,
+    current_signature: &mut String,
+) {
+    for event in events {
+        match event {
+            StreamEvent::ThinkingSignatureDelta(signature) => {
+                current_signature.push_str(&signature);
+            }
+            StreamEvent::ThinkingDelta(text) => current_text.push_str(&text),
+            StreamEvent::ThinkingEnd => {
+                if let Some(block) =
+                    jcode_base::message::take_reasoning_block(current_text, current_signature)
+                {
+                    blocks.push(block);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn test_anthropic_thinking_full_round_trip_preserves_signature_pairing() {
+    // First turn: consume an Anthropic SSE stream with two thinking blocks,
+    // each signed (one signature on `content_block_start`, one via a later
+    // `signature_delta`), into reasoning blocks.
+    let mut state = SseStreamState::default();
+    let mut reasoning_blocks: Vec<jcode_base::message::ReasoningBlock> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_signature = String::new();
+
+    let start_1 = SseEvent {
+        event_type: "content_block_start".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": "", "signature": "sig-1"}
+        })
+        .to_string(),
+    };
+    collect_reasoning_blocks(
+        process_sse_event(&start_1, &mut state, false),
+        &mut reasoning_blocks,
+        &mut current_text,
+        &mut current_signature,
+    );
+
+    let delta_1 = SseEvent {
+        event_type: "content_block_delta".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "first thought"}
+        })
+        .to_string(),
+    };
+    collect_reasoning_blocks(
+        process_sse_event(&delta_1, &mut state, false),
+        &mut reasoning_blocks,
+        &mut current_text,
+        &mut current_signature,
+    );
+
+    let stop_1 = SseEvent {
+        event_type: "content_block_stop".to_string(),
+        data: serde_json::json!({"type": "content_block_stop", "index": 0}).to_string(),
+    };
+    collect_reasoning_blocks(
+        process_sse_event(&stop_1, &mut state, false),
+        &mut reasoning_blocks,
+        &mut current_text,
+        &mut current_signature,
+    );
+
+    // Second block: signature only surfaces via `signature_delta` this time.
+    let start_2 = SseEvent {
+        event_type: "content_block_start".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "thinking", "thinking": ""}
+        })
+        .to_string(),
+    };
+    collect_reasoning_blocks(
+        process_sse_event(&start_2, &mut state, false),
+        &mut reasoning_blocks,
+        &mut current_text,
+        &mut current_signature,
+    );
+
+    let signature_2 = SseEvent {
+        event_type: "content_block_delta".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "signature_delta", "signature": "sig-2"}
+        })
+        .to_string(),
+    };
+    collect_reasoning_blocks(
+        process_sse_event(&signature_2, &mut state, false),
+        &mut reasoning_blocks,
+        &mut current_text,
+        &mut current_signature,
+    );
+
+    let delta_2 = SseEvent {
+        event_type: "content_block_delta".to_string(),
+        data: serde_json::json!({
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "thinking_delta", "thinking": "second thought"}
+        })
+        .to_string(),
+    };
+    collect_reasoning_blocks(
+        process_sse_event(&delta_2, &mut state, false),
+        &mut reasoning_blocks,
+        &mut current_text,
+        &mut current_signature,
+    );
+
+    let stop_2 = SseEvent {
+        event_type: "content_block_stop".to_string(),
+        data: serde_json::json!({"type": "content_block_stop", "index": 1}).to_string(),
+    };
+    collect_reasoning_blocks(
+        process_sse_event(&stop_2, &mut state, false),
+        &mut reasoning_blocks,
+        &mut current_text,
+        &mut current_signature,
+    );
+
+    // Each block keeps its own signature: two separate pairs, never merged.
+    assert_eq!(reasoning_blocks.len(), 2);
+    assert_eq!(reasoning_blocks[0].text, "first thought");
+    assert_eq!(reasoning_blocks[0].signature.as_deref(), Some("sig-1"));
+    assert_eq!(reasoning_blocks[1].text, "second thought");
+    assert_eq!(reasoning_blocks[1].signature.as_deref(), Some("sig-2"));
+
+    // Store protocol-aware blocks for a later turn.
+    let mut stored = Vec::new();
+    jcode_base::message::push_reasoning_blocks_many(
+        &mut stored,
+        "anthropic",
+        &reasoning_blocks,
+        true,
+    );
+    assert_eq!(stored.len(), 2);
+    match &stored[0] {
+        ContentBlock::AnthropicThinking {
+            thinking,
+            signature,
+        } => {
+            assert_eq!(thinking, "first thought");
+            assert_eq!(signature, "sig-1");
+        }
+        other => panic!("expected AnthropicThinking, got {other:?}"),
+    }
+    match &stored[1] {
+        ContentBlock::AnthropicThinking {
+            thinking,
+            signature,
+        } => {
+            assert_eq!(thinking, "second thought");
+            assert_eq!(signature, "sig-2");
+        }
+        other => panic!("expected AnthropicThinking, got {other:?}"),
+    }
+
+    // Replay on the next turn: both thinking blocks with their signatures
+    // round-trip verbatim into the Anthropic wire format.
+    let provider = AnthropicProvider::new();
+    let api_blocks = provider.format_content_blocks(&stored, false);
+    let value = serde_json::to_value(&api_blocks).expect("serialize content blocks");
+    assert_eq!(
+        value,
+        serde_json::json!([
+            {"type": "thinking", "thinking": "first thought", "signature": "sig-1"},
+            {"type": "thinking", "thinking": "second thought", "signature": "sig-2"}
         ])
     );
 }

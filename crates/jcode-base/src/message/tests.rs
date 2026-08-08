@@ -818,10 +818,146 @@ fn push_reasoning_blocks_openrouter_replay_is_readable() {
 }
 
 #[test]
+fn push_reasoning_blocks_many_preserves_anthropic_signature_pairing() {
+    use crate::message::ReasoningBlock;
+
+    let mut blocks = Vec::new();
+    push_reasoning_blocks_many(
+        &mut blocks,
+        "anthropic",
+        &[
+            ReasoningBlock {
+                text: "first thought".to_string(),
+                signature: Some("sig-1".to_string()),
+            },
+            ReasoningBlock {
+                text: "second thought".to_string(),
+                signature: Some("sig-2".to_string()),
+            },
+        ],
+        true,
+    );
+    // Two separate signed blocks, each with its own signature, so Anthropic can
+    // validate every thinking block it replays on a later turn.
+    assert_eq!(blocks.len(), 2);
+    match &blocks[0] {
+        ContentBlock::AnthropicThinking {
+            thinking,
+            signature,
+        } => {
+            assert_eq!(thinking, "first thought");
+            assert_eq!(signature, "sig-1");
+        }
+        other => panic!("expected AnthropicThinking, got {other:?}"),
+    }
+    match &blocks[1] {
+        ContentBlock::AnthropicThinking {
+            thinking,
+            signature,
+        } => {
+            assert_eq!(thinking, "second thought");
+            assert_eq!(signature, "sig-2");
+        }
+        other => panic!("expected AnthropicThinking, got {other:?}"),
+    }
+}
+
+#[test]
+fn push_reasoning_blocks_many_mixed_signature_falls_back_per_block() {
+    use crate::message::ReasoningBlock;
+
+    let mut blocks = Vec::new();
+    push_reasoning_blocks_many(
+        &mut blocks,
+        "anthropic",
+        &[
+            ReasoningBlock {
+                text: "signed thought".to_string(),
+                signature: Some("sig".to_string()),
+            },
+            ReasoningBlock {
+                text: "unsigned thought".to_string(),
+                signature: None,
+            },
+        ],
+        true,
+    );
+    assert_eq!(blocks.len(), 2);
+    assert!(matches!(&blocks[0], ContentBlock::AnthropicThinking { .. }));
+    assert!(matches!(&blocks[1], ContentBlock::ReasoningTrace { .. }));
+}
+
+#[test]
 fn push_reasoning_blocks_skips_empty() {
     let mut blocks = Vec::new();
     push_reasoning_blocks(&mut blocks, "anthropic", "", None, false);
     assert!(blocks.is_empty());
+}
+
+#[test]
+fn take_reasoning_block_requires_some_content() {
+    let mut text = String::new();
+    let mut signature = String::new();
+    assert!(take_reasoning_block(&mut text, &mut signature).is_none());
+    assert!(text.is_empty() && signature.is_empty());
+}
+
+#[test]
+fn take_reasoning_block_keeps_signature_pairing() {
+    // Text + signature: both taken, signature kept as Some.
+    let mut text = "first thought".to_string();
+    let mut signature = "sig-1".to_string();
+    let block = take_reasoning_block(&mut text, &mut signature).expect("block");
+    assert_eq!(block.text, "first thought");
+    assert_eq!(block.signature.as_deref(), Some("sig-1"));
+    assert!(text.is_empty() && signature.is_empty());
+
+    // Text only: signature must be None (never an empty Some).
+    let mut text = "unsigned thought".to_string();
+    let mut signature = String::new();
+    let block = take_reasoning_block(&mut text, &mut signature).expect("block");
+    assert_eq!(block.text, "unsigned thought");
+    assert!(block.signature.is_none());
+
+    // Signature only: still captured so a consumer can pair it later.
+    let mut text = String::new();
+    let mut signature = "bare-sig".to_string();
+    let block = take_reasoning_block(&mut text, &mut signature).expect("block");
+    assert_eq!(block.signature.as_deref(), Some("bare-sig"));
+}
+
+#[test]
+fn replay_reasoning_text_is_protocol_aware() {
+    // `AnthropicThinking` keeps both the readable text and the signature, so a
+    // single stored block can be replayed verbatim to Anthropic and as
+    // `reasoning_content` to OpenAI-compatible endpoints.
+    let signed = ContentBlock::AnthropicThinking {
+        thinking: "signed thought".to_string(),
+        signature: "sig".to_string(),
+    };
+    assert_eq!(signed.replay_reasoning_text(), Some("signed thought"));
+    assert!(!signed.is_history_only_reasoning());
+
+    let readable = ContentBlock::Reasoning {
+        text: "openrouter thought".to_string(),
+    };
+    assert_eq!(readable.replay_reasoning_text(), Some("openrouter thought"));
+
+    // History-only traces must never be replayed to any provider.
+    let trace = ContentBlock::ReasoningTrace {
+        text: "history".to_string(),
+    };
+    assert_eq!(trace.replay_reasoning_text(), None);
+    assert!(trace.is_history_only_reasoning());
+
+    assert_eq!(
+        ContentBlock::Text {
+            text: "answer".to_string(),
+            cache_control: None,
+        }
+        .replay_reasoning_text(),
+        None
+    );
 }
 
 #[test]
