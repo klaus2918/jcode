@@ -12,7 +12,7 @@ where
     S: serde::Serializer,
 {
     let shortest = value.to_string();
-    let as_f64: f64 = shortest.parse().unwrap_or_else(|_| *value as f64);
+    let as_f64: f64 = shortest.parse().unwrap_or(*value as f64);
     serializer.serialize_f64(as_f64)
 }
 

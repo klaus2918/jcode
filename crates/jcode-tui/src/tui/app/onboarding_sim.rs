@@ -214,13 +214,10 @@ impl App {
     /// Visually move the Yes/No highlight on the current screen. No real action
     /// is taken; the simulator never logs in or imports anything.
     fn onboarding_sim_set_highlight(&mut self, yes: bool) {
-        if let Some(flow) = self.onboarding_flow.as_mut() {
-            match &mut flow.phase {
-                OnboardingPhase::ConfigureProvider { yes_highlighted } => {
-                    *yes_highlighted = yes;
-                }
-                _ => {}
-            }
+        if let Some(flow) = self.onboarding_flow.as_mut()
+            && let OnboardingPhase::ConfigureProvider { yes_highlighted } = &mut flow.phase
+        {
+            *yes_highlighted = yes;
         }
     }
 

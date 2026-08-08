@@ -629,55 +629,57 @@ desktop_notifications = true
 # enabled = true
 # endpoint = "https://api.jcode.sh/v1/discovery"
 
-# ---- Model providers（resonix 风格）----
-# 模型接入只走 [[providers]] 配置 + 统一 ~/.jcode/.env 密钥文件。
-# 用 `jcode provider add <name> --base-url <url> --model <id> --api-key-env <ENV_VAR>`
-# 生成条目，或取消注释下面的模板手动编辑。密钥值永远不写进本文件：
-# 只写 api_key_env（环境变量名），值放在 ~/.jcode/.env（KEY=value 一行）。
-
-# 顶层默认模型（resonix 写法，provider/model 斜杠引用）：
+# ---- Model providers (named-table style) ----
+# Model access is configured through [providers.<name>] tables plus the
+# unified ~/.jcode/.env key file. Generate entries with
+#   jcode provider add <name> --base-url <url> --model <id> --api-key-env <ENV_VAR>
+# or uncomment one of the templates below. Key values never go in this file:
+# only api_key_env (the env var name) is written; the value lives in
+# ~/.jcode/.env (one KEY=value per line).
+# Top-level default model (provider/model slash reference):
 # default_model = "deepseek/deepseek-chat"
-# 或经典写法（[provider] 表，两者等价，[provider] 优先）：
+# or the classic [provider] table (equivalent; [provider] wins):
 # [provider]
 # default_provider = "ollama-local"
 # default_model = "llama3.1:8b"
-
-# ---- 本地端点模板（[[providers]] 数组条目，name 必填）----
-# [[providers]]
-# name = "ollama-local"
-# kind = "openai"
+# ---- Local endpoint templates ([providers.<name>] + [[providers.<name>.models]]) ----
+# [providers.ollama-local]
+# type = "openai-compatible"
 # base_url = "http://localhost:11434/v1"   # Ollama
-# default = "llama3.1:8b"
-# models = ["llama3.1:8b"]
-# context_window = 128000                  # 令牌窗口；压缩阈值基于它计算
-
-# [[providers]]
-# name = "lmstudio"
-# kind = "openai"
+# auth = "none"                            # local, no key needed
+# requires_api_key = false
+# default_model = "llama3.1:8b"
+# [[providers.ollama-local.models]]
+# id = "llama3.1:8b"
+# context_window = 128000                  # token window; compaction uses it
+# [providers.lmstudio]
+# type = "openai-compatible"
 # base_url = "http://localhost:1234/v1"    # LM Studio
-# default = "qwen2.5-coder-7b"
-# models = ["qwen2.5-coder-7b"]
-
-# ---- 远程端点模板（密钥放 ~/.jcode/.env）----
-# [[providers]]
-# name = "deepseek"
-# kind = "openai"
+# auth = "none"
+# default_model = "qwen2.5-coder-7b"
+# [[providers.lmstudio.models]]
+# id = "qwen2.5-coder-7b"
+# ---- Remote endpoint template (key in ~/.jcode/.env) ----
+# [providers.deepseek]
+# type = "openai-compatible"
 # base_url = "https://api.deepseek.com/v1"
 # api_key_env = "DEEPSEEK_API_KEY"
-# default = "deepseek-chat"
-# models = ["deepseek-chat"]
-# price = { cache_hit = 0.014, input = 0.14, output = 0.28, currency = "¥" }  # 每 1M token
+# default_model = "deepseek-chat"
+# price = { cache_hit = 0.014, input = 0.14, output = 0.28, currency = "CNY" }
 # thinking = "adaptive"
 # effort = "high"
-
-# ---- 本地网关模板（cc-switch 本地代理，无需 key）----
-# [[providers]]
-# name = "cc-switch"
-# kind = "anthropic"                    # 代理按 Claude 通道转发，上游为 OpenAI 兼容时自动转换格式
-# base_url = "http://127.0.0.1:15721"   # cc-switch 代理地址，以面板显示为准（默认端口 15721）
-# auth = "none"                         # 真实 key 由 cc-switch 注入，这里不需要 api_key_env
-# default = "deepseek-v4-flash"
-# models = ["deepseek-v4-flash"]
+# [[providers.deepseek.models]]
+# id = "deepseek-chat"
+# ---- cc-switch local gateway template (no key needed) ----
+# [providers.cc-switch]
+# type = "openai-compatible"
+# base_url = "http://127.0.0.1:15721"   # cc-switch proxy address shown in its panel
+# api = "anthropic"                     # proxy routes this as a Claude-channel request
+# auth = "none"                         # real key is injected by cc-switch
+# [[providers.cc-switch.models]]
+# id = "deepseek-v4-flash"
+# context_window = 1000000
+# auth = "none"
 		"##;
 
         // Substitute platform-specific defaults from the keybinding registry.
@@ -789,65 +791,23 @@ mod tests {
 
     /// 模板里的 `[[providers]]` 数组示例必须能取消注释后直接解析（resonix
     /// 风格：数组条目带 `name` 字段，字段名与解析器对齐）。这是用户最可能
-    /// 照抄的部分，写错会在生成配置文件时直接失败。
-    #[test]
-    fn documented_providers_array_example_is_valid_when_uncommented() {
-        let template = Config::default_config_file_contents();
-        // 从本地端点模板开始，到等效经典表风格之前（只取数组风格示例）。
-        let start = template
-            .find("# ---- 本地端点模板")
-            .expect("template documents local endpoint providers");
-        let end = template
-            .find("# 等效的经典表风格")
-            .expect("template separates array and table styles");
-        let example: String = template[start..end]
-            .lines()
-            .map(|line| uncomment_config_lines(line))
-            .collect();
-
-        let parsed: Config =
-            toml::from_str(&example).expect("uncommented [[providers]] array example must parse");
-        let ollama = parsed
-            .providers
-            .get("ollama-local")
-            .expect("ollama-local profile should parse");
-        assert_eq!(ollama.base_url, "http://localhost:11434/v1");
-        assert_eq!(
-            ollama.default_model.as_deref(),
-            Some("llama3.1:8b"),
-            "default_model alias should map from the `default_model` field"
-        );
-        let lmstudio = parsed
-            .providers
-            .get("lmstudio")
-            .expect("lmstudio profile should parse");
-        assert_eq!(lmstudio.base_url, "http://localhost:1234/v1");
-        let deepseek = parsed
-            .providers
-            .get("deepseek")
-            .expect("deepseek profile should parse");
-        assert_eq!(deepseek.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
-        assert!(
-            deepseek.models.iter().any(|m| m.id == "deepseek-chat"),
-            "models string array should populate the model list"
-        );
-    }
-
-    /// 等效经典表风格示例（`[providers.<name>]` + `auth` / `requires_api_key`）
-    /// 也必须取消注释后能解析。
+    /// The named-table provider examples in the template
+    /// ([providers.<name>] + [[providers.<name>.models]]) must parse once
+    /// uncommented - this is the most-likely copy-paste surface for users.
     #[test]
     fn documented_providers_table_example_is_valid_when_uncommented() {
         let template = Config::default_config_file_contents();
         let start = template
-            .find("# 等效的经典表风格")
-            .expect("template documents table style");
+            .find("# ---- Local endpoint templates")
+            .expect("template documents local endpoint providers");
         let example: String = template[start..]
             .lines()
-            .map(|line| uncomment_config_lines(line))
+            .map(uncomment_config_lines)
             .collect();
 
         let parsed: Config =
-            toml::from_str(&example).expect("uncommented [providers.<name>] example must parse");
+            toml::from_str(&example).expect("uncommented named-table provider example must parse");
+
         let ollama = parsed
             .providers
             .get("ollama-local")
@@ -855,5 +815,29 @@ mod tests {
         assert_eq!(ollama.base_url, "http://localhost:11434/v1");
         assert_eq!(ollama.requires_api_key, Some(false));
         assert_eq!(ollama.default_model.as_deref(), Some("llama3.1:8b"));
+        assert_eq!(ollama.models[0].id, "llama3.1:8b");
+
+        let lmstudio = parsed
+            .providers
+            .get("lmstudio")
+            .expect("lmstudio profile should parse");
+        assert_eq!(lmstudio.base_url, "http://localhost:1234/v1");
+
+        let deepseek = parsed
+            .providers
+            .get("deepseek")
+            .expect("deepseek profile should parse");
+        assert_eq!(deepseek.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+        assert!(deepseek.models.iter().any(|m| m.id == "deepseek-chat"));
+
+        let cc = parsed
+            .providers
+            .get("cc-switch")
+            .expect("cc-switch profile should parse");
+        assert_eq!(cc.base_url, "http://127.0.0.1:15721");
+        assert_eq!(cc.api_format, Some(super::ProviderApiFormat::Anthropic));
+        assert_eq!(cc.auth, super::NamedProviderAuth::None);
+        assert_eq!(cc.models[0].id, "deepseek-v4-flash");
+        assert_eq!(cc.models[0].auth, Some(super::NamedProviderAuth::None));
     }
 }

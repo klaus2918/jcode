@@ -30,6 +30,9 @@ pub const OPENAI_RUNTIME: &str = "openai";
 /// API-key runtime, and direct OpenAI-compatible profile endpoints), so the
 /// composition root registers one parameterized factory instead of one
 /// zero-arg factory per identity.
+// The spec is a construction-only value; boxing the profile variant would
+// churn every call site for no runtime benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum OpenRouterRuntimeSpec {
     /// Environment-derived default runtime (`OpenRouterProvider::new()`).
