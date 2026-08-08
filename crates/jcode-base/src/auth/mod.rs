@@ -1240,10 +1240,10 @@ fn env_var_nonempty(key: &str) -> bool {
 
 fn config_file_has_key(file_name: &str, env_key: &str) -> bool {
     // resonix 对齐：统一 `<jcode home>/.env` 优先，旧分散文件回退。
-    if let Some(unified) = crate::provider_catalog::unified_env_file_path() {
-        if config_file_contains_assignment(&unified, env_key) {
-            return true;
-        }
+    if let Some(unified) = crate::provider_catalog::unified_env_file_path()
+        && config_file_contains_assignment(&unified, env_key)
+    {
+        return true;
     }
     let Ok(config_dir) = crate::storage::app_config_dir() else {
         return false;

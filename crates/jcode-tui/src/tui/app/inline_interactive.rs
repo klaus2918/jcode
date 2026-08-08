@@ -1,9 +1,6 @@
 use super::*;
 use crate::tui::session_picker::{self, OverlayAction, PickerResult, ResumeTarget, SessionPicker};
-use crate::tui::{
-    InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
-    PickerOption,
-};
+use crate::tui::{InlineInteractiveState, PickerAction, PickerEntry, PickerKind, PickerOption};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1355,12 +1352,13 @@ impl App {
             routes
         };
         let routes = crate::provider::dedupe_model_routes(routes);
-        let allowlist = config.provider.model_picker_providers.as_deref();
+        let allowlist = crate::provider_catalog::configured_picker_provider_allowlist();
+        let only_available = allowlist.is_some();
         let routes = crate::provider::filter_model_routes_by_provider_allowlist(
             routes,
-            allowlist,
+            allowlist.as_deref(),
             &current_model,
-            allowlist.is_some(),
+            only_available,
         );
         if routes.is_empty() {
             self.inline_interactive_state = None;
@@ -2910,8 +2908,7 @@ impl App {
                 self.inline_interactive_state = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if matches!(code, KeyCode::Char('k'))
-                    && !modifiers.contains(KeyModifiers::CONTROL)
+                if matches!(code, KeyCode::Char('k')) && !modifiers.contains(KeyModifiers::CONTROL)
                 {
                     if let Some(ref mut picker) = self.inline_interactive_state {
                         picker.filter.push('k');
@@ -2929,8 +2926,7 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if matches!(code, KeyCode::Char('j'))
-                    && !modifiers.contains(KeyModifiers::CONTROL)
+                if matches!(code, KeyCode::Char('j')) && !modifiers.contains(KeyModifiers::CONTROL)
                 {
                     if let Some(ref mut picker) = self.inline_interactive_state {
                         picker.filter.push('j');
@@ -2950,13 +2946,12 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                if let Some(ref mut picker) = self.inline_interactive_state {
-                    if picker.column < picker.max_navigable_column()
-                        && let Some(&idx) = picker.filtered.get(picker.selected)
-                        && (picker.entries[idx].options.len() > 1 || picker.column > 0)
-                    {
-                        picker.column += 1;
-                    }
+                if let Some(ref mut picker) = self.inline_interactive_state
+                    && picker.column < picker.max_navigable_column()
+                    && let Some(&idx) = picker.filtered.get(picker.selected)
+                    && (picker.entries[idx].options.len() > 1 || picker.column > 0)
+                {
+                    picker.column += 1;
                 }
             }
             KeyCode::BackTab => {
@@ -2969,17 +2964,17 @@ impl App {
                     self.cycle_selected_model_favorite();
                     return Ok(());
                 }
-                if let Some(ref mut picker) = self.inline_interactive_state {
-                    if picker.column > 0 {
-                        picker.column -= 1;
-                    }
+                if let Some(ref mut picker) = self.inline_interactive_state
+                    && picker.column > 0
+                {
+                    picker.column -= 1;
                 }
             }
             KeyCode::Left => {
-                if let Some(ref mut picker) = self.inline_interactive_state {
-                    if picker.column > 0 {
-                        picker.column -= 1;
-                    }
+                if let Some(ref mut picker) = self.inline_interactive_state
+                    && picker.column > 0
+                {
+                    picker.column -= 1;
                 }
             }
             KeyCode::Tab => {

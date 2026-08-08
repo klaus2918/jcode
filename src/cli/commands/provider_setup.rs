@@ -181,7 +181,7 @@ pub(crate) fn configure_provider_profile(
         base_url: api_base.clone(),
         api_format,
         proxy,
-        auth: auth.clone(),
+        auth,
         auth_header: match auth {
             NamedProviderAuth::Header => options
                 .auth_header

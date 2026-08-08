@@ -62,9 +62,9 @@ fn resonix_style_top_level_providers_array_table_parses() {
 #[test]
 fn resonix_array_config_survives_save() {
     // `Config::save()` serializes the whole struct. The `providers` map has a
-    // custom `serialize_with` so a resonix-style `[[providers]]` array is
-    // written back in the same array-of-tables style, not the legacy
-    // `[providers.<name>]` tables.
+    // custom `serialize_with` that writes the canonical named-table style
+    // (`[providers.<name>]`); the resonix-style `[[providers]]` array stays
+    // parseable for migration but is never written back.
     let toml_str = r#"
         [[providers]]
         name = "deepseek"
@@ -77,13 +77,13 @@ fn resonix_array_config_survives_save() {
     let config: Config = toml::from_str(toml_str).unwrap();
     let rendered = toml::to_string_pretty(&config).unwrap();
     assert!(
-        rendered.contains("[[providers]]"),
-        "save() should keep the resonix array style, got:\n{}",
+        rendered.contains("[providers.deepseek]"),
+        "save() should keep the named table style, got:\n{}",
         rendered
     );
     assert!(
-        !rendered.contains("[providers.deepseek]"),
-        "save() must not rewrite back to table style, got:\n{}",
+        !rendered.contains("[[providers]]\n"),
+        "save() must not emit resonix top-level arrays, got:\n{}",
         rendered
     );
 }
@@ -165,8 +165,13 @@ fn resonix_array_config_round_trips_advanced_fields() {
     let config: Config = toml::from_str(toml_str).unwrap();
     let rendered = toml::to_string_pretty(&config).unwrap();
     assert!(
-        rendered.contains("[[providers]]"),
-        "advanced config should stay in array style, got:\n{}",
+        rendered.contains("[providers.my-anth-gw]"),
+        "advanced config should serialize in named table style, got:\n{}",
+        rendered
+    );
+    assert!(
+        rendered.contains("[[providers.my-anth-gw.models]]"),
+        "per-provider model arrays must survive, got:\n{}",
         rendered
     );
     let reparsed: Config = toml::from_str(&rendered).unwrap();
@@ -236,7 +241,10 @@ fn cc_switch_array_entry_keeps_no_auth() {
     "#;
     let config: Config = toml::from_str(toml_str).unwrap();
 
-    assert_eq!(config.provider.default_provider.as_deref(), Some("cc-switch"));
+    assert_eq!(
+        config.provider.default_provider.as_deref(),
+        Some("cc-switch")
+    );
     let cc = config.providers.get("cc-switch").expect("cc-switch entry");
     assert_eq!(cc.api_format, Some(super::ProviderApiFormat::Anthropic));
     assert_eq!(
@@ -249,7 +257,8 @@ fn cc_switch_array_entry_keeps_no_auth() {
 
     // 保存后 round-trip：auth 仍是 none，不能丢。
     let rendered = toml::to_string_pretty(&config).unwrap();
-    assert!(rendered.contains("[[providers]]"));
+    assert!(rendered.contains("[providers.cc-switch]"));
+    assert!(rendered.contains("[[providers.cc-switch.models]]"));
     assert!(rendered.contains("auth = \"none\""));
     let reparsed: Config = toml::from_str(&rendered).unwrap();
     assert_eq!(
@@ -363,15 +372,34 @@ fn resonix_style_full_user_config_parses_and_round_trips() {
     "#;
     let config: Config = toml::from_str(toml_str).expect("user config must parse");
 
-    assert_eq!(config.provider.default_provider.as_deref(), Some("deepseek-flash"));
-    assert_eq!(config.provider.default_model.as_deref(), Some("deepseek-v4-flash"));
+    assert_eq!(
+        config.provider.default_provider.as_deref(),
+        Some("deepseek-flash")
+    );
+    assert_eq!(
+        config.provider.default_model.as_deref(),
+        Some("deepseek-v4-flash")
+    );
 
     let names = config.providers.keys().cloned().collect::<Vec<_>>();
-    for expected in ["deepseek-flash", "deepseek-pro", "minimax-1M", "GLM-1M", "kimi-1M", "cc-switch"] {
-        assert!(config.providers.contains_key(expected), "missing provider {expected}: {names:?}");
+    for expected in [
+        "deepseek-flash",
+        "deepseek-pro",
+        "minimax-1M",
+        "GLM-1M",
+        "kimi-1M",
+        "cc-switch",
+    ] {
+        assert!(
+            config.providers.contains_key(expected),
+            "missing provider {expected}: {names:?}"
+        );
     }
 
-    let flash = config.providers.get("deepseek-flash").expect("deepseek-flash");
+    let flash = config
+        .providers
+        .get("deepseek-flash")
+        .expect("deepseek-flash");
     assert_eq!(flash.api_format, Some(super::ProviderApiFormat::Anthropic));
     assert_eq!(flash.default_model.as_deref(), Some("deepseek-v4-flash"));
     assert_eq!(flash.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
@@ -387,10 +415,22 @@ fn resonix_style_full_user_config_parses_and_round_trips() {
 
     let kimi = config.providers.get("kimi-1M").expect("kimi-1M");
     assert_eq!(kimi.models.len(), 2);
-    let k3 = kimi.models.iter().find(|m| m.id == "kimi-k3").expect("kimi-k3 model");
+    let k3 = kimi
+        .models
+        .iter()
+        .find(|m| m.id == "kimi-k3")
+        .expect("kimi-k3 model");
     assert_eq!(k3.context_window, Some(1_000_000));
-    assert_eq!(k3.vision, Some(true), "vision_models must mark models image-capable");
-    let k27 = kimi.models.iter().find(|m| m.id == "kimi-k2.7").expect("kimi-k2.7 model");
+    assert_eq!(
+        k3.vision,
+        Some(true),
+        "vision_models must mark models image-capable"
+    );
+    let k27 = kimi
+        .models
+        .iter()
+        .find(|m| m.id == "kimi-k2.7")
+        .expect("kimi-k2.7 model");
     assert_eq!(k27.vision, Some(true));
     let prices = kimi.prices.as_ref().expect("per-model prices");
     assert_eq!(prices.len(), 2);
@@ -399,7 +439,10 @@ fn resonix_style_full_user_config_parses_and_round_trips() {
 
     let mini = config.providers.get("minimax-1M").expect("minimax-1M");
     assert_eq!(mini.models[0].vision, Some(true));
-    assert_eq!(mini.vision_models.as_deref(), Some(&["MiniMax-M3".to_string()][..]));
+    assert_eq!(
+        mini.vision_models.as_deref(),
+        Some(&["MiniMax-M3".to_string()][..])
+    );
 
     let cc = config.providers.get("cc-switch").expect("cc-switch");
     assert_eq!(cc.auth, super::NamedProviderAuth::None);
@@ -409,10 +452,20 @@ fn resonix_style_full_user_config_parses_and_round_trips() {
     let rendered = toml::to_string_pretty(&config).unwrap();
     let reparsed: Config = toml::from_str(&rendered).expect("reparsed config must parse");
     assert_eq!(reparsed.providers.len(), 6);
-    for name in ["deepseek-flash", "deepseek-pro", "minimax-1M", "GLM-1M", "kimi-1M", "cc-switch"] {
+    for name in [
+        "deepseek-flash",
+        "deepseek-pro",
+        "minimax-1M",
+        "GLM-1M",
+        "kimi-1M",
+        "cc-switch",
+    ] {
         let original = config.providers.get(name).expect("original entry");
         let round = reparsed.providers.get(name).expect("round entry");
-        assert_eq!(original, round, "provider {name} must round-trip losslessly");
+        assert_eq!(
+            original, round,
+            "provider {name} must round-trip losslessly"
+        );
     }
 }
 
