@@ -491,7 +491,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn migrate_legacy_env_files_merges_and_deletes_legacy_files() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -527,8 +526,12 @@ mod tests {
         jcode_core::env::set_var("JCODE_HOME", temp.path());
 
         // 统一文件已有值
-        save_env_value_to_env_file("OPENAI_COMPAT_API_KEY", "openai-compatible.env", Some("new-key"))
-            .expect("save unified");
+        save_env_value_to_env_file(
+            "OPENAI_COMPAT_API_KEY",
+            "openai-compatible.env",
+            Some("new-key"),
+        )
+        .expect("save unified");
 
         // 旧文件也想写同一 key
         let config_dir = jcode_storage::app_config_dir().expect("config dir");

@@ -1055,9 +1055,7 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
     // Typing the final command character immediately arms picker filtering.
     // Without this, users can keep typing the command token or press Enter
     // without realizing the visible picker is ready to filter.
-    if app.cursor_pos == app.input.len()
-        && matches!(app.input.trim_start(), "/model" | "/models")
-    {
+    if app.cursor_pos == app.input.len() && matches!(app.input.trim_start(), "/model" | "/models") {
         app.input.push(' ');
         app.cursor_pos = app.input.len();
     }

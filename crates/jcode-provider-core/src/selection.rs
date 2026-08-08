@@ -583,7 +583,10 @@ mod tests {
     fn explicit_prefix_slash_does_not_misroute_openrouter_model_names() {
         // OpenRouter 模型名本身含 `/`（`anthropic/claude-sonnet-4`），
         // `anthropic/` 不是已知 provider 前缀，必须原样保留，不能被路由。
-        assert_eq!(explicit_model_provider_prefix("anthropic/claude-sonnet-4"), None);
+        assert_eq!(
+            explicit_model_provider_prefix("anthropic/claude-sonnet-4"),
+            None
+        );
         assert_eq!(
             explicit_model_provider_prefix("openrouter/anthropic/claude-sonnet-4")
                 .map(|(p, _, m)| (p, m)),
