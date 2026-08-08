@@ -1148,7 +1148,6 @@ context_window = 1000000
     });
 }
 
-
 /// The user's real CC Switch + cch config (named-table style with per-model
 /// `api_key_env`) must surface every configured model in the /model picker and
 /// support in-session switching both between models and between providers.
@@ -1240,7 +1239,9 @@ context_window = 1000000
                 ("cch", "mimo-v2.5-pro"),
             ] {
                 assert!(
-                    routes.iter().any(|r| r.provider == expected.0 && r.model == expected.1),
+                    routes
+                        .iter()
+                        .any(|r| r.provider == expected.0 && r.model == expected.1),
                     "picker must list {expected:?}; got: {:?}",
                     routes
                         .iter()

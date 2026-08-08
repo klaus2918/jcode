@@ -1,12 +1,10 @@
-﻿//! Regression: the user's CC Switch + cch config uses named provider tables
+//! Regression: the user's CC Switch + cch config uses named provider tables
 //! (`[providers.<name>]`) with per-provider model arrays
 //! (`[[providers.<name>.models]]`). Resonix-style top-level `[[providers]]`
 //! arrays are not supported by this setup, so `Config::save()` must keep the
 //! named-table style and must not drop per-model `api_key_env` / `auth`.
 
-use jcode_base::config::{
-    CompactionMode, Config, NamedProviderAuth, ProviderApiFormat,
-};
+use jcode_base::config::{CompactionMode, Config, NamedProviderAuth, ProviderApiFormat};
 
 const USER_CONFIG: &str = r#"
 [provider]
@@ -78,7 +76,10 @@ fn user_cc_switch_and_cch_named_style_config_round_trips() {
     assert_eq!(config.compaction.proactive_floor, 0.10);
     assert_eq!(config.compaction.min_turns_between_compactions, 10);
 
-    let cc = config.providers.get("cc-switch").expect("cc-switch provider");
+    let cc = config
+        .providers
+        .get("cc-switch")
+        .expect("cc-switch provider");
     assert_eq!(cc.base_url, "http://127.0.0.1:15721");
     assert_eq!(cc.api_format, Some(ProviderApiFormat::Anthropic));
     assert_eq!(cc.auth, NamedProviderAuth::None);
@@ -131,8 +132,14 @@ fn user_cc_switch_and_cch_named_style_config_round_trips() {
 
     let reparsed: Config = toml::from_str(&rendered).expect("rendered config must reparse");
     assert_eq!(reparsed.providers, config.providers);
-    assert_eq!(reparsed.provider.default_provider, config.provider.default_provider);
-    assert_eq!(reparsed.provider.default_model, config.provider.default_model);
+    assert_eq!(
+        reparsed.provider.default_provider,
+        config.provider.default_provider
+    );
+    assert_eq!(
+        reparsed.provider.default_model,
+        config.provider.default_model
+    );
     assert_eq!(reparsed.compaction.mode, config.compaction.mode);
     assert_eq!(reparsed.compaction.threshold, config.compaction.threshold);
 }

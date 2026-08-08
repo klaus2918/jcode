@@ -341,7 +341,10 @@ impl NamedAnthropicProvider {
                 .auth_header
                 .as_deref()
                 .or(profile.auth_header.as_deref());
-            let env_file = model_entry.env_file.as_deref().or(profile.env_file.as_deref());
+            let env_file = model_entry
+                .env_file
+                .as_deref()
+                .or(profile.env_file.as_deref());
             let key = Self::resolve_key(
                 model_entry.api_key_env.as_deref(),
                 profile.api_key.as_deref(),
@@ -1330,7 +1333,11 @@ CCH_KEY_MINIMAX=sk-minimax
         let provider = NamedAnthropicProvider::new_named("cch", &profile).expect("construct");
 
         match provider.auth() {
-            NamedAnthropicAuth::Header { value, header_name, label } => {
+            NamedAnthropicAuth::Header {
+                value,
+                header_name,
+                label,
+            } => {
                 assert_eq!(value, "sk-deepseek");
                 assert_eq!(header_name.as_str(), "x-api-key");
                 assert_eq!(label, "CCH_KEY_DEEPSEEK");
@@ -1348,7 +1355,9 @@ CCH_KEY_MINIMAX=sk-minimax
         }
 
         // ????????????? provider ? key?
-        provider.set_model("deepseek-v4-flash").expect("switch back");
+        provider
+            .set_model("deepseek-v4-flash")
+            .expect("switch back");
         match provider.auth() {
             NamedAnthropicAuth::Header { value, .. } => assert_eq!(value, "sk-deepseek"),
             other => panic!("expected fallback Header auth, got: {other:?}"),
