@@ -23,7 +23,7 @@ fn test_device_registry_token_auth() {
     let mut registry = DeviceRegistry::default();
 
     // Pair a device
-    let token = registry.pair_device("test-device-1".to_string(), "Test iPhone".to_string(), None);
+    let token = registry.pair_device("test-device-1".to_string(), "Test iPhone".to_string());
 
     // Validate correct token
     assert!(registry.validate_token(&token).is_some());
@@ -43,8 +43,8 @@ fn test_device_re_pairing() {
     let mut registry = DeviceRegistry::default();
 
     // Pair same device twice
-    let token1 = registry.pair_device("device-1".to_string(), "iPhone v1".to_string(), None);
-    let token2 = registry.pair_device("device-1".to_string(), "iPhone v2".to_string(), None);
+    let token1 = registry.pair_device("device-1".to_string(), "iPhone v1".to_string());
+    let token2 = registry.pair_device("device-1".to_string(), "iPhone v2".to_string());
 
     // Only one device entry (old one replaced)
     assert_eq!(registry.devices.len(), 1);
@@ -137,7 +137,7 @@ fn test_find_header_end() {
 #[test]
 fn test_authorize_ws_device_valid_token() {
     let mut registry = DeviceRegistry::default();
-    let token = registry.pair_device("dev-1".to_string(), "iPhone".to_string(), None);
+    let token = registry.pair_device("dev-1".to_string(), "iPhone".to_string());
 
     let device = auth::authorize_ws_device(&registry, &token).expect("valid token authorizes");
     assert_eq!(device.name, "iPhone");
@@ -147,7 +147,7 @@ fn test_authorize_ws_device_valid_token() {
 #[test]
 fn test_authorize_ws_device_rejects_unknown_and_revoked_with_401() {
     let mut registry = DeviceRegistry::default();
-    let token = registry.pair_device("dev-1".to_string(), "iPhone".to_string(), None);
+    let token = registry.pair_device("dev-1".to_string(), "iPhone".to_string());
 
     // Unknown token -> 401 at handshake time.
     let unknown = "a".repeat(64);

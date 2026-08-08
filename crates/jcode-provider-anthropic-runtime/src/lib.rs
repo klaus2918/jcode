@@ -2159,6 +2159,11 @@ struct SseEvent {
 struct SseStreamState {
     current_tool_use: Option<ToolUseAccumulator>,
     current_thinking_block: bool,
+    /// Whether the current thinking block's signature has already been
+    /// surfaced. Some gateways send it on `content_block_start` and then
+    /// repeat it via `signature_delta`; dedupe so consumers do not
+    /// concatenate the same signature twice into a replay block.
+    current_thinking_signature_surfaced: bool,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     cache_read_input_tokens: Option<u64>,
@@ -2237,16 +2242,29 @@ fn process_sse_event(
                     ApiContentBlockStart::Text { .. } => {
                         // Text block starting - nothing to emit yet
                     }
-                    ApiContentBlockStart::Thinking { _thinking, .. } => {
+                    ApiContentBlockStart::Thinking {
+                        thinking,
+                        signature,
+                    } => {
                         state.current_thinking_block = true;
                         events.push(StreamEvent::ThinkingStart);
-                        if !_thinking.is_empty() {
-                            events.push(StreamEvent::ThinkingDelta(_thinking));
+                        if !thinking.is_empty() {
+                            events.push(StreamEvent::ThinkingDelta(thinking));
+                        }
+                        // Some Anthropic-compatible gateways deliver the block
+                        // signature only on `content_block_start` (not via a later
+                        // `signature_delta`). Surface it here so consumers can
+                        // persist a replayable `AnthropicThinking` block instead of
+                        // degrading it to a signature-less reasoning trace.
+                        if let Some(signature) = signature.filter(|s| !s.is_empty()) {
+                            state.current_thinking_signature_surfaced = true;
+                            events.push(StreamEvent::ThinkingSignatureDelta(signature));
                         }
                     }
                     ApiContentBlockStart::RedactedThinking { .. } => {
                         state.current_thinking_block = true;
                         events.push(StreamEvent::ThinkingStart);
+                        state.current_thinking_signature_surfaced = false;
                     }
                     ApiContentBlockStart::ToolUse { id, name } => {
                         let mapped_name = if is_oauth {
@@ -2290,7 +2308,13 @@ fn process_sse_event(
                         events.push(StreamEvent::ThinkingDelta(thinking));
                     }
                     ApiDelta::Signature { signature } => {
-                        events.push(StreamEvent::ThinkingSignatureDelta(signature));
+                        // The signature may already have been surfaced on
+                        // `content_block_start`; avoid appending it twice when
+                        // the gateway repeats it as a delta.
+                        if !state.current_thinking_signature_surfaced && !signature.is_empty() {
+                            state.current_thinking_signature_surfaced = true;
+                            events.push(StreamEvent::ThinkingSignatureDelta(signature));
+                        }
                     }
                 }
             }
@@ -2301,6 +2325,7 @@ fn process_sse_event(
                 events.push(StreamEvent::ToolUseEnd);
             } else if state.current_thinking_block {
                 state.current_thinking_block = false;
+                state.current_thinking_signature_surfaced = false;
                 events.push(StreamEvent::ThinkingEnd);
             }
         }

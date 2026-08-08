@@ -1,7 +1,7 @@
 # jcode phone server (managed cloud host)
 
 A self-managing EC2 host that runs `jcode serve` with the WebSocket gateway so
-phones (the iOS app, or SSH clients like Termius) can drive jcode sessions
+phones (remote gateway clients, or SSH clients like Termius) can drive jcode sessions
 without any laptop in the loop. Billing safety is layered and each layer has
 been live-tested.
 
@@ -11,7 +11,7 @@ instance `i-08214cf66cd3f80c7` (m7i-flex.large), Elastic IP `54.196.207.97`.
 ## Architecture
 
 ```
-phone (jcode iOS app / Termius, connected through Tailscale)
+phone (remote gateway client / Termius, connected through Tailscale)
   │  WebSocket :7643 (pair token auth, tailnet-only)
   ▼
 EC2 jcode server ──instance role──▶ AWS Bedrock (Opus 4.6 default)
@@ -62,7 +62,7 @@ The legacy `AWS/Billing/EstimatedCharges` alarms were removed because the accoun
 
 1. Bookmark the wake link (`https://<api-id>.execute-api.us-east-1.amazonaws.com/#t=<token>`, token stored at `~/.jcode/jcode-phone-wake-token` on the workstation). The URL fragment is not sent in HTTP requests; JavaScript exchanges it for an `Authorization: Bearer` header and keeps it in session storage.
 2. Tap it: the Lambda starts the instance and polls EC2/SSM every 5 s until ready.
-3. Tap "Pair this phone" → Lambda runs `jcode pair` through SSM → 6-digit code + `jcode://` deep link → opens the iOS app paired to `100.109.78.41:7643`.
+3. Tap "Pair this phone" → Lambda runs `jcode pair` through SSM → 6-digit code + `jcode://` deep link → pairs a remote client to `100.109.78.41:7643`.
 4. SSH fallback: connect through Tailscale to `ec2-user@100.109.78.41`, then run `phone`.
 
 ## Security notes

@@ -531,6 +531,7 @@ jobs:
         run: |
           & ./scripts/test_windows_launcher_install.ps1
           & ./scripts/test_windows_setup_evaluation.ps1
+          & ./scripts/test_update_local_install.ps1
 
       - name: Verify installer using local artifact
         shell: pwsh

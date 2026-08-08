@@ -408,6 +408,20 @@ async fn init_provider_with_options(
         ));
     }
 
+    // 未指定默认模型（cc-switch 本地网关等，`default_model` 为空）时自动
+    // 发现并跟随当前 provider 的模型，无需在配置里写死模型名。
+    if model.is_none() && provider.model().trim().is_empty() {
+        let _ = provider.prefetch_models().await;
+        let selected = provider.model();
+        if !selected.trim().is_empty() {
+            init_notice(&format!(
+                "Using auto-discovered model for {}: {}",
+                provider.display_name(),
+                selected
+            ));
+        }
+    }
+
     if let Some(model_name) = model {
         if let Err(e) = provider.set_model(model_name) {
             init_notice(&format!(

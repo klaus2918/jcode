@@ -359,7 +359,7 @@ fn should_spawn_background_update_check(args: &Args) -> bool {
         && !args.no_update
         && !matches!(
             args.command,
-            Some(Command::Update) | Some(Command::Serve { .. }) | Some(Command::Acp)
+            Some(Command::Update { .. }) | Some(Command::Serve { .. }) | Some(Command::Acp)
         )
         && args.resume.is_none()
 }
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn update_command_still_skips_background_check_before_auto_install_logic() {
         let args = parse_args(&["jcode", "update"]);
-        assert!(matches!(args.command, Some(Command::Update)));
+        assert!(matches!(args.command, Some(Command::Update { .. })));
         assert!(!should_spawn_background_update_check(&args));
         assert!(should_auto_install_update(&args));
     }

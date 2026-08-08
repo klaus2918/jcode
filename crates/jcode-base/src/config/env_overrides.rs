@@ -632,7 +632,7 @@ impl Config {
             }
         }
 
-        // Gateway (iOS/web)
+        // Gateway (remote clients)
         if let Ok(v) = std::env::var("JCODE_GATEWAY_ENABLED") {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.gateway.enabled = parsed;

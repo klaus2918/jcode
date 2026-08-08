@@ -410,9 +410,6 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
                 let last_seen = &device.last_seen;
                 eprintln!("  \x1b[36m{}\x1b[0m  ({})", device.name, device.id);
                 eprintln!("    Paired: {}  Last seen: {}", device.paired_at, last_seen);
-                if let Some(ref apns) = device.apns_token {
-                    eprintln!("    APNs: {}...", &apns[..apns.len().min(16)]);
-                }
                 eprintln!();
             }
         }
@@ -451,7 +448,7 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
     );
 
     eprintln!();
-    eprintln!("  \x1b[1mScan with the jcode iOS app:\x1b[0m\n");
+    eprintln!("  \x1b[1mScan with a jcode client:\x1b[0m\n");
     match crate::login_qr::render_unicode_qr(&pair_uri) {
         Ok(qr) => {
             for line in qr.lines() {

@@ -175,6 +175,38 @@ pub enum ContentBlock {
     },
 }
 
+/// Protocol-aware helpers for thinking/reasoning storage.
+///
+/// A single stored block can serve multiple wire protocols:
+/// - `AnthropicThinking` keeps the Anthropic signature so the block can be
+///   replayed verbatim as `{"type":"thinking","thinking":...,"signature":...}`
+///   on Anthropic-format endpoints, and its readable `thinking` text can be
+///   replayed as the top-level `reasoning_content` field on OpenAI-compatible
+///   endpoints.
+/// - `Reasoning` is the readable OpenAI-compatible replay block (no signature
+///   exists for `reasoning_content`).
+/// - `ReasoningTrace` is history-only and must never be replayed.
+impl ContentBlock {
+    /// Readable thinking text that is safe to replay to a provider.
+    ///
+    /// Returns `None` for history-only traces (`ReasoningTrace`) and for
+    /// encrypted provider-native items that cannot be decoded into readable
+    /// text (`OpenAIReasoning`).
+    pub fn replay_reasoning_text(&self) -> Option<&str> {
+        match self {
+            ContentBlock::AnthropicThinking { thinking, .. } => Some(thinking),
+            ContentBlock::Reasoning { text } => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Whether this block is a history-only reasoning trace that must never be
+    /// replayed to any provider.
+    pub fn is_history_only_reasoning(&self) -> bool {
+        matches!(self, ContentBlock::ReasoningTrace { .. })
+    }
+}
+
 impl Message {
     pub fn user(text: &str) -> Self {
         Self {

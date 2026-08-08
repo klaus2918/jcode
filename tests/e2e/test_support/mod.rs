@@ -264,7 +264,6 @@ fn pair_test_device(token: &str) -> Result<()> {
         id: "test-device-ws".to_string(),
         name: "WS Test Device".to_string(),
         token_hash,
-        apns_token: None,
         paired_at: now.clone(),
         last_seen: now,
     });

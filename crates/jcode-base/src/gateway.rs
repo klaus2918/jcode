@@ -1,8 +1,8 @@
-//! WebSocket gateway for remote clients (iOS app, web).
+//! WebSocket gateway for remote clients (web, phone).
 //!
 //! Accepts WebSocket connections over TCP and bridges them to the
 //! existing newline-delimited JSON protocol used by Unix socket clients.
-//! This lets iOS/web clients interact with jcode sessions identically
+//! This lets remote clients interact with jcode sessions identically
 //! to TUI clients.
 //!
 //! Architecture:
@@ -454,8 +454,7 @@ async fn handle_http(
 /// {
 ///   "code": "123456",
 ///   "device_id": "uuid-here",
-///   "device_name": "Jeremy's iPhone",
-///   "apns_token": "optional-apns-token"
+///   "device_name": "My Device"
 /// }
 /// ```
 ///
@@ -476,7 +475,6 @@ async fn handle_pair_request(
         code: String,
         device_id: String,
         device_name: String,
-        apns_token: Option<String>,
     }
 
     let req: PairRequest = match serde_json::from_str(body) {
@@ -497,11 +495,7 @@ async fn handle_pair_request(
         return http_response(401, "Unauthorized", &body.to_string());
     }
 
-    let token = reg.pair_device(
-        req.device_id.clone(),
-        req.device_name.clone(),
-        req.apns_token,
-    );
+    let token = reg.pair_device(req.device_id.clone(), req.device_name.clone());
 
     logging::info(&format!(
         "Gateway: paired device '{}' ({})",

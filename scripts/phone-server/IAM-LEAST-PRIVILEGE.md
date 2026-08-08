@@ -27,7 +27,7 @@ Repository evidence:
 - `breaker-lambda.py` calls `ec2:DescribeInstances`, `ec2:StopInstances`, and `sns:Publish` to `arn:aws:sns:us-east-1:302154194530:jcode-guard-warn`.
 - The Bedrock provider calls `ListFoundationModels`, `ListInferenceProfiles`, and the streaming Converse API. Converse streaming is authorized by `bedrock:InvokeModelWithResponseStream`.
 - The rebuild instructions require EC2, EIP, security group, IAM instance profile, Lambda, API Gateway v2, SNS, CloudWatch alarms, and Budgets administration.
-- TestFlight automation is App Store Connect only and requires no AWS permission.
+- App delivery automation is App Store Connect only and requires no AWS permission.
 
 The SSM-based wake implementation is now deployed. The Lambda generates pair codes through SSM Run Command, and the legacy public `:7644` path is disabled.
 

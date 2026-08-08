@@ -152,9 +152,14 @@ fi
 # are visible immediately. jcode.sh keeps a static copy of the latest published
 # tag as an independent fallback for GitHub outages, blocks, and shared-network
 # throttling. Neither path uses the rate-limited unauthenticated GitHub API.
+# Local-package mode: when JCODE_LOCAL_ARTIFACT points to a local .tar.gz/.exe
+# package, the whole install/update runs offline and never touches jcode.sh or
+# GitHub (no download, no checksum fetch, no release lookup).
+LOCAL_ARTIFACT="${JCODE_LOCAL_ARTIFACT:-}"
+
 INSTALL_STAGE="release_lookup"
 VERSION="${JCODE_VERSION:-}"
-if [ -z "$VERSION" ]; then
+if [ -z "$LOCAL_ARTIFACT" ] && [ -z "$VERSION" ]; then
   METADATA_VERSION=$(curl -fsSL --retry 2 --connect-timeout 10 \
     "$RELEASE_METADATA_BASE/latest/version" 2>/dev/null | tr -d '\r\n' || true)
   LATEST_RELEASE_URL=$(curl -fsSIL --retry 2 --connect-timeout 10 \
@@ -170,7 +175,9 @@ if [ -z "$VERSION" ]; then
     info "GitHub release lookup unavailable; using cached jcode.sh metadata ($VERSION)."
   fi
 fi
-valid_release_tag "$VERSION" || err "Failed to determine latest version"
+if [ -z "$LOCAL_ARTIFACT" ]; then
+  valid_release_tag "$VERSION" || err "Failed to determine latest version"
+fi
 INSTALL_VERSION="${VERSION#v}"
 
 GITHUB_RELEASE_BASE="https://github.com/$REPO/releases/download/$VERSION"
@@ -205,32 +212,65 @@ info "  launcher: $launcher_path"
 
 tmpdir=$(mktemp -d)
 
+if [ -n "$LOCAL_ARTIFACT" ]; then
+  INSTALL_STAGE="local_artifact"
+  [ -f "$LOCAL_ARTIFACT" ] || err "Local artifact not found: $LOCAL_ARTIFACT"
+  cp -f "$LOCAL_ARTIFACT" "$tmpdir/jcode.download"
+  case "$LOCAL_ARTIFACT" in
+    *.tar.gz) download_mode="tar" ;;
+    *) download_mode="bin" ;;
+  esac
+  downloaded_asset="$(basename "$LOCAL_ARTIFACT")"
+  if [ -z "$VERSION" ]; then
+    # Detect the version from the local binary itself (tar mode extracts once).
+    if [ "$download_mode" = "tar" ]; then
+      tar xzf "$tmpdir/jcode.download" -C "$tmpdir"
+      probe_bin=$(find "$tmpdir" -maxdepth 1 -type f -name 'jcode*' \
+        ! -name '*.tar.gz' ! -name '*.bin' ! -name 'jcode.download' | head -1)
+      [ -n "$probe_bin" ] || err "Local archive did not contain a jcode binary"
+      chmod +x "$probe_bin" 2>/dev/null || true
+    else
+      probe_bin="$tmpdir/jcode.download"
+      chmod +x "$probe_bin" 2>/dev/null || true
+    fi
+    VERSION=$("$probe_bin" --version 2>/dev/null | head -1 |
+      grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+([+.-][[:alnum:].-]+)?' | head -1)
+    [ -n "$VERSION" ] || err "Could not detect version from local artifact; set JCODE_VERSION explicitly"
+    INSTALL_VERSION="${VERSION#v}"
+    info "Detected local artifact version: $VERSION"
+  fi
+  valid_release_tag "$VERSION" || err "JCODE_VERSION must look like v0.64.2 when installing a local artifact (got: $VERSION)"
+  info "Installing from local artifact: $LOCAL_ARTIFACT ($VERSION)"
+fi
+
 INSTALL_STAGE="artifact_download"
 download_mode=""
 downloaded_asset=""
-DOWNLOAD_BASES=$(curl -fsSL --retry 2 --connect-timeout 10 \
-  "$RELEASE_METADATA_BASE/$VERSION/download-bases" 2>/dev/null || true)
-DOWNLOAD_BASES=$(printf '%s\n%s\n' "$DOWNLOAD_BASES" "$GITHUB_RELEASE_BASE" |
-  awk '/^https:\/\/[^[:space:]]+$/ && !seen[$0]++')
+if [ -z "$LOCAL_ARTIFACT" ]; then
+  DOWNLOAD_BASES=$(curl -fsSL --retry 2 --connect-timeout 10 \
+    "$RELEASE_METADATA_BASE/$VERSION/download-bases" 2>/dev/null || true)
+  DOWNLOAD_BASES=$(printf '%s\n%s\n' "$DOWNLOAD_BASES" "$GITHUB_RELEASE_BASE" |
+    awk '/^https:\/\/[^[:space:]]+$/ && !seen[$0]++')
 
-for candidate in "$ARTIFACT.tar.gz" "$ARTIFACT$EXE"; do
-  while IFS= read -r base; do
-    [ -n "$base" ] || continue
-    if curl -fsSL --retry 2 --connect-timeout 10 \
-      "${base%/}/$candidate" -o "$tmpdir/jcode.download" 2>/dev/null; then
-      downloaded_asset="$candidate"
-      case "$candidate" in
-        *.tar.gz) download_mode="tar" ;;
-        *) download_mode="bin" ;;
-      esac
-      break 2
-    fi
-  done <<EOF
+  for candidate in "$ARTIFACT.tar.gz" "$ARTIFACT$EXE"; do
+    while IFS= read -r base; do
+      [ -n "$base" ] || continue
+      if curl -fsSL --retry 2 --connect-timeout 10 \
+        "${base%/}/$candidate" -o "$tmpdir/jcode.download" 2>/dev/null; then
+        downloaded_asset="$candidate"
+        case "$candidate" in
+          *.tar.gz) download_mode="tar" ;;
+          *) download_mode="bin" ;;
+        esac
+        break 2
+      fi
+    done <<EOF
 $DOWNLOAD_BASES
 EOF
-done
+  done
+fi
 
-if [ -n "$download_mode" ]; then
+if [ -n "$download_mode" ] && [ -z "$LOCAL_ARTIFACT" ]; then
   INSTALL_STAGE="artifact_verification"
   EXPECTED_SHA256=""
   for checksum_url in \
@@ -265,7 +305,13 @@ bin_name="jcode${EXE}"
 
 if [ "$download_mode" = "tar" ]; then
   tar xzf "$tmpdir/jcode.download" -C "$tmpdir"
-  src_bin="$tmpdir/${ARTIFACT}${EXE}"
+  if [ -f "$tmpdir/${ARTIFACT}${EXE}" ]; then
+    src_bin="$tmpdir/${ARTIFACT}${EXE}"
+  else
+    # 本地安装包常带 git hash 后缀（jcode-windows-x86_64-2dc3213a6.exe）。
+    src_bin=$(find "$tmpdir" -maxdepth 1 -type f -name 'jcode*' \
+      ! -name '*.tar.gz' ! -name '*.bin' ! -name 'jcode.download' | head -1)
+  fi
   [ -f "$src_bin" ] || err "Downloaded archive did not contain expected binary: ${ARTIFACT}${EXE}"
   find "$tmpdir" -maxdepth 1 -type f \( -name "${ARTIFACT}${EXE}.bin" -o -name 'libssl.so*' -o -name 'libcrypto.so*' \) \
     -exec cp -f {} "$dest_version_dir/" \;

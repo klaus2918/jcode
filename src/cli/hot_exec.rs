@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::path::Path;
 use std::process::Command as ProcessCommand;
 
 pub use crate::session_rebuild::{hot_rebuild, spawn_background_session_rebuild};
@@ -374,7 +375,11 @@ pub fn run_auto_update() -> Result<()> {
     ))
 }
 
-pub fn run_update() -> Result<()> {
+pub fn run_update(local_artifact: Option<&Path>) -> Result<()> {
+    if let Some(path) = local_artifact {
+        return run_local_update(path);
+    }
+
     if update::is_release_build() {
         update::print_centered("Checking GitHub for latest release...");
         match update::check_for_update_blocking() {
@@ -445,6 +450,30 @@ pub fn run_update() -> Result<()> {
     let hash = String::from_utf8_lossy(&hash.stdout);
     update::print_centered(&format!("Successfully updated to {}", hash.trim()));
 
+    Ok(())
+}
+
+/// 从本地安装包安装/更新（离线，不访问官网）。支持 .tar.gz 与裸二进制 .exe。
+fn run_local_update(path: &Path) -> Result<()> {
+    if !path.exists() {
+        anyhow::bail!("Local package not found: {}", path.display());
+    }
+    update::print_centered(&format!(
+        "Installing from local package {}...",
+        path.display()
+    ));
+    let installed = update::install_local_artifact_blocking(path, |progress| {
+        update::print_centered(&format!(
+            "Installing... {}",
+            update::format_download_progress_bar(progress)
+        ));
+    })?;
+    update::print_centered(&format!(
+        "✅ Installed local package: {}",
+        installed.display()
+    ));
+    reload_server_after_update("installed local update");
+    update::print_centered("Restart jcode to use the new version.");
     Ok(())
 }
 

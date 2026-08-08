@@ -639,8 +639,6 @@ fn configured_api_key_source_rejects_invalid_values() {
     }
 }
 
-#[test]
-
 /// Test binaries must never open real browser windows: login/onboarding flows
 /// are exercised heavily by unit tests, and each ungated `open::that` pops an
 /// OAuth page on the developer's desktop. `running_in_test_harness` detects
