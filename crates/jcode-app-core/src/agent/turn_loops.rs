@@ -186,8 +186,9 @@ impl Agent {
             let provider_name = self.provider.name().to_string();
             let store_reasoning_content =
                 crate::provider::stores_reasoning_content_for_context(&provider_name);
-            let mut reasoning_content = String::new();
-            let mut reasoning_signature = String::new();
+            let mut reasoning_blocks: Vec<crate::message::ReasoningBlock> = Vec::new();
+            let mut current_reasoning_text = String::new();
+            let mut current_reasoning_signature = String::new();
             let mut openai_reasoning_items: Vec<ContentBlock> = Vec::new();
             // Track tool results from provider (already executed by Claude Code CLI)
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
@@ -251,16 +252,24 @@ impl Agent {
                         }
                         // Always capture reasoning text so it can be persisted as a
                         // history-only trace, regardless of provider replay support.
-                        reasoning_content.push_str(&thinking_text);
+                        current_reasoning_text.push_str(&thinking_text);
                     }
                     StreamEvent::ThinkingSignatureDelta(signature) => {
                         if store_reasoning_content {
-                            reasoning_signature.push_str(&signature);
+                            current_reasoning_signature.push_str(&signature);
                         }
                     }
                     StreamEvent::ThinkingEnd => {
                         // Don't print here - ThinkingDone has accurate timing
                         _thinking_start = None;
+                        // Close out the thinking block with its own signature so a
+                        // multi-block turn preserves each signature/text pairing.
+                        if let Some(block) = crate::message::take_reasoning_block(
+                            &mut current_reasoning_text,
+                            &mut current_reasoning_signature,
+                        ) {
+                            reasoning_blocks.push(block);
+                        }
                     }
                     StreamEvent::ThinkingDone { duration_secs } => {
                         // Bridge provides accurate wall-clock timing
@@ -475,8 +484,9 @@ impl Agent {
                         current_tool_input.clear();
                         sdk_tool_results.clear();
                         generated_image_contexts.clear();
-                        reasoning_content.clear();
-                        reasoning_signature.clear();
+                        reasoning_blocks.clear();
+                        current_reasoning_text.clear();
+                        current_reasoning_signature.clear();
                         openai_reasoning_items.clear();
                         openai_native_compaction = None;
                         saw_message_end = false;
@@ -719,11 +729,16 @@ impl Agent {
                     cache_control: None,
                 });
             }
-            crate::message::push_reasoning_blocks(
+            if let Some(block) = crate::message::take_reasoning_block(
+                &mut current_reasoning_text,
+                &mut current_reasoning_signature,
+            ) {
+                reasoning_blocks.push(block);
+            }
+            crate::message::push_reasoning_blocks_many(
                 &mut content_blocks,
                 &provider_name,
-                &reasoning_content,
-                Some(&reasoning_signature),
+                &reasoning_blocks,
                 store_reasoning_content,
             );
             if store_reasoning_content {
@@ -796,10 +811,12 @@ impl Agent {
                 }
                 // Surface silent guardrail/refusal stops instead of returning
                 // an empty final answer with no explanation.
+                let has_reasoning = reasoning_blocks.iter().any(|b| !b.text.trim().is_empty())
+                    || !current_reasoning_text.trim().is_empty();
                 if let Some(notice) = Self::provider_guardrail_notice(
                     stop_reason.as_deref(),
                     visible_text_is_empty,
-                    !reasoning_content.trim().is_empty(),
+                    has_reasoning,
                 ) {
                     logging::warn(&format!(
                         "{}: turn ended with no visible output (stop_reason={:?})",

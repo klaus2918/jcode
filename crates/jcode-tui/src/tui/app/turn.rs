@@ -246,8 +246,9 @@ impl App {
             let provider_name = self.provider.name().to_string();
             let store_reasoning_content =
                 crate::provider::stores_reasoning_content_for_context(&provider_name);
-            let mut reasoning_content = String::new();
-            let mut reasoning_signature = String::new();
+            let mut reasoning_blocks: Vec<crate::message::ReasoningBlock> = Vec::new();
+            let mut current_reasoning_text = String::new();
+            let mut current_reasoning_signature = String::new();
             let mut openai_reasoning_items: Vec<ContentBlock> = Vec::new();
             let mut openai_native_compaction: Option<(String, usize)> = None;
 
@@ -316,11 +317,16 @@ impl App {
                                                     cache_control: None,
                                                 });
                                             }
-                                            crate::message::push_reasoning_blocks(
+                                            if let Some(block) = crate::message::take_reasoning_block(
+                                                &mut current_reasoning_text,
+                                                &mut current_reasoning_signature,
+                                            ) {
+                                                reasoning_blocks.push(block);
+                                            }
+                                            crate::message::push_reasoning_blocks_many(
                                                 &mut content_blocks,
                                                 &provider_name,
-                                                &reasoning_content,
-                                                Some(&reasoning_signature),
+                                                &reasoning_blocks,
                                                 store_reasoning_content,
                                             );
                                             if store_reasoning_content {
@@ -384,11 +390,16 @@ impl App {
                                                     cache_control: None,
                                                 });
                                             }
-                                            crate::message::push_reasoning_blocks(
+                                            if let Some(block) = crate::message::take_reasoning_block(
+                                                &mut current_reasoning_text,
+                                                &mut current_reasoning_signature,
+                                            ) {
+                                                reasoning_blocks.push(block);
+                                            }
+                                            crate::message::push_reasoning_blocks_many(
                                                 &mut content_blocks,
                                                 &provider_name,
-                                                &reasoning_content,
-                                                Some(&reasoning_signature),
+                                                &reasoning_blocks,
                                                 store_reasoning_content,
                                             );
                                             if store_reasoning_content {
@@ -439,7 +450,9 @@ impl App {
                                         self.clear_streaming_render_state();
                                         self.streaming_tool_calls.clear();
                                         self.stream_buffer = StreamBuffer::new();
-                                        reasoning_content.clear();
+                                        reasoning_blocks.clear();
+                                        current_reasoning_text.clear();
+                                        current_reasoning_signature.clear();
                                         interleaved = true;
                                         // Continue to next iteration of outer loop (new API call)
                                         break;
@@ -709,8 +722,9 @@ impl App {
                                         current_tool_input.clear();
                                         generated_image_contexts.clear();
                                         sdk_tool_results.clear();
-                                        reasoning_content.clear();
-                                        reasoning_signature.clear();
+                                        reasoning_blocks.clear();
+                                        current_reasoning_text.clear();
+                                        current_reasoning_signature.clear();
                                         openai_reasoning_items.clear();
                                         openai_native_compaction = None;
                                         saw_message_end = false;
@@ -773,7 +787,7 @@ impl App {
                                     }
                                     StreamEvent::ThinkingSignatureDelta(signature) => {
                                         if store_reasoning_content {
-                                            reasoning_signature.push_str(&signature);
+                                            current_reasoning_signature.push_str(&signature);
                                         }
                                     }
                                     StreamEvent::ThinkingDelta(thinking_text) => {
@@ -802,7 +816,7 @@ impl App {
                                         // Always capture reasoning text so it can be
                                         // persisted as a history-only trace, regardless
                                         // of provider replay support.
-                                        reasoning_content.push_str(&thinking_text);
+                                        current_reasoning_text.push_str(&thinking_text);
                                         // When reasoning text is hidden, the status flip to
                                         // "thinking…" is the only visible signal, so repaint
                                         // promptly on the first delta.
@@ -815,6 +829,15 @@ impl App {
                                         self.thinking_start = None;
                                         self.thinking_buffer.clear();
                                         self.broadcast_debug(crate::tui::backend::DebugEvent::ThinkingEnd);
+                                        // Close out the thinking block with its own signature
+                                        // so a multi-block turn preserves each signature/text
+                                        // pairing for compliant Anthropic replay.
+                                        if let Some(block) = crate::message::take_reasoning_block(
+                                            &mut current_reasoning_text,
+                                            &mut current_reasoning_signature,
+                                        ) {
+                                            reasoning_blocks.push(block);
+                                        }
                                     }
                                     StreamEvent::ThinkingDone { duration_secs: _ } => {
                                         if config().display.reasoning_enabled() {
@@ -1066,11 +1089,16 @@ impl App {
                     cache_control: None,
                 });
             }
-            crate::message::push_reasoning_blocks(
+            if let Some(block) = crate::message::take_reasoning_block(
+                &mut current_reasoning_text,
+                &mut current_reasoning_signature,
+            ) {
+                reasoning_blocks.push(block);
+            }
+            crate::message::push_reasoning_blocks_many(
                 &mut content_blocks,
                 &provider_name,
-                &reasoning_content,
-                Some(&reasoning_signature),
+                &reasoning_blocks,
                 store_reasoning_content,
             );
             if store_reasoning_content {

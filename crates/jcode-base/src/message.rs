@@ -218,6 +218,43 @@ pub fn redact_secrets(text: &str) -> String {
 pub const GENERATED_IMAGE_TOOL_NAME: &str = "image_generation";
 pub const GENERATED_IMAGE_MAX_AUTO_VISION_BYTES: u64 = 20 * 1024 * 1024;
 
+/// One protocol-aware thinking block captured from a provider stream.
+///
+/// Keeping each block (text + optional signature) separate preserves the
+/// pairing that Anthropic requires when replaying `thinking` blocks verbatim
+/// on later turns: a signature signs exactly one block's text, so merging
+/// blocks or concatenating signatures would make the replay non-compliant.
+#[derive(Debug, Clone)]
+pub struct ReasoningBlock {
+    /// Readable thinking text.
+    pub text: String,
+    /// Provider-native replay signature (Anthropic thinking blocks). `None`
+    /// for providers that only expose readable reasoning (`reasoning_content`).
+    pub signature: Option<String>,
+}
+
+/// Finalize one protocol-aware reasoning block from the accumulated stream
+/// text and signature, taking ownership of both.
+///
+/// Returns `None` when both are empty (nothing replayable, e.g. redacted
+/// thinking). This mirrors the pairing Anthropic requires when replaying
+/// `thinking` blocks verbatim on later turns: a signature signs exactly one
+/// block's text, so every consumer closes each block out separately with its
+/// own signature instead of merging blocks or concatenating signatures.
+pub fn take_reasoning_block(text: &mut String, signature: &mut String) -> Option<ReasoningBlock> {
+    if text.is_empty() && signature.is_empty() {
+        return None;
+    }
+    Some(ReasoningBlock {
+        text: std::mem::take(text),
+        signature: if signature.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(signature))
+        },
+    })
+}
+
 /// Persist the model's reasoning for an assistant turn.
 ///
 /// This always keeps a readable, history-only copy of the reasoning in the
@@ -237,14 +274,48 @@ pub fn push_reasoning_blocks(
     if reasoning_content.is_empty() {
         return;
     }
+    let single = ReasoningBlock {
+        text: reasoning_content.to_string(),
+        signature: reasoning_signature.map(str::to_string),
+    };
+    push_reasoning_block(blocks, provider_name, &single, store_replay_context);
+}
 
+/// Persist a whole turn's protocol-aware thinking blocks.
+///
+/// See [`push_reasoning_blocks`] for the per-provider storage rules. Each
+/// entry maps to its own `ContentBlock`, preserving Anthropic's per-block
+/// signature pairing across multi-block turns.
+pub fn push_reasoning_blocks_many(
+    blocks: &mut Vec<ContentBlock>,
+    provider_name: &str,
+    reasoning_blocks: &[ReasoningBlock],
+    store_replay_context: bool,
+) {
+    for block in reasoning_blocks {
+        // Empty text (e.g. redacted thinking) carries nothing replayable;
+        // matching the original single-block behavior, skip it entirely so a
+        // bare signature can never be stored as an empty thinking block.
+        if block.text.is_empty() {
+            continue;
+        }
+        push_reasoning_block(blocks, provider_name, block, store_replay_context);
+    }
+}
+
+fn push_reasoning_block(
+    blocks: &mut Vec<ContentBlock>,
+    provider_name: &str,
+    block: &ReasoningBlock,
+    store_replay_context: bool,
+) {
     // Whether the replay block we stored already contains the readable text.
     let mut readable_replay_stored = false;
     if store_replay_context {
         if provider_name.eq_ignore_ascii_case("anthropic") {
-            if let Some(signature) = reasoning_signature.filter(|s| !s.is_empty()) {
+            if let Some(signature) = block.signature.as_deref().filter(|s| !s.is_empty()) {
                 blocks.push(ContentBlock::AnthropicThinking {
-                    thinking: reasoning_content.to_string(),
+                    thinking: block.text.clone(),
                     signature: signature.to_string(),
                 });
                 readable_replay_stored = true;
@@ -254,7 +325,7 @@ pub fn push_reasoning_blocks(
             // text, so a separate history trace is still required below.
         } else {
             blocks.push(ContentBlock::Reasoning {
-                text: reasoning_content.to_string(),
+                text: block.text.clone(),
             });
             readable_replay_stored = true;
         }
@@ -262,7 +333,7 @@ pub fn push_reasoning_blocks(
 
     if !readable_replay_stored {
         blocks.push(ContentBlock::ReasoningTrace {
-            text: reasoning_content.to_string(),
+            text: block.text.clone(),
         });
     }
 }

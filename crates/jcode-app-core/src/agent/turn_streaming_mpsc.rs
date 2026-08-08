@@ -337,8 +337,9 @@ impl Agent {
             let provider_name = self.provider.name().to_string();
             let store_reasoning_content =
                 crate::provider::stores_reasoning_content_for_context(&provider_name);
-            let mut reasoning_content = String::new();
-            let mut reasoning_signature = String::new();
+            let mut reasoning_blocks: Vec<crate::message::ReasoningBlock> = Vec::new();
+            let mut current_reasoning_text = String::new();
+            let mut current_reasoning_signature = String::new();
             // Whether a live reasoning region is currently streaming to the client.
             // Raw reasoning deltas are sent as `ReasoningDelta`; the client owns the
             // dim/italic styling and live partial-line rendering. We close the region
@@ -457,6 +458,12 @@ impl Agent {
 
                 match event {
                     StreamEvent::ThinkingStart => {
+                        if let Some(block) = crate::message::take_reasoning_block(
+                            &mut current_reasoning_text,
+                            &mut current_reasoning_signature,
+                        ) {
+                            reasoning_blocks.push(block);
+                        }
                         // Reasoning tokens are counted in provider output usage even when
                         // `display.show_thinking` hides the text. Let remote clients start
                         // their TPS timer without forcing hidden reasoning into the transcript.
@@ -464,10 +471,19 @@ impl Agent {
                             phase: crate::message::ConnectionPhase::Streaming.to_string(),
                         });
                     }
-                    StreamEvent::ThinkingEnd => {}
+                    StreamEvent::ThinkingEnd => {
+                        // Close out the thinking block with its own signature so a
+                        // multi-block turn preserves each signature/text pairing.
+                        if let Some(block) = crate::message::take_reasoning_block(
+                            &mut current_reasoning_text,
+                            &mut current_reasoning_signature,
+                        ) {
+                            reasoning_blocks.push(block);
+                        }
+                    }
                     StreamEvent::ThinkingSignatureDelta(signature) => {
                         if store_reasoning_content {
-                            reasoning_signature.push_str(&signature);
+                            current_reasoning_signature.push_str(&signature);
                         }
                     }
                     StreamEvent::ThinkingDelta(thinking_text) => {
@@ -494,7 +510,7 @@ impl Agent {
                         }
                         // Always capture reasoning text so it can be persisted as a
                         // history-only trace, regardless of provider replay support.
-                        reasoning_content.push_str(&thinking_text);
+                        current_reasoning_text.push_str(&thinking_text);
                     }
                     StreamEvent::ThinkingDone { duration_secs } => {
                         if reasoning_open {
@@ -743,8 +759,9 @@ impl Agent {
                         tool_id_to_name.clear();
                         sdk_tool_results.clear();
                         generated_image_contexts.clear();
-                        reasoning_content.clear();
-                        reasoning_signature.clear();
+                        reasoning_blocks.clear();
+                        current_reasoning_text.clear();
+                        current_reasoning_signature.clear();
                         reasoning_open = false;
                         openai_reasoning_items.clear();
                         openai_native_compaction = None;
@@ -1043,11 +1060,16 @@ impl Agent {
                     cache_control: None,
                 });
             }
-            crate::message::push_reasoning_blocks(
+            if let Some(block) = crate::message::take_reasoning_block(
+                &mut current_reasoning_text,
+                &mut current_reasoning_signature,
+            ) {
+                reasoning_blocks.push(block);
+            }
+            crate::message::push_reasoning_blocks_many(
                 &mut content_blocks,
                 &provider_name,
-                &reasoning_content,
-                Some(&reasoning_signature),
+                &reasoning_blocks,
                 store_reasoning_content,
             );
             if store_reasoning_content {
@@ -1148,19 +1170,25 @@ impl Agent {
                         // Only when the provider actually finished the message
                         // (saw_message_end) and the user did not cancel, so
                         // interrupted turns never show a spurious notice.
+                        let reasoning_chars: usize =
+                            reasoning_blocks.iter().map(|b| b.text.len()).sum::<usize>()
+                                + current_reasoning_text.len();
+                        let has_reasoning =
+                            reasoning_blocks.iter().any(|b| !b.text.trim().is_empty())
+                                || !current_reasoning_text.trim().is_empty();
                         if saw_message_end
                             && !self.is_graceful_shutdown()
                             && let Some(notice) = Self::provider_guardrail_notice(
                                 stop_reason.as_deref(),
                                 text_content.trim().is_empty(),
-                                !reasoning_content.trim().is_empty(),
+                                has_reasoning,
                             )
                         {
                             logging::warn(&format!(
                                 "{}: turn ended with no visible output (stop_reason={:?}, reasoning_chars={})",
                                 Self::empty_turn_log_event(stop_reason.as_deref()),
                                 stop_reason,
-                                reasoning_content.len()
+                                reasoning_chars
                             ));
                             let _ = event_tx.send(ServerEvent::ProviderGuardrail {
                                 stop_reason: stop_reason.clone(),
