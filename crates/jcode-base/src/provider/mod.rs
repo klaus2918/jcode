@@ -2,7 +2,6 @@ mod accessors;
 mod account_failover;
 pub mod activation;
 pub mod anthropic;
-pub mod bedrock;
 mod catalog_routes;
 pub mod catalog_scheduler;
 mod dispatch;
@@ -79,7 +78,7 @@ pub(crate) use routing::{
 /// The memory sidecar ([`crate::sidecar::Sidecar`]) needs to make small,
 /// cheap model calls (rerank / relevance / extraction). It has dedicated fast
 /// paths for OpenAI (codex-spark) and Claude (haiku) OAuth, but jcode also runs
-/// on Copilot, Antigravity, Gemini, Cursor, Bedrock, and OpenRouter. For those
+/// on Copilot, Antigravity, Gemini, Cursor, and OpenRouter. For those
 /// providers there is no standalone sidecar HTTP client, so the sidecar falls
 /// back to *this* handle and dispatches through the already-working
 /// [`Provider::complete_simple`] path. `Server::new` registers the active
@@ -327,8 +326,6 @@ pub struct MultiProvider {
     /// Direct Anthropic API provider (no Python dependency)
     anthropic: RwLock<Option<Arc<dyn Provider>>>,
     openai: RwLock<Option<Arc<dyn Provider>>>,
-    /// AWS Bedrock provider (native Converse/ConverseStream, IAM/SigV4)
-    bedrock: RwLock<Option<Arc<bedrock::BedrockProvider>>>,
     /// OpenRouter API provider
     openrouter: RwLock<Option<Arc<dyn Provider>>>,
     /// Direct OpenAI-compatible runtimes keyed by profile id.
@@ -465,7 +462,6 @@ impl MultiProvider {
             ("cl", self.claude_provider().is_some()),
             ("an", self.anthropic_provider().is_some()),
             ("oa", self.openai_provider().is_some()),
-            ("be", self.bedrock_provider().is_some()),
             ("or", self.openrouter_provider().is_some()),
         ]
         .iter()
@@ -820,7 +816,6 @@ impl MultiProvider {
                 let runtime = std::env::var("JCODE_RUNTIME_PROVIDER").ok();
                 crate::provider_activity::source_key_for_provider_label(&label, runtime.as_deref())
             }
-            other => Self::provider_key(other).to_string(),
         }
     }
 
@@ -1055,16 +1050,6 @@ impl MultiProvider {
                 self.set_active_provider(ActiveProvider::OpenAI);
                 Ok(())
             }
-            ActiveProvider::Bedrock => {
-                let Some(bedrock) = self.bedrock_provider() else {
-                    anyhow::bail!(
-                        "AWS Bedrock credentials not available. Configure AWS credentials and region first."
-                    );
-                };
-                bedrock.set_model(model)?;
-                self.set_active_provider(ActiveProvider::Bedrock);
-                Ok(())
-            }
             ActiveProvider::OpenRouter => {
                 // Decide whether the slot must be rebound to the real
                 // OpenRouter API-key runtime. Rebinding repairs a slot left
@@ -1276,16 +1261,6 @@ impl MultiProvider {
             }
         }
 
-        let already_has_bedrock = self.bedrock_provider().is_some();
-        if !already_has_bedrock && bedrock::BedrockProvider::has_credentials() {
-            crate::logging::info("Hot-initialized AWS Bedrock provider after login");
-            *self
-                .bedrock
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                Some(Arc::new(bedrock::BedrockProvider::new()));
-        }
-
         if let Some(anthropic) = self.anthropic_provider() {
             self.spawn_post_auth_model_refresh(anthropic, "Anthropic");
         }
@@ -1297,9 +1272,6 @@ impl MultiProvider {
         }
         if let Some(openrouter) = self.openrouter_provider() {
             self.spawn_post_auth_model_refresh(openrouter, "OpenRouter");
-        }
-        if let Some(bedrock) = self.bedrock_provider() {
-            self.spawn_post_auth_model_refresh(bedrock, "AWS Bedrock");
         }
         crate::logging::auth_event("auth_changed_completed", "multi-provider", &[]);
     }
@@ -1434,7 +1406,6 @@ impl MultiProvider {
                     "openai"
                 }
             }
-            ActiveProvider::Bedrock => "bedrock",
             ActiveProvider::OpenRouter => {
                 if let Some(openrouter) = self.active_openrouter_execution_provider()
                     && let Some((_provider, api_method, _detail)) =
@@ -1623,7 +1594,6 @@ impl Provider for MultiProvider {
         match self.active_provider() {
             ActiveProvider::Claude => "Claude",
             ActiveProvider::OpenAI => "OpenAI",
-            ActiveProvider::Bedrock => "Bedrock",
             ActiveProvider::OpenRouter => "OpenRouter",
         }
     }
@@ -1685,10 +1655,6 @@ impl Provider for MultiProvider {
             }
             ActiveProvider::OpenAI => self
                 .openai_provider()
-                .map(|o| o.model())
-                .unwrap_or_else(config_default),
-            ActiveProvider::Bedrock => self
-                .bedrock_provider()
                 .map(|o| o.model())
                 .unwrap_or_else(config_default),
             ActiveProvider::OpenRouter => self
@@ -1805,10 +1771,6 @@ impl Provider for MultiProvider {
                 .unwrap_or(false),
             ActiveProvider::OpenAI => self
                 .openai_provider()
-                .map(|provider| provider.supports_image_input())
-                .unwrap_or(false),
-            ActiveProvider::Bedrock => self
-                .bedrock_provider()
                 .map(|provider| provider.supports_image_input())
                 .unwrap_or(false),
             ActiveProvider::OpenRouter => self
@@ -2006,10 +1968,6 @@ impl Provider for MultiProvider {
                     .openai_provider()
                     .map(|openai| openai.available_models_for_switching())
                     .unwrap_or_default(),
-                ActiveProvider::Bedrock => self
-                    .bedrock_provider()
-                    .map(|bedrock| bedrock.available_models_for_switching())
-                    .unwrap_or_default(),
                 ActiveProvider::OpenRouter => self
                     .active_openrouter_execution_provider()
                     .map(|openrouter| openrouter.available_models_for_switching())
@@ -2069,9 +2027,8 @@ impl Provider for MultiProvider {
         let claude = self.claude_provider();
         let openai = self.openai_provider();
         let openrouter = self.openrouter_provider();
-        let bedrock = self.bedrock_provider();
 
-        let (anthropic_result, claude_result, openai_result, openrouter_result, bedrock_result) = tokio::join!(
+        let (anthropic_result, claude_result, openai_result, openrouter_result) = tokio::join!(
             async {
                 match anthropic {
                     Some(provider) => provider.prefetch_models().await,
@@ -2096,12 +2053,6 @@ impl Provider for MultiProvider {
                     None => Ok(()),
                 }
             },
-            async {
-                match bedrock {
-                    Some(provider) => provider.prefetch_models().await,
-                    None => Ok(()),
-                }
-            },
         );
 
         let active_provider = self.active_provider();
@@ -2112,7 +2063,6 @@ impl Provider for MultiProvider {
             ("claude", claude_result),
             ("openai", openai_result),
             ("openrouter", openrouter_result),
-            ("bedrock", bedrock_result),
         ] {
             if let Err(err) = result {
                 let is_active = matches!(
@@ -2120,9 +2070,8 @@ impl Provider for MultiProvider {
                     (ActiveProvider::Claude, "anthropic" | "claude")
                         | (ActiveProvider::OpenAI, "openai")
                         | (ActiveProvider::OpenRouter, "openrouter")
-                        | (ActiveProvider::Bedrock, "bedrock")
                 );
-                if !is_active || matches!(provider_name, "bedrock") {
+                if !is_active {
                     optional_errors.push(format!("{provider_name}: {err}"));
                 } else {
                     errors.push(format!("{provider_name}: {err}"));
@@ -2185,7 +2134,6 @@ impl Provider for MultiProvider {
                 .openai_provider()
                 .map(|o| o.handles_tools_internally())
                 .unwrap_or(false),
-            ActiveProvider::Bedrock => false, // jcode executes Bedrock tool calls
             ActiveProvider::OpenRouter => false, // jcode executes tools
         }
     }
@@ -2199,7 +2147,6 @@ impl Provider for MultiProvider {
             ActiveProvider::OpenRouter => self
                 .active_openrouter_execution_provider()
                 .and_then(|o| o.reasoning_effort()),
-            _ => None,
         }
     }
 
@@ -2217,9 +2164,6 @@ impl Provider for MultiProvider {
                 .active_openrouter_execution_provider()
                 .ok_or_else(|| anyhow::anyhow!("OpenAI-compatible provider not available"))?
                 .set_reasoning_effort(effort),
-            _ => Err(anyhow::anyhow!(
-                "Reasoning effort is only supported for OpenAI, Anthropic, and compatible reasoning models"
-            )),
         }
     }
 
@@ -2237,7 +2181,6 @@ impl Provider for MultiProvider {
                 .active_openrouter_execution_provider()
                 .map(|o| o.available_efforts())
                 .unwrap_or_default(),
-            _ => vec![],
         }
     }
 
@@ -2341,10 +2284,6 @@ impl Provider for MultiProvider {
                 .openai_provider()
                 .map(|o| o.supports_compaction())
                 .unwrap_or(false),
-            ActiveProvider::Bedrock => self
-                .bedrock_provider()
-                .map(|o| o.uses_jcode_compaction())
-                .unwrap_or(false),
             ActiveProvider::OpenRouter => self
                 .active_openrouter_execution_provider()
                 .map(|o| o.supports_compaction())
@@ -2367,7 +2306,6 @@ impl Provider for MultiProvider {
                 .openai_provider()
                 .map(|o| o.uses_jcode_compaction())
                 .unwrap_or(false),
-            ActiveProvider::Bedrock => false,
             ActiveProvider::OpenRouter => self
                 .active_openrouter_execution_provider()
                 .map(|o| o.uses_jcode_compaction())
@@ -2416,9 +2354,6 @@ impl Provider for MultiProvider {
                     Err(anyhow::anyhow!("OpenAI provider unavailable"))
                 }
             }
-            ActiveProvider::Bedrock => Err(anyhow::anyhow!(
-                "AWS Bedrock does not support native compaction"
-            )),
             ActiveProvider::OpenRouter => {
                 let provider = self.active_openrouter_execution_provider();
                 if let Some(openrouter) = provider {
@@ -2460,10 +2395,6 @@ impl Provider for MultiProvider {
                 .openai_provider()
                 .map(|o| o.context_window())
                 .unwrap_or(DEFAULT_CONTEXT_LIMIT),
-            ActiveProvider::Bedrock => self
-                .bedrock_provider()
-                .map(|o| o.context_window())
-                .unwrap_or(DEFAULT_CONTEXT_LIMIT),
             ActiveProvider::OpenRouter => self
                 .active_openrouter_execution_provider()
                 .map(|o| o.context_window())
@@ -2491,11 +2422,6 @@ impl Provider for MultiProvider {
         } else {
             None
         };
-        let bedrock_provider = if self.bedrock_provider().is_some() {
-            Some(Arc::new(bedrock::BedrockProvider::new()))
-        } else {
-            None
-        };
         let openrouter = if self
             .openrouter
             .read()
@@ -2511,7 +2437,6 @@ impl Provider for MultiProvider {
             claude: RwLock::new(claude),
             anthropic: RwLock::new(anthropic),
             openai: RwLock::new(openai),
-            bedrock: RwLock::new(bedrock_provider),
             openrouter: RwLock::new(openrouter),
             openai_compatible_profiles: RwLock::new(HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
@@ -2567,7 +2492,6 @@ impl Provider for MultiProvider {
                 }
             }
             ActiveProvider::OpenAI => None,
-            ActiveProvider::Bedrock => None,
             ActiveProvider::OpenRouter => None,
         }
     }

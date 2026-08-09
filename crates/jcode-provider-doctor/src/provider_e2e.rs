@@ -947,7 +947,6 @@ async fn run_native_claude_api_checks(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeProviderKind {
     OpenAi,
-    Bedrock,
     Jcode,
     Azure,
 }
@@ -957,7 +956,6 @@ impl NativeProviderKind {
     pub fn from_normalized(provider_id: &str) -> Option<Self> {
         match provider_id {
             "openai" => Some(Self::OpenAi),
-            "bedrock" => Some(Self::Bedrock),
             "jcode" => Some(Self::Jcode),
             "azure-openai" => Some(Self::Azure),
             _ => None,
@@ -979,20 +977,6 @@ impl NativeProviderKind {
                 auth_source: "OpenAI ChatGPT OAuth / API key via auth.json",
                 auth_env_key: None,
                 login_hint: "jcode login --provider openai",
-            },
-            Self::Bedrock => NativeProviderSpec {
-                provider_id: "bedrock",
-                label: "AWS Bedrock",
-                contract: WiringContract {
-                    api_method: "bedrock".to_string(),
-                    route_provider: "AWS Bedrock".to_string(),
-                    expected_runtime: "bedrock",
-                    expected_namespace: None,
-                    switch_prefix: "bedrock:".to_string(),
-                },
-                auth_source: "AWS Bedrock API key / AWS credentials",
-                auth_env_key: Some("AWS_BEARER_TOKEN_BEDROCK"),
-                login_hint: "jcode login --provider bedrock",
             },
             Self::Jcode => NativeProviderSpec {
                 provider_id: "jcode",
@@ -1056,9 +1040,6 @@ impl NativeProviderKind {
                     credentials,
                 ))
             }
-            Self::Bedrock => {
-                std::sync::Arc::new(jcode_base::provider::bedrock::BedrockProvider::new())
-            }
             Self::Jcode => std::sync::Arc::new(jcode_base::provider::jcode::JcodeProvider::new()),
             Self::Azure => {
                 // Azure OpenAI is the OpenRouter transport configured via Azure
@@ -1093,15 +1074,6 @@ impl NativeProviderKind {
                     anyhow::bail!("resolved an empty OpenAI access token");
                 }
                 Ok("OpenAI credential resolved".to_string())
-            }
-            Self::Bedrock => {
-                if !jcode_base::provider::bedrock::BedrockProvider::has_credentials() {
-                    anyhow::bail!(
-                        "no AWS Bedrock credentials found (set AWS_BEARER_TOKEN_BEDROCK, AWS_PROFILE, \
-                         or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)"
-                    );
-                }
-                Ok("AWS Bedrock credential resolved".to_string())
             }
             Self::Jcode => {
                 if !jcode_base::subscription_catalog::has_credentials() {
@@ -1138,7 +1110,6 @@ impl NativeProviderKind {
         // Prefer cheaper "mini"/"flash"/"haiku"/"fast" tiers when present.
         let cheap_markers: &[&str] = match self {
             Self::OpenAi => &["mini", "nano"],
-            Self::Bedrock => &["haiku", "micro", "lite", "mini", "flash"],
             Self::Jcode => &["mini", "flash", "haiku", "lite", "nano"],
             Self::Azure => &["mini", "nano", "flash", "haiku"],
         };
@@ -1978,7 +1949,6 @@ mod tests {
     fn native_provider_kind_maps_every_generic_id() {
         for (id, expected) in [
             ("openai", NativeProviderKind::OpenAi),
-            ("bedrock", NativeProviderKind::Bedrock),
             ("jcode", NativeProviderKind::Jcode),
             ("azure-openai", NativeProviderKind::Azure),
         ] {
@@ -1996,7 +1966,6 @@ mod tests {
         // contract's api_method-derived routes will satisfy, and a stable id.
         for kind in [
             NativeProviderKind::OpenAi,
-            NativeProviderKind::Bedrock,
             NativeProviderKind::Jcode,
             NativeProviderKind::Azure,
         ] {
@@ -2097,7 +2066,6 @@ mod tests {
     fn native_provider_roster_matches_base_predicate() {
         for kind in [
             NativeProviderKind::OpenAi,
-            NativeProviderKind::Bedrock,
             NativeProviderKind::Jcode,
             NativeProviderKind::Azure,
         ] {

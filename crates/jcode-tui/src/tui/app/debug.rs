@@ -570,11 +570,6 @@ mod debug_profile;
 mod debug_script;
 
 pub(super) fn handle_debug_command(app: &mut App, trimmed: &str) -> bool {
-    if trimmed == "/debug-fixture gmail-draft" {
-        app.handle_debug_command("gmail-draft-fixture");
-        return true;
-    }
-
     if trimmed == "/debug-visual" || trimmed == "/debug-visual on" {
         use crate::tui::visual_debug;
         visual_debug::enable();
@@ -755,13 +750,8 @@ pub(super) fn handle_debug_command(app: &mut App, trimmed: &str) -> bool {
             content: format!(
                 "🎬 Recording stopped.\n\n\
                  **Events recorded:** {}\n\
-                 **Saved to:** `{}`\n\n\
-                 To replay as video, run:\n\
-                 ```bash\n\
-                 ./scripts/replay_recording.sh {}\n\
-                 ```",
+                 **Saved to:** `{}`\n",
                 event_count,
-                filepath.display(),
                 filepath.display()
             ),
             tool_calls: vec![],

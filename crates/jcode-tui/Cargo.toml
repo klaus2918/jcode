@@ -4,14 +4,13 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# Presentation layer for jcode: the terminal UI (`tui`) and the offline replay
-# `video_export`, extracted out of the monolithic root `jcode` crate so they
-# compile as a separate rustc unit. This crate builds on top of the application
-# core (`jcode-app-core`) and re-exports it via `pub use jcode_app_core::*`, so
-# every existing `crate::<module>` path (e.g. `crate::config`, `crate::server`)
-# keeps resolving unchanged across the tui code that was moved here. The root
-# `jcode` crate (cli + bin) in turn re-exports this crate via
-# `pub use jcode_tui::*`.
+# Presentation layer for jcode: the terminal UI (`tui`), extracted out of the
+# monolithic root `jcode` crate so it compiles as a separate rustc unit. This
+# crate builds on top of the application core (`jcode-app-core`) and re-exports
+# it via `pub use jcode_app_core::*`, so every existing `crate::<module>` path
+# (e.g. `crate::config`, `crate::server`) keeps resolving unchanged across the
+# tui code that was moved here. The root `jcode` crate (cli + bin) in turn
+# re-exports this crate via `pub use jcode_tui::*`.
 
 [lib]
 name = "jcode_tui"
@@ -75,7 +74,6 @@ jcode-tui-markdown = { path = "../jcode-tui-markdown" }
 jcode-tui-messages = { path = "../jcode-tui-messages" }
 jcode-tui-core = { path = "../jcode-tui-core" }
 jcode-tui-mermaid = { path = "../jcode-tui-mermaid" }
-jcode-tui-account-picker = { path = "../jcode-tui-account-picker" }
 jcode-tui-render = { path = "../jcode-tui-render" }
 jcode-tui-visual-debug = { path = "../jcode-tui-visual-debug" }
 jcode-tui-session-picker = { path = "../jcode-tui-session-picker", features = ["serde"] }
@@ -88,7 +86,7 @@ jcode-terminal-image = { path = "../jcode-terminal-image" }
 jcode-tui-workspace = { path = "../jcode-tui-workspace" }
 
 [features]
-default = ["pdf", "embeddings", "bedrock"]
+default = ["embeddings"]
 # Exposes bench-only debug helpers (e.g. debug_copy_selection_text_for_bench)
 # consumed by the dev `tui_bench` binary in the root crate.
 dev-bins = []
@@ -97,8 +95,6 @@ dev-bins = []
 jemalloc = ["jcode-app-core/jemalloc"]
 jemalloc-prof = ["jcode-app-core/jemalloc-prof"]
 embeddings = ["jcode-app-core/embeddings"]
-pdf = ["jcode-app-core/pdf"]
-bedrock = ["jcode-app-core/bedrock"]
 linux-compat-vendored-openssl = ["jcode-app-core/linux-compat-vendored-openssl"]
 mmdr-size-api = ["jcode-tui-mermaid/mmdr-size-api"]
 # Forwards the application core's `test-support` feature (and onward to

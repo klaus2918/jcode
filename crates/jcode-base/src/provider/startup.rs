@@ -115,7 +115,6 @@ impl MultiProvider {
         let has_claude_creds =
             auth::claude::load_credentials().is_ok() || anthropic::has_anthropic_api_key();
         let has_openai_creds = auth::codex::load_credentials().is_ok();
-        let has_bedrock_creds = bedrock::BedrockProvider::has_credentials();
         let has_openrouter_creds = openrouter::has_credentials();
 
         let claude = None;
@@ -128,12 +127,6 @@ impl MultiProvider {
 
         let openai = if has_openai_creds {
             external::instantiate_expected_external_provider(external::OPENAI_RUNTIME)
-        } else {
-            None
-        };
-
-        let bedrock_provider = if has_bedrock_creds {
-            Some(Arc::new(bedrock::BedrockProvider::new()))
         } else {
             None
         };
@@ -167,7 +160,6 @@ impl MultiProvider {
         let availability = ProviderAvailability {
             openai: openai.is_some(),
             claude: claude.is_some() || anthropic.is_some(),
-            bedrock: bedrock_provider.is_some(),
             openrouter: openrouter.is_some(),
         };
         let mut active = Self::auto_default_provider(availability);
@@ -216,7 +208,7 @@ impl MultiProvider {
                 }
             } else {
                 crate::logging::warn(&format!(
-                    "Unknown default_provider '{}' in config (expected: claude|openai|bedrock|openrouter or an OpenAI-compatible profile)",
+                    "Unknown default_provider '{}' in config (expected: claude|openai|openrouter or an OpenAI-compatible profile)",
                     pref
                 ));
             }
@@ -226,7 +218,6 @@ impl MultiProvider {
             claude: RwLock::new(claude),
             anthropic: RwLock::new(anthropic),
             openai: RwLock::new(openai),
-            bedrock: RwLock::new(bedrock_provider),
             openrouter: RwLock::new(openrouter),
             openai_compatible_profiles: RwLock::new(HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
@@ -254,7 +245,7 @@ impl MultiProvider {
         result.spawn_openai_catalog_refresh_if_needed();
         result.auto_select_active_multi_account();
         crate::logging::info(&format!(
-            "[TIMING] provider_init: claude={}, anthropic={}, openai={}, bedrock={}, openrouter={}, total={}ms",
+            "[TIMING] provider_init: claude={}, anthropic={}, openai={}, openrouter={}, total={}ms",
             result
                 .claude
                 .read()
@@ -267,11 +258,6 @@ impl MultiProvider {
                 .is_some(),
             result
                 .openai
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_some(),
-            result
-                .bedrock
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_some(),

@@ -971,10 +971,7 @@ pub fn install_local_artifact_blocking(
         let temp_path =
             std::env::temp_dir().join(format!("jcode-update-{}-local", std::process::id()));
         fs::copy(artifact_path, &temp_path).with_context(|| {
-            format!(
-                "Failed to stage local artifact {}",
-                artifact_path.display()
-            )
+            format!("Failed to stage local artifact {}", artifact_path.display())
         })?;
         crate::platform::set_permissions_executable(&temp_path)?;
         let version = probe_binary_version(&temp_path)?;
@@ -1521,7 +1518,6 @@ mod tests {
         // 第 4+ 段被忽略（split('.') 的宽松语义），目录名含 `.` 无害
         assert!(is_semver_like("0.64.2.."));
     }
-
 
     #[test]
     fn test_should_auto_update_dev_build() {

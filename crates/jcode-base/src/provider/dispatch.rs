@@ -90,17 +90,6 @@ impl MultiProvider {
                     ))
                 }
             }
-            ActiveProvider::Bedrock => {
-                if let Some(bedrock) = self.bedrock_provider() {
-                    bedrock
-                        .complete(messages, tools, system, resume_session_id)
-                        .await
-                } else {
-                    Err(anyhow::anyhow!(
-                        "AWS Bedrock is not available. Configure AWS credentials and region, or set AWS_PROFILE/AWS_REGION."
-                    ))
-                }
-            }
             ActiveProvider::OpenRouter => {
                 let openrouter = self.active_openrouter_execution_provider();
                 if let Some(openrouter) = openrouter {
@@ -168,23 +157,6 @@ impl MultiProvider {
                 } else {
                     Err(anyhow::anyhow!(
                         "OpenAI credentials not available. Run `jcode login --provider openai` to log in."
-                    ))
-                }
-            }
-            ActiveProvider::Bedrock => {
-                if let Some(bedrock) = self.bedrock_provider() {
-                    bedrock
-                        .complete_split(
-                            messages,
-                            tools,
-                            system_static,
-                            system_dynamic,
-                            resume_session_id,
-                        )
-                        .await
-                } else {
-                    Err(anyhow::anyhow!(
-                        "AWS Bedrock is not available. Configure AWS credentials and region, or set AWS_PROFILE/AWS_REGION."
                     ))
                 }
             }

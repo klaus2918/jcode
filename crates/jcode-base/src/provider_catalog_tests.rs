@@ -337,7 +337,6 @@ fn matrix_tui_login_selection_supports_numbers_and_names() {
         resolve_login_selection("5", &providers).map(|provider| provider.id),
         Some("ollama")
     );
-    assert!(resolve_login_selection("google", &providers).is_none());
 }
 
 #[test]

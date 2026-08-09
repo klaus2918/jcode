@@ -6,7 +6,7 @@ async fn maybe_run_auth_test_smoke(
     enabled: bool,
     prompt: &str,
 ) {
-    if enabled && report.success && target.supports_smoke() {
+    if enabled && report.success {
         match kind.run(target, model, prompt).await {
             Ok(output) => {
                 let ok = output.contains("AUTH_TEST_OK");
@@ -23,8 +23,6 @@ async fn maybe_run_auth_test_smoke(
             }
             Err(err) => report.push_step(kind.step_name(), false, format!("{err:#}")),
         }
-    } else if !target.supports_smoke() {
-        report.push_step(kind.step_name(), true, kind.unsupported_detail());
     } else if !enabled {
         report.push_step(kind.step_name(), true, kind.skipped_by_flag_detail());
     }
@@ -547,7 +545,6 @@ async fn populate_auth_test_target_report(
     match target {
         AuthTestTarget::Claude => probe_claude_auth(&mut report).await,
         AuthTestTarget::Openai => probe_openai_auth(&mut report).await,
-        AuthTestTarget::Google => probe_google_auth(&mut report).await,
     }
 
     maybe_run_auth_test_smoke(

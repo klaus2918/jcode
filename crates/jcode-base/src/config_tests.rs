@@ -806,7 +806,7 @@ fn tool_config_defaults_to_full_toolset() {
 #[test]
 fn tool_config_explicit_enabled_uses_allow_list() {
     let cfg = ToolConfig {
-        enabled: vec!["gmail".to_string()],
+        enabled: vec!["webfetch".to_string()],
         ..ToolConfig::default()
     };
     let selection = cfg.selection();
@@ -814,8 +814,8 @@ fn tool_config_explicit_enabled_uses_allow_list() {
         .allowed_tools
         .expect("explicit enabled is an allow-list");
 
-    assert!(allowed.contains("gmail"));
-    assert!(!selection.disabled_tools.contains("gmail"));
+    assert!(allowed.contains("webfetch"));
+    assert!(!selection.disabled_tools.contains("webfetch"));
 }
 
 #[test]
@@ -827,20 +827,20 @@ fn tool_config_all_enabled_sentinel_keeps_unrestricted_toolset() {
     let selection = cfg.selection();
 
     assert!(selection.allowed_tools.is_none());
-    assert!(!selection.disabled_tools.contains("gmail"));
+    assert!(!selection.disabled_tools.contains("webfetch"));
 }
 
 #[test]
 fn tool_config_explicit_disabled_overrides_all_enabled_sentinel() {
     let cfg = ToolConfig {
         enabled: vec!["*".to_string()],
-        disabled: vec!["gmail".to_string()],
+        disabled: vec!["webfetch".to_string()],
         ..ToolConfig::default()
     };
     let selection = cfg.selection();
 
     assert!(selection.allowed_tools.is_none());
-    assert!(selection.disabled_tools.contains("gmail"));
+    assert!(selection.disabled_tools.contains("webfetch"));
 }
 
 #[test]
@@ -884,7 +884,7 @@ fn tool_config_minimal_profile_allows_core_coding_tools() {
     assert!(allowed.contains("write"));
     assert!(allowed.contains("apply_patch"));
     assert!(allowed.contains("agentgrep"));
-    assert!(!allowed.contains("gmail"));
+    assert!(!allowed.contains("webfetch"));
     assert!(!allowed.contains("swarm"));
 }
 
@@ -894,9 +894,9 @@ fn tool_config_explicit_enabled_and_disabled_lists_compose() {
         enabled: vec![
             "shell".to_string(),
             "read_file".to_string(),
-            "gmail".to_string(),
+            "webfetch".to_string(),
         ],
-        disabled: vec!["gmail".to_string()],
+        disabled: vec!["webfetch".to_string()],
         ..ToolConfig::default()
     };
     let selection = cfg.selection();
@@ -908,8 +908,8 @@ fn tool_config_explicit_enabled_and_disabled_lists_compose() {
     assert!(allowed.contains("read"));
     assert!(!allowed.contains("shell"));
     assert!(!allowed.contains("read_file"));
-    assert!(!allowed.contains("gmail"));
-    assert!(selection.disabled_tools.contains("gmail"));
+    assert!(!allowed.contains("webfetch"));
+    assert!(selection.disabled_tools.contains("webfetch"));
 }
 
 #[test]
@@ -928,13 +928,13 @@ fn tool_config_none_profile_disables_all_tools() {
 #[test]
 fn tool_config_disabled_only_keeps_full_profile_with_deny_list() {
     let cfg = ToolConfig {
-        disabled: vec!["gmail".to_string(), "swarm".to_string()],
+        disabled: vec!["webfetch".to_string(), "swarm".to_string()],
         ..ToolConfig::default()
     };
     let selection = cfg.selection();
 
     assert!(selection.allowed_tools.is_none());
-    assert!(selection.disabled_tools.contains("gmail"));
+    assert!(selection.disabled_tools.contains("webfetch"));
     assert!(selection.disabled_tools.contains("swarm"));
     assert!(!selection.disabled_tools.contains("bash"));
 }
@@ -1638,96 +1638,6 @@ fn migrate_idle_animation_off_noops_without_enabled_value() {
     assert_eq!(content, original);
 
     restore_env_var("JCODE_HOME", prev_home);
-}
-
-#[test]
-fn frozen_machine_written_sponsors_optout_is_repaired() {
-    let raw = "[sponsors]\nenabled = false\nendpoint = \"https://api.jcode.sh/v1/discovery\"\n";
-    let mut config: Config = toml::from_str(raw).expect("parse");
-    assert!(!config.sponsors.enabled);
-    config.repair_frozen_sponsors_optout(raw);
-    assert!(
-        config.sponsors.enabled,
-        "a whole-struct config save must not permanently disable discovery"
-    );
-}
-
-/// End-to-end: a real config file frozen by an old save must load with
-/// discovery enabled, and the next save must drop the section entirely so the
-/// freeze cannot recur.
-#[test]
-fn frozen_sponsors_optout_recovers_through_a_real_config_file() {
-    let _guard = crate::storage::lock_test_env();
-    let prev_home = std::env::var_os("JCODE_HOME");
-    let dir = tempfile::TempDir::new().expect("tempdir");
-    crate::env::set_var("JCODE_HOME", dir.path());
-    Config::invalidate_cache();
-
-    let path = Config::path().expect("config path");
-    std::fs::create_dir_all(path.parent().expect("config parent")).expect("create config parent");
-    std::fs::write(
-        &path,
-        "[display]\ncentered = false\n\n[sponsors]\nenabled = false\nendpoint = \"https://api.jcode.sh/v1/discovery\"\n",
-    )
-    .expect("write frozen config");
-
-    let loaded = Config::load();
-    assert!(
-        loaded.sponsors.enabled,
-        "loading a machine-frozen opt-out must restore the shipped default"
-    );
-
-    loaded.save().expect("save config");
-    let rewritten = std::fs::read_to_string(&path).expect("read config");
-    assert!(
-        !rewritten.contains("[sponsors]"),
-        "saving must not write the discovery section back: {rewritten}"
-    );
-    assert!(
-        Config::load().sponsors.enabled,
-        "discovery must stay enabled after a save/load round trip"
-    );
-
-    if let Some(prev) = prev_home {
-        crate::env::set_var("JCODE_HOME", prev);
-    } else {
-        crate::env::remove_var("JCODE_HOME");
-    }
-    Config::invalidate_cache();
-}
-
-#[test]
-fn legacy_endpoint_optout_is_also_repaired() {
-    let raw =
-        "[sponsors]\nenabled = false\nendpoint = \"https://api.solosystems.dev/v1/discovery\"\n";
-    let mut config: Config = toml::from_str(raw).expect("parse");
-    config.repair_frozen_sponsors_optout(raw);
-    assert!(config.sponsors.enabled);
-}
-
-#[test]
-fn hand_written_sponsors_optout_is_respected() {
-    for raw in [
-        "[sponsors]\nenabled = false\n",
-        "[sponsors]\nenabled = false\nendpoint = \"https://discovery.internal/v1\"\n",
-    ] {
-        let mut config: Config = toml::from_str(raw).expect("parse");
-        config.repair_frozen_sponsors_optout(raw);
-        assert!(
-            !config.sponsors.enabled,
-            "explicit user opt-out must survive: {raw}"
-        );
-    }
-}
-
-#[test]
-fn default_sponsors_section_is_not_written_back() {
-    let config = Config::default();
-    let rendered = toml::to_string_pretty(&config).expect("serialize");
-    assert!(
-        !rendered.contains("[sponsors]"),
-        "default discovery settings must not be baked into config.toml"
-    );
 }
 
 #[test]

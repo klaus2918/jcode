@@ -5,7 +5,6 @@ use std::borrow::Cow;
 pub enum ActiveProvider {
     Claude,
     OpenAI,
-    Bedrock,
     OpenRouter,
 }
 
@@ -13,7 +12,6 @@ pub enum ActiveProvider {
 pub struct ProviderAvailability {
     pub openai: bool,
     pub claude: bool,
-    pub bedrock: bool,
     pub openrouter: bool,
 }
 
@@ -22,7 +20,6 @@ impl ProviderAvailability {
         match provider {
             ActiveProvider::Claude => self.claude,
             ActiveProvider::OpenAI => self.openai,
-            ActiveProvider::Bedrock => self.bedrock,
             ActiveProvider::OpenRouter => self.openrouter,
         }
     }
@@ -33,8 +30,6 @@ pub fn auto_default_provider(availability: ProviderAvailability) -> ActiveProvid
         ActiveProvider::Claude
     } else if availability.openai {
         ActiveProvider::OpenAI
-    } else if availability.bedrock {
-        ActiveProvider::Bedrock
     } else if availability.openrouter {
         ActiveProvider::OpenRouter
     } else {
@@ -46,7 +41,6 @@ pub fn parse_provider_hint(value: &str) -> Option<ActiveProvider> {
     match value.trim().to_ascii_lowercase().as_str() {
         "claude" | "anthropic" => Some(ActiveProvider::Claude),
         "openai" => Some(ActiveProvider::OpenAI),
-        "bedrock" | "aws-bedrock" | "aws_bedrock" => Some(ActiveProvider::Bedrock),
         "openrouter" => Some(ActiveProvider::OpenRouter),
         _ => None,
     }
@@ -56,7 +50,6 @@ pub fn provider_label(provider: ActiveProvider) -> &'static str {
     match provider {
         ActiveProvider::Claude => "Anthropic",
         ActiveProvider::OpenAI => "OpenAI",
-        ActiveProvider::Bedrock => "AWS Bedrock",
         ActiveProvider::OpenRouter => "OpenRouter",
     }
 }
@@ -65,7 +58,6 @@ pub fn provider_key(provider: ActiveProvider) -> &'static str {
     match provider {
         ActiveProvider::Claude => "claude",
         ActiveProvider::OpenAI => "openai",
-        ActiveProvider::Bedrock => "bedrock",
         ActiveProvider::OpenRouter => "openrouter",
     }
 }
@@ -74,7 +66,6 @@ pub fn provider_from_model_key(key: &str) -> Option<ActiveProvider> {
     match key {
         "claude" => Some(ActiveProvider::Claude),
         "openai" => Some(ActiveProvider::OpenAI),
-        "bedrock" => Some(ActiveProvider::Bedrock),
         "openrouter" => Some(ActiveProvider::OpenRouter),
         _ => None,
     }
@@ -110,7 +101,6 @@ pub fn cli_provider_arg_for_session_key(key: &str) -> Option<&'static str> {
     }
     match base {
         "openrouter" => Some("openrouter"),
-        "bedrock" => Some("bedrock"),
         "code-assist-oauth" | "google" => Some("google"),
         // openai-compatible / custom profiles, remote-catalog, current, and any
         // unknown key have no clean standalone CLI provider value (they need a
@@ -134,8 +124,6 @@ pub fn explicit_model_provider_prefix(model: &str) -> Option<(ActiveProvider, &'
         Some((ActiveProvider::OpenAI, "openai-oauth:", rest))
     } else if let Some(rest) = model.strip_prefix("openai:") {
         Some((ActiveProvider::OpenAI, "openai:", rest))
-    } else if let Some(rest) = model.strip_prefix("bedrock:") {
-        Some((ActiveProvider::Bedrock, "bedrock:", rest))
     } else if let Some(rest) = model.strip_prefix("openrouter:") {
         Some((ActiveProvider::OpenRouter, "openrouter:", rest))
     } else {
@@ -154,7 +142,6 @@ pub fn explicit_model_provider_prefix(model: &str) -> Option<(ActiveProvider, &'
             "openai-api" => Some((ActiveProvider::OpenAI, "openai-api/", rest)),
             "openai-oauth" => Some((ActiveProvider::OpenAI, "openai-oauth/", rest)),
             "openai" => Some((ActiveProvider::OpenAI, "openai/", rest)),
-            "bedrock" => Some((ActiveProvider::Bedrock, "bedrock/", rest)),
             "openrouter" => Some((ActiveProvider::OpenRouter, "openrouter/", rest)),
             // `anthropic/...` 等厂商前缀是 OpenRouter 的 vendor/model 模型名，
             // 不当作 provider 路由，避免误伤（冒号别名仍可用 `anthropic:`）。
@@ -258,26 +245,17 @@ pub fn fallback_sequence(active: ActiveProvider) -> Vec<ActiveProvider> {
         ActiveProvider::Claude => vec![
             ActiveProvider::Claude,
             ActiveProvider::OpenAI,
-            ActiveProvider::Bedrock,
             ActiveProvider::OpenRouter,
         ],
         ActiveProvider::OpenAI => vec![
             ActiveProvider::OpenAI,
             ActiveProvider::Claude,
-            ActiveProvider::Bedrock,
-            ActiveProvider::OpenRouter,
-        ],
-        ActiveProvider::Bedrock => vec![
-            ActiveProvider::Bedrock,
-            ActiveProvider::Claude,
-            ActiveProvider::OpenAI,
             ActiveProvider::OpenRouter,
         ],
         ActiveProvider::OpenRouter => vec![
             ActiveProvider::OpenRouter,
             ActiveProvider::Claude,
             ActiveProvider::OpenAI,
-            ActiveProvider::Bedrock,
         ],
     }
 }
@@ -328,7 +306,6 @@ mod tests {
             cli_provider_arg_for_session_key("openrouter"),
             Some("openrouter")
         );
-        assert_eq!(cli_provider_arg_for_session_key("bedrock"), Some("bedrock"));
         // Case-insensitive and whitespace tolerant.
         assert_eq!(
             cli_provider_arg_for_session_key("  Anthropic-API-Key "),
@@ -382,12 +359,6 @@ mod tests {
                 ActiveProvider::OpenAI,
                 "openai-api:",
                 "gpt-5",
-            ),
-            (
-                "bedrock:anthropic.claude",
-                ActiveProvider::Bedrock,
-                "bedrock:",
-                "anthropic.claude",
             ),
             (
                 "openrouter:meta/llama",
@@ -572,10 +543,6 @@ mod tests {
             explicit_model_provider_prefix("openrouter/deepseek/deepseek-chat")
                 .map(|(p, _, m)| (p, m)),
             Some((ActiveProvider::OpenRouter, "deepseek/deepseek-chat"))
-        );
-        assert_eq!(
-            explicit_model_provider_prefix("bedrock/claude-3-5-sonnet").map(|(p, _, _)| p),
-            Some(ActiveProvider::Bedrock)
         );
     }
 

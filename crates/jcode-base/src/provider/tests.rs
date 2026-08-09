@@ -211,7 +211,6 @@ fn test_multi_provider_with_openai() -> MultiProvider {
         claude: RwLock::new(None),
         anthropic: RwLock::new(None),
         openai: RwLock::new(Some(test_openai_runtime() as Arc<dyn Provider>)),
-        bedrock: RwLock::new(None),
         openrouter: RwLock::new(None),
         openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
         active_openai_compatible_profile: RwLock::new(None),
@@ -858,10 +857,12 @@ id = "deepseek-v4-pro"
                 .iter()
                 .find(|r| r.model == *model)
                 .unwrap_or_else(|| panic!("{model} should have a route: {routes:?}"));
-            assert!(route.available, "{model} route should be available: {route:?}");
+            assert!(
+                route.available,
+                "{model} route should be available: {route:?}"
+            );
             assert_eq!(
-                route.api_method,
-                "openai-compatible:deepseek-official",
+                route.api_method, "openai-compatible:deepseek-official",
                 "route must point back at the named profile: {route:?}"
             );
         }

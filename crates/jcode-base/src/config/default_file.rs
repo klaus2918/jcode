@@ -619,16 +619,6 @@ desktop_notifications = true
 # jade_relay_launch_enabled = false  # Allow cloud device commands to open headed local sessions.
 # jade_relay_launch_working_dir = "" # Optional default cwd for launched sessions.
 
-# [sponsors] # Legacy config section name retained for compatibility.
-# Integration discovery (enabled by default; set enabled = false to opt out).
-# When enabled, the agent gains a `discover_tools` tool listing third-party
-# developer tools from Jcode's hosted integration directory. Some providers
-# may share revenue with Jcode when a referred user becomes a customer, but
-# partnership status never influences recommendations.
-# See https://jcode.sh/discovery-tools
-# enabled = true
-# endpoint = "https://api.jcode.sh/v1/discovery"
-
 # ---- Model providers (named-table style) ----
 # Model access is configured through [providers.<name>] tables plus the
 # unified ~/.jcode/.env key file. Generate entries with

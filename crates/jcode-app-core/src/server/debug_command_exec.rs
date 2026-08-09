@@ -535,10 +535,7 @@ pub(super) async fn execute_debug_command(
     }
 
     if trimmed.starts_with("set_provider:") {
-        let raw_provider = trimmed
-            .strip_prefix("set_provider:")
-            .unwrap_or("")
-            .trim();
+        let raw_provider = trimmed.strip_prefix("set_provider:").unwrap_or("").trim();
         let provider = raw_provider.to_lowercase();
         let claude_usage = crate::usage::get_sync();
         let claude_usage_exhausted =
@@ -589,7 +586,7 @@ pub(super) async fn execute_debug_command(
                                 return Err(anyhow::anyhow!(
                                     "Named provider '{}' has no model configured; use set_model:<profile>:<model>",
                                     raw_provider
-                                ))
+                                ));
                             }
                         }
                     }

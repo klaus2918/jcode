@@ -1187,11 +1187,7 @@ pub fn provider_for_model_with_hint(
     }
 
     let model = model.trim();
-    if model.contains('@') {
-        Some("openrouter")
-    } else if crate::provider::bedrock::BedrockProvider::is_bedrock_model_id(model) {
-        Some("bedrock")
-    } else if model.contains('/') {
+    if model.contains('@') || model.contains('/') {
         Some("openrouter")
     } else if model.starts_with("claude-") {
         Some("claude")

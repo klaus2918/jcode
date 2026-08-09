@@ -60,11 +60,8 @@ pub fn runtime_id_for_login_provider(
         LoginProviderTarget::OpenAi => Some(RuntimeProviderId::OpenAi),
         LoginProviderTarget::OpenAiApiKey => Some(RuntimeProviderId::OpenAiApiKey),
         LoginProviderTarget::OpenRouter => Some(RuntimeProviderId::OpenRouter),
-        LoginProviderTarget::Bedrock => Some(RuntimeProviderId::Bedrock),
         LoginProviderTarget::Azure => Some(RuntimeProviderId::AzureOpenAi),
         LoginProviderTarget::OpenAiCompatible(_) => Some(RuntimeProviderId::OpenAiCompatible),
-        // Google/Gmail auth is for tool access, not model-runtime routing.
-        LoginProviderTarget::Google => None,
     }
 }
 
@@ -135,15 +132,11 @@ mod tests {
             if !integration.supports_surface(LoginProviderSurface::AuthStatus) {
                 continue;
             }
-            if matches!(integration.descriptor.target, LoginProviderTarget::Google) {
-                assert_eq!(integration.runtime_id, None);
-            } else {
-                assert!(
-                    integration.runtime_id.is_some(),
-                    "auth status provider {} should have a runtime identity",
-                    integration.id()
-                );
-            }
+            assert!(
+                integration.runtime_id.is_some(),
+                "auth status provider {} should have a runtime identity",
+                integration.id()
+            );
         }
     }
 }

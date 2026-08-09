@@ -226,7 +226,7 @@ pub fn apply_login_provider_profile_env(provider: LoginProviderDescriptor) {
             // not clear these inherited runtime vars before credential detection.
             crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
         }
-        LoginProviderTarget::AutoImport | LoginProviderTarget::Google => {}
+        LoginProviderTarget::AutoImport => {}
         _ => {
             // A later non-compatible login selection must not inherit a stale
             // compatible-provider profile from an earlier bootstrap/login path.

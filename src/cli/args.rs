@@ -2,12 +2,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub(crate) enum GoogleAccessTierArg {
-    Full,
-    Readonly,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum ProviderAuthArg {
     /// Send the API key as Authorization: Bearer <key> (OpenAI-compatible default)
     Bearer,

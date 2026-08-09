@@ -1,35 +1,35 @@
 use super::*;
 
-    #[test]
-    fn update_command_parses_local_artifact_flag() {
-        // 本地安装包模式：jcode update --local <package>
-        let args = Args::try_parse_from([
-            "jcode",
-            "update",
-            "--local",
-            "D:\\dist\\jcode-windows-x86_64-2dc3213a6.exe",
-        ])
-        .expect("update --local should parse");
-        match args.command {
-            Some(Command::Update { local }) => {
-                let local = local.expect("local path should be set");
-                assert_eq!(
-                    local.as_os_str(),
-                    "D:\\dist\\jcode-windows-x86_64-2dc3213a6.exe"
-                );
-            }
-            other => panic!("unexpected command: {:?}", other),
+#[test]
+fn update_command_parses_local_artifact_flag() {
+    // 本地安装包模式：jcode update --local <package>
+    let args = Args::try_parse_from([
+        "jcode",
+        "update",
+        "--local",
+        "D:\\dist\\jcode-windows-x86_64-2dc3213a6.exe",
+    ])
+    .expect("update --local should parse");
+    match args.command {
+        Some(Command::Update { local }) => {
+            let local = local.expect("local path should be set");
+            assert_eq!(
+                local.as_os_str(),
+                "D:\\dist\\jcode-windows-x86_64-2dc3213a6.exe"
+            );
         }
+        other => panic!("unexpected command: {:?}", other),
     }
+}
 
-    #[test]
-    fn update_command_parses_without_local_flag() {
-        let args = Args::try_parse_from(["jcode", "update"]).unwrap();
-        match args.command {
-            Some(Command::Update { local }) => assert!(local.is_none()),
-            other => panic!("unexpected command: {:?}", other),
-        }
+#[test]
+fn update_command_parses_without_local_flag() {
+    let args = Args::try_parse_from(["jcode", "update"]).unwrap();
+    match args.command {
+        Some(Command::Update { local }) => assert!(local.is_none()),
+        other => panic!("unexpected command: {:?}", other),
     }
+}
 
 #[test]
 fn server_start_and_internal_keepalive_parse() {

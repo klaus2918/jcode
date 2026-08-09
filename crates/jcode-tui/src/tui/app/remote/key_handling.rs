@@ -1145,14 +1145,10 @@ async fn handle_remote_key_internal(
                 {
                     let provider_name = provider_name.trim();
                     if provider_name.is_empty() {
-                        app.push_display_message(DisplayMessage::error(
-                            "Usage: /provider <name>",
-                        ));
+                        app.push_display_message(DisplayMessage::error("Usage: /provider <name>"));
                         return Ok(());
                     }
-                    if let Some(reason) =
-                        app_mod::model_context::runtime_switch_busy_reason(app)
-                    {
+                    if let Some(reason) = app_mod::model_context::runtime_switch_busy_reason(app) {
                         app.push_display_message(DisplayMessage::error(
                             app_mod::model_context::model_switch_busy_message(reason),
                         ));

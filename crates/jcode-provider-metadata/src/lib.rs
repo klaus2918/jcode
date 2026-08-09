@@ -30,10 +30,8 @@ pub enum LoginProviderTarget {
     OpenAi,
     OpenAiApiKey,
     OpenRouter,
-    Bedrock,
     Azure,
     OpenAiCompatible(OpenAiCompatibleProfile),
-    Google,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,9 +41,7 @@ pub enum LoginProviderAuthStateKey {
     Anthropic,
     OpenAi,
     Azure,
-    Bedrock,
     OpenRouterLike,
-    Google,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -516,14 +512,6 @@ mod tests {
             resolve_login_provider("lm-studio").map(|provider| provider.id),
             Some("lmstudio")
         );
-        assert_eq!(
-            resolve_login_provider("gmail").map(|provider| provider.id),
-            Some("google")
-        );
-        assert_eq!(
-            resolve_login_provider("aws-bedrock").map(|provider| provider.id),
-            Some("bedrock")
-        );
     }
 
     #[test]
@@ -574,10 +562,6 @@ mod tests {
             Some("openrouter")
         );
         assert_eq!(
-            resolve_login_selection("7", &providers).map(|provider| provider.id),
-            Some("bedrock")
-        );
-        assert_eq!(
             resolve_login_selection("8", &providers).map(|provider| provider.id),
             Some("azure")
         );
@@ -613,20 +597,12 @@ mod tests {
             Some("openrouter")
         );
         assert_eq!(
-            resolve_login_selection("7", &providers).map(|provider| provider.id),
-            Some("bedrock")
-        );
-        assert_eq!(
             resolve_login_selection("8", &providers).map(|provider| provider.id),
             Some("azure")
         );
         assert_eq!(
             resolve_login_selection("9", &providers).map(|provider| provider.id),
             Some("openai-compatible")
-        );
-        assert_eq!(
-            resolve_login_selection("bedrock", &providers).map(|provider| provider.id),
-            Some("bedrock")
         );
     }
 }

@@ -20,8 +20,6 @@ pub struct AuthStatus {
     pub openrouter: AuthState,
     /// Azure OpenAI provider - via Entra ID or API key
     pub azure: AuthState,
-    /// AWS Bedrock provider - via Bedrock API key or AWS credentials
-    pub bedrock: AuthState,
     /// OpenAI provider - via OAuth or API key
     pub openai: AuthState,
     /// OpenAI has OAuth credentials
@@ -36,10 +34,6 @@ pub struct AuthStatus {
     pub azure_has_api_key: bool,
     /// Azure OpenAI is configured for Entra ID authentication
     pub azure_uses_entra: bool,
-    /// Google/Gmail OAuth configured
-    pub google: AuthState,
-    /// Google Gmail has send capability (Full tier)
-    pub google_can_send: bool,
 }
 
 /// Auth state for Anthropic which has multiple auth methods

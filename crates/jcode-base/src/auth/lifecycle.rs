@@ -258,13 +258,12 @@ fn globally_preferred_model_rank(model: &str) -> (u8, usize) {
 /// raw OpenRouter, ...), which preserves live-catalog order.
 ///
 /// The Claude/OpenAI subscription default bias mirrors jcode's global default
-/// model. Bedrock/Azure are native hosted catalogs whose route lists are often
-/// ordered oldest-first, so they get an explicit curated order too.
+/// model.
 fn provider_preferred_model_orders(
     _activation: &AuthActivationResult,
 ) -> &'static [&'static [&'static str]] {
     // 配置驱动模式下只剩 jcode / openai-compatible 接入，均无旗舰排序；
-    // 内置 claude/openai/bedrock/azure 已从注册表移除，不再需要 curated 顺序。
+    // 内置 provider 已从注册表移除，不再需要 curated 顺序。
     &[]
 }
 
@@ -289,12 +288,10 @@ fn preferred_model_rank(orders: &[&[&str]], model: &str) -> usize {
 /// Normalize a model id for flagship-preference comparison: lowercase, drop a
 /// `[1m]` long-context suffix, strip a trailing 8-digit `-YYYYMMDD` date so live
 /// dated ids (`claude-haiku-4-5-20251001`) match bare canonical ids
-/// (`claude-haiku-4-5`), and strip hosted-vendor prefixes/suffixes so Bedrock and
-/// proxy ids line up with the curated bare ids.
+/// (`claude-haiku-4-5`), and strip hosted-vendor prefixes/suffixes so proxied
+/// ids line up with the curated bare ids.
 ///
 /// Examples:
-///   `us.anthropic.claude-opus-4-20250514-v1:0` -> `claude-opus-4`
-///   `anthropic.claude-3-5-sonnet-20241022-v2:0` -> `claude-3-5-sonnet`
 ///   `accounts/fireworks/models/qwen3-coder` -> `qwen3-coder`
 ///   `models/gemini-3-pro-preview` -> `gemini-3-pro`
 fn normalize_model_for_preference(model: &str) -> String {
@@ -305,12 +302,9 @@ fn normalize_model_for_preference(model: &str) -> String {
         id = id[idx + 1..].to_string();
     }
 
-    // Drop a trailing Bedrock version tag (`-v1:0`, `-v2:0`, `:0`).
+    // Drop a trailing version tag (`-v1:0`, `-v2:0`, `:0`).
     if let Some(idx) = id.find(":0") {
         id = id[..idx].to_string();
-    }
-    if let Some(stripped) = strip_trailing_bedrock_version(&id) {
-        id = stripped;
     }
 
     // Drop a trailing release-date suffix.
@@ -324,37 +318,14 @@ fn normalize_model_for_preference(model: &str) -> String {
         }
     }
 
-    // Drop a leading hosted-vendor segment (`anthropic.`, `us.anthropic.`,
-    // `meta.`, `amazon.`, `mistral.`) so `anthropic.claude-opus-4` matches the
-    // curated `claude-opus-4`. Keep `amazon.nova`/`meta.llama`/`mistral.` whole
-    // because those families are listed with their vendor prefix in
-    // `ALL_BEDROCK_MODELS`; only strip the region + the redundant `anthropic.`.
-    id = strip_bedrock_region_prefix(&id);
+    // Drop a leading hosted-vendor segment (`anthropic.`) so
+    // `anthropic.claude-opus-4` matches the curated `claude-opus-4`. Other
+    // vendor prefixes (`amazon.nova`, `meta.llama`, `mistral.`) are kept whole.
     if let Some(rest) = id.strip_prefix("anthropic.") {
         id = rest.to_string();
     }
 
     id
-}
-
-/// Strip a leading Bedrock region routing segment (`us.`, `eu.`, `apac.`,
-/// `us-gov.`) from a model id.
-fn strip_bedrock_region_prefix(id: &str) -> String {
-    for region in ["us-gov.", "us.", "eu.", "apac.", "ap.", "global."] {
-        if let Some(rest) = id.strip_prefix(region) {
-            return rest.to_string();
-        }
-    }
-    id.to_string()
-}
-
-/// Strip a trailing Bedrock version tag like `-v1`, `-v2` (after the `:0` has
-/// already been removed). Returns `None` when there is no such tag.
-fn strip_trailing_bedrock_version(id: &str) -> Option<String> {
-    let (head, tail) = id.rsplit_once('-')?;
-    let is_version_tag =
-        tail.len() >= 2 && tail.starts_with('v') && tail[1..].chars().all(|c| c.is_ascii_digit());
-    is_version_tag.then(|| head.to_string())
 }
 
 /// A parsed "frontier flagship" model id: its family prefix (e.g. `claude-opus`
@@ -415,9 +386,6 @@ fn frontier_families(activation: &AuthActivationResult) -> &'static [FrontierFam
     match activation.provider_id.as_deref() {
         Some("claude") | Some("claude-api") => &[CLAUDE, FABLE],
         Some("openai") | Some("openai-api") | Some("azure-openai") => &[GPT],
-        // Bedrock hosts Claude under `anthropic.claude-opus-...` (prefix stripped
-        // by normalize), so the Claude family applies.
-        Some("bedrock") => &[CLAUDE],
         _ => &[],
     }
 }
@@ -1212,7 +1180,6 @@ mod tests {
             let is_non_model_auth_surface = matches!(
                 provider.target,
                 crate::provider_catalog::LoginProviderTarget::AutoImport
-                    | crate::provider_catalog::LoginProviderTarget::Google
             );
             let normalized = normalized_auth_provider_id(Some(provider.id));
             if is_non_model_auth_surface {
@@ -1788,18 +1755,6 @@ mod tests {
         assert_eq!(version_cmp(&[6], &[5, 9]), std::cmp::Ordering::Greater);
         assert_eq!(version_cmp(&[5, 5], &[5, 5]), std::cmp::Ordering::Equal);
 
-        // Bedrock vendor-prefixed/versioned ids normalize to the bare Claude
-        // family and parse as flagship.
-        let bedrock = parse_frontier_model(
-            "us.anthropic.claude-opus-4-20250514-v1:0",
-            &[FrontierFamily {
-                prefix: "claude-opus",
-                flagship_token: None,
-            }],
-        )
-        .expect("bedrock opus parses");
-        assert_eq!(bedrock.version, vec![4]);
-
         // Gemini flagship token: `pro` is required and `flash`/`lite` are rejected.
         let gem_fams = &[FrontierFamily {
             prefix: "gemini",
@@ -1827,14 +1782,6 @@ mod tests {
     #[test]
     fn normalize_model_for_preference_strips_hosted_prefixes_and_suffixes() {
         assert_eq!(
-            normalize_model_for_preference("us.anthropic.claude-opus-4-20250514-v1:0"),
-            "claude-opus-4"
-        );
-        assert_eq!(
-            normalize_model_for_preference("anthropic.claude-3-5-sonnet-20241022-v2:0"),
-            "claude-3-5-sonnet"
-        );
-        assert_eq!(
             normalize_model_for_preference("models/gemini-3-pro-preview"),
             "gemini-3-pro"
         );
@@ -1856,8 +1803,7 @@ mod tests {
     /// `activated_model`, so a "cheap model first" catalog would otherwise
     /// auto-select the wrong default. Kept here as the single source of truth
     /// the exhaustive walk asserts against.
-    // 内置 claude/openai/bedrock/azure 已移除，配置驱动模式下没有需要
-    // 旗舰优先排序的 provider。
+    // 内置 provider 已移除，配置驱动模式下没有需要旗舰优先排序的 provider。
     const RANKED_PROVIDER_IDS: &[&str] = &[];
 
     fn activation_for_provider_id(provider_id: &str) -> AuthActivationResult {
@@ -1914,7 +1860,7 @@ mod tests {
     #[test]
     fn post_auth_model_selection_picks_flagship_for_every_ranked_provider() {
         // (provider_id, api_method, provider_display, cheap_first_routes, expected flagship)
-        // 内置 claude/openai/bedrock/azure 已移除，没有 ranked provider；
+        // 内置 provider 已移除，没有 ranked provider；
         // 空 cases 与空的 RANKED_PROVIDER_IDS 保持一致。
         let cases: &[(&str, &str, &str, &[&str], &str)] = &[];
 

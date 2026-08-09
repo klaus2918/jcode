@@ -65,7 +65,6 @@ fn history_provider_name_from_session(session: &crate::session::Session) -> Opti
         "copilot" => "GitHub Copilot".to_string(),
         "cursor" => "Cursor".to_string(),
         "gemini" => "Gemini".to_string(),
-        "bedrock" => "Bedrock".to_string(),
         "antigravity" => "Antigravity".to_string(),
         "jcode" => "Jcode".to_string(),
         other => other.to_string(),

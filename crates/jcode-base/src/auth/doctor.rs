@@ -7,7 +7,7 @@ pub const VALIDATION_STALE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// `provider_id` (a provider whose live path is not OpenAI-compatible and so
 /// cannot be exercised by the generic OpenAI-compatible doctor). Today this is
 /// the Claude OAuth/subscription provider and the generic native-runtime
-/// providers (OpenAI, Bedrock, jcode, Azure OpenAI).
+/// providers (OpenAI, jcode, Azure OpenAI).
 ///
 /// The drivers themselves live downstream in the `jcode-provider-doctor`
 /// crate (which re-exports this predicate); this roster lives here so
@@ -17,7 +17,7 @@ pub const VALIDATION_STALE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub fn native_doctor_supports_provider(provider_id: &str) -> bool {
     matches!(
         crate::auth::lifecycle::normalized_auth_provider_id(Some(provider_id)),
-        Some("claude" | "openai" | "bedrock" | "jcode" | "azure-openai")
+        Some("claude" | "openai" | "jcode" | "azure-openai")
     )
 }
 

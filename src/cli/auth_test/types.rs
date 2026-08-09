@@ -15,7 +15,6 @@ pub(crate) enum ResolvedAuthTestTarget {
 pub(crate) enum AuthTestTarget {
     Claude,
     Openai,
-    Google,
 }
 
 impl AuthTestTarget {
@@ -23,7 +22,6 @@ impl AuthTestTarget {
         match self {
             Self::Claude => "claude",
             Self::Openai => "openai",
-            Self::Google => "google",
         }
     }
 
@@ -31,19 +29,13 @@ impl AuthTestTarget {
         match self {
             Self::Claude => "claude",
             Self::Openai => "openai",
-            Self::Google => "google",
         }
-    }
-
-    fn supports_smoke(self) -> bool {
-        !matches!(self, Self::Google)
     }
 
     fn from_provider_id(choice: &str) -> Option<Self> {
         match choice.trim() {
             "claude" | crate::cli::provider_init::CLAUDE_SUBPROCESS_ID => Some(Self::Claude),
             "openai" => Some(Self::Openai),
-            "google" => Some(Self::Google),
             _ => None,
         }
     }
@@ -76,12 +68,6 @@ impl AuthTestTarget {
                 crate::storage::user_home_path(".pi/agent/auth.json")?
                     .display()
                     .to_string(),
-            ]),
-            Self::Google => Ok(vec![
-                crate::auth::google::credentials_path()?
-                    .display()
-                    .to_string(),
-                crate::auth::google::tokens_path()?.display().to_string(),
             ]),
         }
     }
@@ -206,10 +192,6 @@ impl AuthTestSmokeKind {
         }
     }
 
-    fn unsupported_detail(self) -> &'static str {
-        "Skipped: provider is auth/tool-only and has no model runtime smoke step."
-    }
-
     fn success_detail(self) -> &'static str {
         match self {
             Self::Provider => "Provider returned AUTH_TEST_OK.",
@@ -283,8 +265,3 @@ where
     }
 }
 
-fn auth_email_suffix(email: Option<&str>) -> String {
-    email
-        .map(|email| format!(" for {}", email))
-        .unwrap_or_default()
-}

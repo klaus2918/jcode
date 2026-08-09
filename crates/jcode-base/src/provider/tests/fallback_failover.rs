@@ -5,7 +5,6 @@ fn test_fallback_sequence_includes_all_providers() {
         vec![
             ActiveProvider::Claude,
             ActiveProvider::OpenAI,
-            ActiveProvider::Bedrock,
             ActiveProvider::OpenRouter,
         ]
     );
@@ -14,7 +13,6 @@ fn test_fallback_sequence_includes_all_providers() {
         vec![
             ActiveProvider::OpenAI,
             ActiveProvider::Claude,
-            ActiveProvider::Bedrock,
             ActiveProvider::OpenRouter,
         ]
     );
@@ -24,7 +22,6 @@ fn test_fallback_sequence_includes_all_providers() {
             ActiveProvider::OpenRouter,
             ActiveProvider::Claude,
             ActiveProvider::OpenAI,
-            ActiveProvider::Bedrock,
         ]
     );
 }
@@ -75,7 +72,6 @@ fn test_initial_provider_allows_cross_provider_switch_and_reports_target_credent
             claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
-            bedrock: RwLock::new(None),
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),
@@ -102,7 +98,6 @@ fn test_auto_default_prefers_claude_over_openai_when_both_available() {
     let active = MultiProvider::auto_default_provider(ProviderAvailability {
         openai: true,
         claude: true,
-        bedrock: false,
         openrouter: false,
     });
     assert_eq!(active, ActiveProvider::Claude);
@@ -167,7 +162,6 @@ fn test_no_provider_error_mentions_tokens_and_details() {
         claude: RwLock::new(None),
         anthropic: RwLock::new(None),
         openai: RwLock::new(None),
-        bedrock: RwLock::new(None),
         openrouter: RwLock::new(None),
         openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
         active_openai_compatible_profile: RwLock::new(None),
@@ -203,7 +197,6 @@ fn test_active_compat_profile_counts_as_configured_openrouter_slot() {
                 claude: RwLock::new(None),
                 anthropic: RwLock::new(None),
                 openai: RwLock::new(None),
-                bedrock: RwLock::new(None),
                 openrouter: RwLock::new(None),
                 openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
                 active_openai_compatible_profile: RwLock::new(None),

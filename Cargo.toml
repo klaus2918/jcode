@@ -18,7 +18,6 @@ members = [
     "crates/jcode-embedding",
     "crates/jcode-gateway-types",
     "crates/jcode-import-core",
-    "crates/jcode-pdf",
     "crates/jcode-logging",
     "crates/jcode-background-types",
     "crates/jcode-batch-types",
@@ -43,13 +42,9 @@ members = [
     "crates/jcode-provider-metadata",
     "crates/jcode-provider-env",
     "crates/jcode-provider-core",
-    "crates/jcode-provider-bedrock",
     "crates/jcode-provider-anthropic",
-    "crates/jcode-provider-antigravity",
-    "crates/jcode-provider-copilot",
     "crates/jcode-provider-openrouter",
     "crates/jcode-provider-openai",
-    "crates/jcode-provider-gemini",
     "crates/jcode-provider-openrouter-runtime",
     "crates/jcode-provider-anthropic-runtime",
     "crates/jcode-provider-openai-runtime",
@@ -62,7 +57,6 @@ members = [
     "crates/jcode-task-types",
     "crates/jcode-tool-core",
     "crates/jcode-tool-types",
-    "crates/jcode-tui-account-picker",
     "crates/jcode-tui-anim",
     "crates/jcode-tui-render",
     "crates/jcode-tui-visual-debug",
@@ -158,7 +152,6 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Markdown & syntax highlighting
 
-# PDF parsing (behind feature flag)
 jcode-build-meta = { path = "crates/jcode-build-meta" }
 # Tiny leaf helpers (console/env/fs/id) used directly by the cli layer.
 # Presentation layer: the terminal UI (`tui`) + offline replay (`video_export`),
@@ -184,7 +177,7 @@ tempfile = "3"
 # semantic retrieval, and embedding-backed features work out of the box.
 # Use `JCODE_DEV_FEATURE_PROFILE=minimal` for compile-speed probes that need
 # to skip optional default feature stacks.
-default = ["pdf", "embeddings", "bedrock"]
+default = ["embeddings"]
 dev-bins = ["jcode-tui/dev-bins"]
 jemalloc = [
     "dep:tikv-jemallocator",
@@ -196,17 +189,12 @@ jemalloc-prof = [
     "tikv-jemallocator/profiling",
     "jcode-tui/jemalloc-prof",
 ]
-# Local embeddings and PDF extraction live in jcode-base / jcode-app-core;
-# these features just forward down the stack.
+# Local embeddings live in jcode-base; this feature just forwards down the stack.
 embeddings = ["jcode-tui/embeddings"]
-# Live AWS Bedrock support (the AWS SDK stack) lives in jcode-provider-bedrock;
-# forwards down through jcode-tui -> jcode-app-core -> jcode-base.
-bedrock = ["jcode-tui/bedrock"]
 # Internal release feature: build a supported OpenSSL inside the CentOS 7
 # compatibility image while preserving the glibc 2.17 runtime baseline.
 linux-compat-vendored-openssl = ["jcode-tui/linux-compat-vendored-openssl"]
 mmdr-size-api = ["jcode-tui/mmdr-size-api"]
-pdf = ["jcode-tui/pdf"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
@@ -334,13 +322,6 @@ opt-level = 3
 [profile.test.package.unicode-truncate]
 opt-level = 3
 
-[profile.dev.package.unicode-linebreak]
-opt-level = 3
-[profile.selfdev.package.unicode-linebreak]
-opt-level = 3
-[profile.test.package.unicode-linebreak]
-opt-level = 3
-
 [profile.dev.package.compact_str]
 opt-level = 3
 [profile.selfdev.package.compact_str]
@@ -348,23 +329,15 @@ opt-level = 3
 [profile.test.package.compact_str]
 opt-level = 3
 
-# Keep the text-shaping stack optimized even in dev/selfdev/test builds.
+# Keep the text-shaping stack optimized in dev/selfdev/test builds.
 #
-# cosmic-text + rustybuzz + ttf-parser + swash + yazi do all of the desktop
-# transcript glyph shaping. At opt-level = 0 they are 15-40x slower, which made
-# scrolling real (emoji/markdown-heavy) transcripts janky in dev/selfdev builds
-# even though the production release build was smooth. These are stable
-# third-party crates that almost never recompile, so pinning them to opt-level =
-# 3 costs a one-time compile and is then reused across every iterative jcode
-# rebuild (same rationale as jcode-tui-anim above). It does NOT slow down
-# recompiles of jcode's own crates.
-[profile.dev.package.cosmic-text]
-opt-level = 3
-[profile.selfdev.package.cosmic-text]
-opt-level = 3
-[profile.test.package.cosmic-text]
-opt-level = 3
-
+# rustybuzz + ttf-parser + fontdb are used by the mermaid (usvg/resvg) renderer.
+# At opt-level = 0 they are 15-40x slower, which made scrolling real
+# (emoji/markdown-heavy) transcripts janky in dev/selfdev builds even though the
+# production release build was smooth. These are stable third-party crates that
+# almost never recompile, so pinning them to opt-level = 3 costs a one-time
+# compile and is then reused across every iterative jcode rebuild (same
+# rationale as jcode-tui-anim above).
 [profile.dev.package.rustybuzz]
 opt-level = 3
 [profile.selfdev.package.rustybuzz]
@@ -377,20 +350,6 @@ opt-level = 3
 [profile.selfdev.package.ttf-parser]
 opt-level = 3
 [profile.test.package.ttf-parser]
-opt-level = 3
-
-[profile.dev.package.swash]
-opt-level = 3
-[profile.selfdev.package.swash]
-opt-level = 3
-[profile.test.package.swash]
-opt-level = 3
-
-[profile.dev.package.yazi]
-opt-level = 3
-[profile.selfdev.package.yazi]
-opt-level = 3
-[profile.test.package.yazi]
 opt-level = 3
 
 [profile.dev.package.fontdb]
@@ -458,182 +417,11 @@ opt-level = 3
 [profile.test.package.memchr]
 opt-level = 3
 
-# Keep the desktop2 (winit + wgpu + Vello + Parley) render stack optimized in
-# dev/selfdev/test builds.
-#
-# Every desktop2 frame re-encodes the scene (vello/vello_encoding/peniko),
-# flattens paths (kurbo: the halftone donut alone is thousands of circles per
-# frame), shapes and rasterizes text (parley/fontique/skrifa/harfrust/
-# read-fonts/zeno), and submits GPU work (wgpu/wgpu-core/wgpu-hal/naga). At
-# opt-level 0 those inner loops are 15-40x slower, which made animations and
-# streaming visibly laggy in selfdev builds while the same code was smooth at
-# opt-level 3. These are stable third-party crates that almost never
-# recompile, so pinning them costs one compile and does not slow rebuilds of
-# jcode's own crates (same rationale as the ratatui/cosmic-text pins above).
-[profile.dev.package.vello]
-opt-level = 3
-[profile.selfdev.package.vello]
-opt-level = 3
-[profile.test.package.vello]
-opt-level = 3
-
-[profile.dev.package.vello_encoding]
-opt-level = 3
-[profile.selfdev.package.vello_encoding]
-opt-level = 3
-[profile.test.package.vello_encoding]
-opt-level = 3
-
-[profile.dev.package.vello_shaders]
-opt-level = 3
-[profile.selfdev.package.vello_shaders]
-opt-level = 3
-[profile.test.package.vello_shaders]
-opt-level = 3
-
-[profile.dev.package.wgpu]
-opt-level = 3
-[profile.selfdev.package.wgpu]
-opt-level = 3
-[profile.test.package.wgpu]
-opt-level = 3
-
-[profile.dev.package.wgpu-core]
-opt-level = 3
-[profile.selfdev.package.wgpu-core]
-opt-level = 3
-[profile.test.package.wgpu-core]
-opt-level = 3
-
-[profile.dev.package.wgpu-hal]
-opt-level = 3
-[profile.selfdev.package.wgpu-hal]
-opt-level = 3
-[profile.test.package.wgpu-hal]
-opt-level = 3
-
-[profile.dev.package.wgpu-types]
-opt-level = 3
-[profile.selfdev.package.wgpu-types]
-opt-level = 3
-[profile.test.package.wgpu-types]
-opt-level = 3
-
-[profile.dev.package.naga]
-opt-level = 3
-[profile.selfdev.package.naga]
-opt-level = 3
-[profile.test.package.naga]
-opt-level = 3
-
-[profile.dev.package.parley]
-opt-level = 3
-[profile.selfdev.package.parley]
-opt-level = 3
-[profile.test.package.parley]
-opt-level = 3
-
-[profile.dev.package.fontique]
-opt-level = 3
-[profile.selfdev.package.fontique]
-opt-level = 3
-[profile.test.package.fontique]
-opt-level = 3
-
-[profile.dev.package.skrifa]
-opt-level = 3
-[profile.selfdev.package.skrifa]
-opt-level = 3
-[profile.test.package.skrifa]
-opt-level = 3
-
-[profile.dev.package.read-fonts]
-opt-level = 3
-[profile.selfdev.package.read-fonts]
-opt-level = 3
-[profile.test.package.read-fonts]
-opt-level = 3
-
-[profile.dev.package.font-types]
-opt-level = 3
-[profile.selfdev.package.font-types]
-opt-level = 3
-[profile.test.package.font-types]
-opt-level = 3
-
-[profile.dev.package.harfrust]
-opt-level = 3
-[profile.selfdev.package.harfrust]
-opt-level = 3
-[profile.test.package.harfrust]
-opt-level = 3
-
 [profile.dev.package.kurbo]
 opt-level = 3
 [profile.selfdev.package.kurbo]
 opt-level = 3
 [profile.test.package.kurbo]
-opt-level = 3
-
-[profile.dev.package.peniko]
-opt-level = 3
-[profile.selfdev.package.peniko]
-opt-level = 3
-[profile.test.package.peniko]
-opt-level = 3
-
-[profile.dev.package.color]
-opt-level = 3
-[profile.selfdev.package.color]
-opt-level = 3
-[profile.test.package.color]
-opt-level = 3
-
-[profile.dev.package.zeno]
-opt-level = 3
-[profile.selfdev.package.zeno]
-opt-level = 3
-[profile.test.package.zeno]
-opt-level = 3
-
-# The workspace release profile is only opt-level 1, so the desktop2 render
-# stack above is pinned to opt-level 3 there too: installed desktop2 builds
-# must not ship with an unoptimized frame pipeline.
-[profile.release.package.vello]
-opt-level = 3
-[profile.release.package.vello_encoding]
-opt-level = 3
-[profile.release.package.vello_shaders]
-opt-level = 3
-[profile.release.package.wgpu]
-opt-level = 3
-[profile.release.package.wgpu-core]
-opt-level = 3
-[profile.release.package.wgpu-hal]
-opt-level = 3
-[profile.release.package.wgpu-types]
-opt-level = 3
-[profile.release.package.naga]
-opt-level = 3
-[profile.release.package.parley]
-opt-level = 3
-[profile.release.package.fontique]
-opt-level = 3
-[profile.release.package.skrifa]
-opt-level = 3
-[profile.release.package.read-fonts]
-opt-level = 3
-[profile.release.package.font-types]
-opt-level = 3
-[profile.release.package.harfrust]
-opt-level = 3
-[profile.release.package.kurbo]
-opt-level = 3
-[profile.release.package.peniko]
-opt-level = 3
-[profile.release.package.color]
-opt-level = 3
-[profile.release.package.zeno]
 opt-level = 3
 
 # The embedding stack (tract ONNX inference + HF tokenizer) runs the MiniLM

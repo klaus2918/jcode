@@ -48,7 +48,6 @@ input = ["text"]
             claude: RwLock::new(None),
             anthropic: RwLock::new(None),
             openai: RwLock::new(None),
-            bedrock: RwLock::new(None),
             openrouter: RwLock::new(None),
             openai_compatible_profiles: RwLock::new(std::collections::HashMap::new()),
             active_openai_compatible_profile: RwLock::new(None),

@@ -581,7 +581,6 @@ fn configured_auth_count(auth: &AuthStatus) -> usize {
         auth.openrouter,
         auth.azure,
         auth.openai,
-        auth.google,
     ]
     .into_iter()
     .filter(|state| *state != AuthState::NotConfigured)
@@ -1333,7 +1332,6 @@ mod tests {
             ("gpt-oss-120b", "GPT OSS 120B"),
             ("o3-mini", "O3 Mini"),
             ("o4-mini", "O4 Mini"),
-            // Google
             ("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
             ("gemini-2.5-flash", "Gemini 2.5 Flash"),
             // xAI / Moonshot / Zhipu / DeepSeek / Minimax
@@ -1393,11 +1391,10 @@ mod tests {
                 has_api_key: false,
             },
             azure: AuthState::Available,
-            google: AuthState::Available,
             ..AuthStatus::default()
         };
 
-        assert_eq!(configured_auth_count(&auth), 4);
+        assert_eq!(configured_auth_count(&auth), 3);
     }
 
     #[test]

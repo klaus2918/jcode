@@ -3,10 +3,9 @@ use crate::auth::{AuthState, AuthStatus};
 use super::pricing::cheapness_for_route;
 use super::registry::ProviderRegistry;
 use super::{
-    AccountModelAvailabilityState, ModelRoute, MultiProvider, Provider,
-    anthropic_api_key_route_availability, anthropic_oauth_route_availability, bedrock,
-    build_anthropic_oauth_route, build_openai_api_key_route, build_openai_oauth_route,
-    build_openrouter_auto_route, build_openrouter_endpoint_route,
+    AccountModelAvailabilityState, ModelRoute, MultiProvider, anthropic_api_key_route_availability,
+    anthropic_oauth_route_availability, build_anthropic_oauth_route, build_openai_api_key_route,
+    build_openai_oauth_route, build_openrouter_auto_route, build_openrouter_endpoint_route,
     build_openrouter_fallback_provider_route, configured_standard_openrouter_profile_routes,
     dedupe_model_routes, direct_openai_compatible_profile_routes,
     format_account_model_availability_detail, is_listable_model_name, known_anthropic_model_ids,
@@ -75,47 +74,35 @@ pub fn simplified_model_routes_for_picker(
             continue;
         }
 
-        let (provider, api_method, available, detail) =
-            if super::bedrock::BedrockProvider::is_bedrock_model_id(&model) {
-                (
-                    "AWS Bedrock".to_string(),
-                    "bedrock".to_string(),
-                    auth.bedrock != AuthState::NotConfigured,
-                    if auth.bedrock == AuthState::NotConfigured {
-                        "no Bedrock credentials or region; run /login bedrock".to_string()
-                    } else {
-                        String::new()
-                    },
-                )
-            } else if model.contains('/') {
-                (
+        let (provider, api_method, available, detail) = if model.contains('/') {
+            (
+                "auto".to_string(),
+                "openrouter".to_string(),
+                auth.openrouter != AuthState::NotConfigured,
+                "simplified catalog".to_string(),
+            )
+        } else {
+            match provider_for_model(&model) {
+                Some("claude") => {
+                    append_simplified_anthropic_model_routes(&mut routes, model, &auth);
+                    continue;
+                }
+                Some("openai") => unreachable!("OpenAI models are handled above"),
+                Some("openrouter") => (
                     "auto".to_string(),
                     "openrouter".to_string(),
                     auth.openrouter != AuthState::NotConfigured,
                     "simplified catalog".to_string(),
-                )
-            } else {
-                match provider_for_model(&model) {
-                    Some("claude") => {
-                        append_simplified_anthropic_model_routes(&mut routes, model, &auth);
-                        continue;
-                    }
-                    Some("openai") => unreachable!("OpenAI models are handled above"),
-                    Some("openrouter") => (
-                        "auto".to_string(),
-                        "openrouter".to_string(),
-                        auth.openrouter != AuthState::NotConfigured,
-                        "simplified catalog".to_string(),
-                    ),
-                    Some(other) => (other.to_string(), other.to_string(), true, String::new()),
-                    None => (
-                        current_provider_name.to_string(),
-                        "current".to_string(),
-                        true,
-                        String::new(),
-                    ),
-                }
-            };
+                ),
+                Some(other) => (other.to_string(), other.to_string(), true, String::new()),
+                None => (
+                    current_provider_name.to_string(),
+                    "current".to_string(),
+                    true,
+                    String::new(),
+                ),
+            }
+        };
 
         routes.push(ModelRoute {
             capability: route_capability(&model),
@@ -219,7 +206,6 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
     append_openai_routes(provider, &mut routes, &openai_auth);
     let added_direct_openai_compatible_routes =
         append_openai_compatible_profile_routes(provider, &mut routes);
-    append_bedrock_routes(provider, &mut routes);
 
     let has_openrouter = provider.openrouter_provider().is_some();
     let has_openrouter_provider_features = provider
@@ -262,7 +248,7 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
     let routes_before_filter = routes.len();
 
     // Drop obviously non-chat models (embeddings, speech, rerankers, etc.) that
-    // some providers (Bedrock, OpenAI-compatible profiles like NVIDIA NIM / FPT
+    // some providers (OpenAI-compatible profiles like NVIDIA NIM / FPT
     // / Chutes) dump wholesale into their catalogs. Without this the picker is
     // flooded with hundreds of unusable entries.
     routes.retain(|route| is_listable_model_name(&route.model));
@@ -522,23 +508,6 @@ fn named_provider_profile_routes(
     routes
 }
 
-/// AWS Bedrock models and inference profiles, including the
-/// credentials-configured-but-uninitialized case.
-fn append_bedrock_routes(provider: &MultiProvider, routes: &mut Vec<ModelRoute>) {
-    if let Some(bedrock) = provider.bedrock_provider() {
-        routes.extend(bedrock.model_routes());
-    } else if bedrock::BedrockProvider::has_credentials() {
-        let bedrock = bedrock::BedrockProvider::new();
-        routes.extend(bedrock.model_routes().into_iter().map(|mut route| {
-            if route.detail.trim().is_empty() {
-                route.detail =
-                    "credentials configured; provider will initialize on selection".to_string();
-            }
-            route
-        }));
-    }
-}
-
 /// OpenRouter models with per-provider endpoint routes, plus the direct
 /// OpenAI-compatible runtime path that shares the OpenRouter transport.
 fn append_openrouter_routes(
@@ -780,25 +749,6 @@ pub fn remote_model_routes_fallback(
         let openrouter_cached = openrouter_catalog_model
             .as_deref()
             .and_then(openrouter::load_endpoints_disk_cache_public);
-
-        if super::bedrock::BedrockProvider::is_bedrock_model_id(model) {
-            let available = auth.bedrock != AuthState::NotConfigured
-                || super::bedrock::BedrockProvider::has_credentials();
-            routes.push(ModelRoute {
-                capability: route_capability(model),
-                model: model.clone(),
-                provider: "AWS Bedrock".to_string(),
-                api_method: "bedrock".to_string(),
-                available,
-                detail: if available {
-                    String::new()
-                } else {
-                    "no Bedrock credentials or region; run /login bedrock".to_string()
-                },
-                cheapness: None,
-            });
-            continue;
-        }
 
         if model.contains('/') {
             let cached = openrouter_cached;

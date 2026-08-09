@@ -5,13 +5,9 @@ mod bash;
 mod batch;
 mod bg;
 mod communicate;
-#[cfg(target_os = "macos")]
-mod computer;
 mod conversation_search;
 mod debug_socket;
-mod discover;
 mod edit;
-mod gmail;
 mod goal;
 mod invalid;
 mod ls;
@@ -186,13 +182,6 @@ impl Registry {
             Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
-            #[cfg(target_os = "macos")]
-            Self::insert_tool_timed(
-                &mut m,
-                &mut timings,
-                "macos_computer_use",
-                computer::ComputerTool::new,
-            );
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,
@@ -227,7 +216,6 @@ impl Registry {
                 "initiative",
                 goal::InitiativeTool::new,
             );
-            Self::insert_tool_timed(&mut m, &mut timings, "gmail", gmail::GmailTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "schedule", ambient::ScheduleTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "selfdev", selfdev::SelfDevTool::new);
             let nonzero: Vec<String> = timings
@@ -285,16 +273,6 @@ impl Registry {
             "conversation_search",
             conversation_search::ConversationSearchTool::new(compaction),
         );
-        // Sponsored discovery is on by default (opt-out); when disabled the
-        // tool is never registered and no discovery endpoint is ever
-        // contacted.
-        if crate::config::config().sponsors.enabled {
-            Self::insert_tool(
-                &mut tools_map,
-                "discover_tools",
-                discover::DiscoverToolsTool::new(),
-            );
-        }
         let session_tools_ms = session_tools_start.elapsed().as_millis();
 
         let write_start = std::time::Instant::now();

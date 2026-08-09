@@ -935,52 +935,6 @@ pub(super) fn get_tool_summary_with_budget(
                 )
             })
             .unwrap_or_default(),
-        "gmail" => {
-            let action = tool
-                .input
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("gmail");
-            let detail = match action {
-                "search" | "threads" => tool.input.get("query").and_then(|v| v.as_str()).map(|q| {
-                    format!(
-                        "'{}'",
-                        truncate_query_display(q, bounded(40).saturating_sub(2))
-                    )
-                }),
-                "read" | "trash" | "modify_labels" => tool
-                    .input
-                    .get("message_id")
-                    .and_then(|v| v.as_str())
-                    .map(|id| truncate_identifier_display(id, bounded(20))),
-                "thread" => tool
-                    .input
-                    .get("thread_id")
-                    .and_then(|v| v.as_str())
-                    .map(|id| truncate_identifier_display(id, bounded(20))),
-                "draft" | "send" => tool
-                    .input
-                    .get("to")
-                    .and_then(|v| v.as_str())
-                    .map(|to| format!("→ {}", truncate_end_display(to, bounded(30))))
-                    .or_else(|| {
-                        tool.input
-                            .get("subject")
-                            .and_then(|v| v.as_str())
-                            .map(|s| format!("'{}'", truncate_end_display(s, bounded(30))))
-                    }),
-                "send_draft" => tool
-                    .input
-                    .get("draft_id")
-                    .and_then(|v| v.as_str())
-                    .map(|id| truncate_identifier_display(id, bounded(20))),
-                _ => None,
-            };
-            match detail {
-                Some(detail) => format!("{} {}", action, detail),
-                None => action.to_string(),
-            }
-        }
         "open" | "launch" => {
             let action = tool
                 .input
@@ -1091,33 +1045,6 @@ pub(super) fn get_tool_summary_with_budget(
                 ),
                 (false, true) => target.to_string(),
                 _ => truncate_end_display(error, bounded(40)),
-            }
-        }
-        "discover_tools" => {
-            let action = tool
-                .input
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let category = tool
-                .input
-                .get("category")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if action == "suggest" {
-                let detail = tool
-                    .input
-                    .get("product_name")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| tool.input.get("suggestion_kind").and_then(|v| v.as_str()))
-                    .unwrap_or(category);
-                format!("suggest {}", truncate_end_display(detail, bounded(30)))
-            } else {
-                match tool.input.get("tool").and_then(|v| v.as_str()) {
-                    Some(name) => format!("select {}", truncate_end_display(name, bounded(30))),
-                    None if !category.is_empty() => format!("browse {}", category),
-                    None => "browse".to_string(),
-                }
             }
         }
         "codesearch" => tool

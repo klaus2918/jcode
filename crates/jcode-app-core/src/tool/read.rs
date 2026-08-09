@@ -473,63 +473,7 @@ fn is_pdf_file(path: &Path) -> bool {
     }
 }
 
-/// Handle reading a PDF file - extract text content
-#[cfg(feature = "pdf")]
-fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
-    // Get file metadata
-    let metadata = std::fs::metadata(path)?;
-    let file_size = metadata.len();
-
-    let size_str = if file_size < 1024 {
-        format!("{} bytes", file_size)
-    } else if file_size < 1024 * 1024 {
-        format!("{:.1} KB", file_size as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", file_size as f64 / 1024.0 / 1024.0)
-    };
-
-    // Extract text from PDF
-    match jcode_pdf::extract_text(path) {
-        Ok(text) => {
-            let mut output = String::new();
-            output.push_str(&format!("PDF: {} ({})\n", file_path, size_str));
-            output.push_str(&format!("{}\n", "=".repeat(60)));
-
-            // Split into pages (pdf_extract uses form feed \x0c as page separator)
-            let pages: Vec<&str> = text.split('\x0c').collect();
-            let page_count = pages.len();
-
-            output.push_str(&format!("Pages: {}\n\n", page_count));
-
-            for (i, page) in pages.iter().enumerate() {
-                let page_text = page.trim();
-                if !page_text.is_empty() {
-                    output.push_str(&format!("--- Page {} ---\n", i + 1));
-                    // Limit each page to reasonable length
-                    if page_text.len() > 10000 {
-                        output.push_str(crate::util::truncate_str(page_text, 10000));
-                        output.push_str("\n... (page truncated)\n");
-                    } else {
-                        output.push_str(page_text);
-                    }
-                    output.push_str("\n\n");
-                }
-            }
-
-            Ok(ToolOutput::new(output))
-        }
-        Err(e) => {
-            // Fall back to metadata only if text extraction fails
-            Ok(ToolOutput::new(format!(
-                "PDF: {} ({})\nCould not extract text: {}\nThis may be a scanned/image-based PDF.",
-                file_path, size_str, e
-            )))
-        }
-    }
-}
-
-/// Handle reading a PDF file when PDF support is not compiled in.
-#[cfg(not(feature = "pdf"))]
+/// Handle reading a PDF file - report size; text extraction is not compiled in.
 fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len();

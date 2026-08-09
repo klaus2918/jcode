@@ -133,7 +133,6 @@ fn configured_auth_test_targets_only_include_configured_supported_providers() {
 
     assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Openai)));
     assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Claude)));
-    assert!(!targets.contains(&ResolvedAuthTestTarget::Detailed(AuthTestTarget::Google)));
 }
 
 #[test]

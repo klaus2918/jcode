@@ -6,7 +6,7 @@
     clippy::useless_conversion
 )]
 
-//! Presentation layer for jcode (terminal UI + offline replay).
+//! Presentation layer for jcode (terminal UI).
 //!
 //! This crate holds the `tui` module that was extracted
 //! out of the monolithic root `jcode` crate so they compile as a separate
