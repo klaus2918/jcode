@@ -190,6 +190,13 @@ fn provider_to_value(config: &NamedProviderConfig) -> toml::Value {
         );
     }
 
+    if let Some(replay) = config.replay_reasoning_content {
+        table.insert(
+            "replay_reasoning_content".to_string(),
+            toml::Value::Boolean(replay),
+        );
+    }
+
     if let Some(price) = config.price.as_ref() {
         table.insert("price".to_string(), price_to_value(price));
     }
@@ -212,22 +219,22 @@ fn provider_to_value(config: &NamedProviderConfig) -> toml::Value {
             toml::Value::String(effort.to_string()),
         );
     }
-    if let Some(vision_models) = config.vision_models.as_ref() {
-        if !vision_models.is_empty() {
-            let values = vision_models
-                .iter()
-                .map(|id| toml::Value::String(id.clone()))
-                .collect::<Vec<_>>();
-            table.insert("vision_models".to_string(), toml::Value::Array(values));
-        }
+    if let Some(vision_models) = config.vision_models.as_ref()
+        && !vision_models.is_empty()
+    {
+        let values = vision_models
+            .iter()
+            .map(|id| toml::Value::String(id.clone()))
+            .collect::<Vec<_>>();
+        table.insert("vision_models".to_string(), toml::Value::Array(values));
     }
-    if let Some(model_overrides) = config.model_overrides.as_ref() {
-        if !model_overrides.is_empty() {
-            table.insert(
-                "model_overrides".to_string(),
-                model_overrides_to_value(model_overrides),
-            );
-        }
+    if let Some(model_overrides) = config.model_overrides.as_ref()
+        && !model_overrides.is_empty()
+    {
+        table.insert(
+            "model_overrides".to_string(),
+            model_overrides_to_value(model_overrides),
+        );
     }
 
     table.insert("models".to_string(), models_to_value(&config.models));
@@ -424,6 +431,10 @@ struct NamedProviderArrayEntry {
     /// 是否支持 DeepSeek 风格顶层 reasoning_effort 字段。
     #[serde(default)]
     supports_reasoning_effort: Option<bool>,
+    /// 是否回显无签名 thinking（reasoning_content）到后续请求。
+    /// 与 `[providers.<name>]` 表格的 `replay_reasoning_content` 语义一致。
+    #[serde(default)]
+    replay_reasoning_content: Option<bool>,
     /// `auth` 选择器（"none"/"bearer"/"header"）。缺省时保持 Bearer 旧行为，
     /// 因此无 key 的本地网关（cc-switch 等）必须显式写 `auth = "none"`，
     /// 否则运行时因找不到 key 直接报错。
@@ -526,6 +537,7 @@ impl NamedProviderArrayEntry {
             allow_provider_pinning: self.allow_provider_pinning,
             extra_body: self.extra_body,
             supports_reasoning_effort: self.supports_reasoning_effort,
+            replay_reasoning_content: self.replay_reasoning_content,
             models,
             price: self.price,
             prices: self.prices,
@@ -533,7 +545,6 @@ impl NamedProviderArrayEntry {
             effort: self.effort,
             vision_models: self.vision_models,
             model_overrides: self.model_overrides,
-            ..NamedProviderConfig::default()
         }
     }
 }

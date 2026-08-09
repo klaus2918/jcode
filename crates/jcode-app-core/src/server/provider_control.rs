@@ -1557,11 +1557,7 @@ mod tests {
             "This provider does not support reasoning effort",
             "Reasoning effort is not supported by the current model/profile. It works for OpenRouter, DeepSeek-family and GPT-family reasoning models, and profiles with supports_reasoning_effort = true.",
         ] {
-            send_reasoning_effort_result(
-                7,
-                Err(anyhow::anyhow!("{}", message)),
-                &client_event_tx,
-            );
+            send_reasoning_effort_result(7, Err(anyhow::anyhow!("{}", message)), &client_event_tx);
             let event = client_event_rx.blocking_recv().expect("event");
             match event {
                 ServerEvent::ReasoningEffortChanged {

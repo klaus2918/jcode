@@ -751,6 +751,22 @@ pub struct NamedProviderConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub supports_reasoning_effort: Option<bool>,
+    /// Echo unsigned thinking ("reasoning_content") back on follow-up turns.
+    ///
+    /// DeepSeek-style Anthropic-format gateways return thinking without an
+    /// Anthropic signature and reject subsequent requests whose assistant
+    /// history omits it (`reasoning_content must be passed back`). The
+    /// official Anthropic API instead rejects unsigned thinking blocks, so
+    /// this stays `false` unless the endpoint actually requires the echo.
+    #[serde(
+        default,
+        alias = "replay-unsigned-reasoning",
+        alias = "replay_reasoning",
+        alias = "echo-reasoning",
+        alias = "echo_reasoning",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replay_reasoning_content: Option<bool>,
     /// Provider-wide price fallback (resonix `price`), per 1M tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price: Option<ProviderPrice>,
@@ -799,6 +815,7 @@ impl Default for NamedProviderConfig {
             effort: None,
             vision_models: None,
             model_overrides: None,
+            replay_reasoning_content: None,
         }
     }
 }

@@ -358,6 +358,7 @@ type = "openai-compatible"
 base_url = "http://127.0.0.1:15721"   # address shown in the CC Switch proxy panel
 api = "anthropic"                     # proxy routes this as a Claude-channel request
 auth = "none"                         # CC Switch injects the real key
+replay_reasoning_content = true       # DeepSeek 风格网关要求回传无签名 thinking
 
 [[providers.cc-switch.models]]
 id = "deepseek-v4-flash"              # optional; leave unset to auto-follow the provider
@@ -365,10 +366,11 @@ context_window = 1000000
 auth = "none"
 ```
 
-Two rules to remember:
+Rules to remember:
 
 - **The model is optional.** Leave `default_model` (and the `models` list) unset and jcode fetches the proxy's model catalog (`/v1/models`) at startup, automatically picking the first model of whichever provider is currently enabled in CC Switch. Switch providers inside CC Switch and jcode follows: when a request fails because the model is unavailable, it re-fetches the catalog and retries with a catalog model. To pin a specific model, set `default_model` (or pass `--model <id>`); an explicit choice is never overridden by auto-discovery.
 - **The key is not required.** Set `auth = "none"`; CC Switch injects the real key at the proxy.
+- **DeepSeek-style gateways must echo thinking.** Some Anthropic-format gateways (e.g. proxies fronting DeepSeek) return thinking without an Anthropic signature and reject follow-up requests whose assistant history omits it (`reasoning_content must be passed back`). Set `replay_reasoning_content = true` on the profile to echo the unsigned thinking back on later turns. The official Anthropic API instead rejects unsigned thinking blocks, so keep it off there (the default).
 
 See [docs/Provider迁移指南.md](docs/Provider迁移指南.md) for the full guide.
 

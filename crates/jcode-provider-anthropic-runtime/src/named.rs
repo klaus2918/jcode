@@ -867,9 +867,14 @@ impl Provider for NamedAnthropicProvider {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let model = self.strip_session_profile_prefix(&model).to_string();
         let api_model = strip_1m_suffix(&model).to_string();
 
-        let api_messages = jcode_provider_anthropic::format_messages(messages, false);
+        let api_messages = jcode_provider_anthropic::format_messages(
+            messages,
+            false,
+            self.replays_unsigned_reasoning(),
+        );
         let api_tools = jcode_provider_anthropic::format_tools(tools, false, is_cache_ttl_1h());
         let (thinking, output_config, temperature) = self.build_reasoning_request_parts(&model);
 
@@ -925,6 +930,19 @@ impl Provider for NamedAnthropicProvider {
 
     fn name(&self) -> &str {
         "anthropic"
+    }
+
+    fn replays_unsigned_reasoning(&self) -> bool {
+        // Opt-in per profile: `replay_reasoning_content = true` on the
+        // `[providers.<name>]` entry. DeepSeek-style Anthropic-format gateways
+        // return unsigned thinking and reject follow-up requests whose
+        // assistant history omits it; the official Anthropic API instead
+        // rejects unsigned thinking, so this is off unless the user enables it.
+        jcode_base::config::config()
+            .providers
+            .get(&self.profile_name)
+            .and_then(|profile| profile.replay_reasoning_content)
+            .unwrap_or(false)
     }
 
     fn display_name(&self) -> String {

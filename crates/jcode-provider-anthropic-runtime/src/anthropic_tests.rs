@@ -897,6 +897,7 @@ fn test_anthropic_thinking_full_round_trip_preserves_signature_pairing() {
         "anthropic",
         &reasoning_blocks,
         true,
+        false,
     );
     assert_eq!(stored.len(), 2);
     match &stored[0] {

@@ -930,7 +930,9 @@ impl AnthropicProvider {
     /// Convert our Message type to Anthropic API format
     /// Also repairs dangling tool_uses by injecting synthetic tool_results
     fn format_messages(&self, messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> {
-        jcode_provider_anthropic::format_messages(messages, is_oauth)
+        // Official Anthropic: never replay unsigned thinking blocks (the API
+        // rejects them). Third-party gateways opt in via `NamedAnthropicProvider`.
+        jcode_provider_anthropic::format_messages(messages, is_oauth, false)
     }
 
     /// Convert our ContentBlock to Anthropic API format
@@ -940,7 +942,7 @@ impl AnthropicProvider {
         blocks: &[ContentBlock],
         is_oauth: bool,
     ) -> Vec<ApiContentBlock> {
-        jcode_provider_anthropic::format_content_blocks(blocks, is_oauth)
+        jcode_provider_anthropic::format_content_blocks(blocks, is_oauth, false)
     }
 
     /// Convert tool definitions to Anthropic API format

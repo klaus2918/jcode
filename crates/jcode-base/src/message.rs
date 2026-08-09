@@ -270,6 +270,7 @@ pub fn push_reasoning_blocks(
     reasoning_content: &str,
     reasoning_signature: Option<&str>,
     store_replay_context: bool,
+    replay_unsigned_reasoning: bool,
 ) {
     if reasoning_content.is_empty() {
         return;
@@ -278,7 +279,13 @@ pub fn push_reasoning_blocks(
         text: reasoning_content.to_string(),
         signature: reasoning_signature.map(str::to_string),
     };
-    push_reasoning_block(blocks, provider_name, &single, store_replay_context);
+    push_reasoning_block(
+        blocks,
+        provider_name,
+        &single,
+        store_replay_context,
+        replay_unsigned_reasoning,
+    );
 }
 
 /// Persist a whole turn's protocol-aware thinking blocks.
@@ -291,6 +298,7 @@ pub fn push_reasoning_blocks_many(
     provider_name: &str,
     reasoning_blocks: &[ReasoningBlock],
     store_replay_context: bool,
+    replay_unsigned_reasoning: bool,
 ) {
     for block in reasoning_blocks {
         // Empty text (e.g. redacted thinking) carries nothing replayable;
@@ -299,7 +307,13 @@ pub fn push_reasoning_blocks_many(
         if block.text.is_empty() {
             continue;
         }
-        push_reasoning_block(blocks, provider_name, block, store_replay_context);
+        push_reasoning_block(
+            blocks,
+            provider_name,
+            block,
+            store_replay_context,
+            replay_unsigned_reasoning,
+        );
     }
 }
 
@@ -308,6 +322,7 @@ fn push_reasoning_block(
     provider_name: &str,
     block: &ReasoningBlock,
     store_replay_context: bool,
+    replay_unsigned_reasoning: bool,
 ) {
     // Whether the replay block we stored already contains the readable text.
     let mut readable_replay_stored = false;
@@ -317,6 +332,16 @@ fn push_reasoning_block(
                 blocks.push(ContentBlock::AnthropicThinking {
                     thinking: block.text.clone(),
                     signature: signature.to_string(),
+                });
+                readable_replay_stored = true;
+            } else if replay_unsigned_reasoning {
+                // Third-party Anthropic-format gateway (DeepSeek-style) that
+                // requires unsigned thinking to be echoed back. Stored as
+                // `Reasoning` so the request builder can re-serialize it into a
+                // thinking block; official Anthropic rejects unsigned thinking,
+                // so this stays a `ReasoningTrace` unless opted in.
+                blocks.push(ContentBlock::Reasoning {
+                    text: block.text.clone(),
                 });
                 readable_replay_stored = true;
             }

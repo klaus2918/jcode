@@ -954,10 +954,7 @@ impl App {
             self.provider.reasoning_effort()
         };
         let available_efforts = if self.is_remote {
-            inferred_reasoning_efforts(
-                self.remote_provider_name.as_deref(),
-                Some(&current_model),
-            )
+            inferred_reasoning_efforts(self.remote_provider_name.as_deref(), Some(&current_model))
         } else {
             self.provider.available_efforts()
         };

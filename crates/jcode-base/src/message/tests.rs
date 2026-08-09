@@ -754,7 +754,14 @@ fn parse_background_task_notification_markdown_extracts_fields() -> Result<()> {
 fn push_reasoning_blocks_always_captures_history() {
     // seal/claude-api (replay disabled) must still persist a history trace.
     let mut blocks = Vec::new();
-    push_reasoning_blocks(&mut blocks, "anthropic", "thinking about X", None, false);
+    push_reasoning_blocks(
+        &mut blocks,
+        "anthropic",
+        "thinking about X",
+        None,
+        false,
+        false,
+    );
     assert_eq!(blocks.len(), 1);
     match &blocks[0] {
         ContentBlock::ReasoningTrace { text } => assert_eq!(text, "thinking about X"),
@@ -771,6 +778,7 @@ fn push_reasoning_blocks_anthropic_signed_replay() {
         "signed thought",
         Some("sig"),
         true,
+        false,
     );
     // Signed thinking is replayable AND readable, so no extra trace is needed.
     assert_eq!(blocks.len(), 1);
@@ -790,9 +798,34 @@ fn push_reasoning_blocks_anthropic_signed_replay() {
 fn push_reasoning_blocks_anthropic_unsigned_falls_back_to_trace() {
     let mut blocks = Vec::new();
     // Replay requested but no signature: cannot replay, must still keep history.
-    push_reasoning_blocks(&mut blocks, "anthropic", "unsigned thought", None, true);
+    push_reasoning_blocks(
+        &mut blocks,
+        "anthropic",
+        "unsigned thought",
+        None,
+        true,
+        false,
+    );
     assert_eq!(blocks.len(), 1);
     assert!(matches!(blocks[0], ContentBlock::ReasoningTrace { .. }));
+}
+
+#[test]
+fn push_reasoning_blocks_anthropic_unsigned_replay_when_opted_in() {
+    // Third-party Anthropic-format gateways (DeepSeek-style) that opt in via
+    // `replay_reasoning_content = true` must echo unsigned thinking back, so
+    // the block is stored as replayable `Reasoning` instead of a bare trace.
+    let mut blocks = Vec::new();
+    push_reasoning_blocks(
+        &mut blocks,
+        "anthropic",
+        "unsigned thought",
+        None,
+        true,
+        true,
+    );
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0], ContentBlock::Reasoning { .. }));
 }
 
 #[test]
@@ -800,7 +833,7 @@ fn push_reasoning_blocks_openai_keeps_readable_trace() {
     let mut blocks = Vec::new();
     // OpenAI native reasoning is encrypted/unreadable, so a readable trace is
     // always added for history regardless of replay setting.
-    push_reasoning_blocks(&mut blocks, "openai", "openai reasoning", None, true);
+    push_reasoning_blocks(&mut blocks, "openai", "openai reasoning", None, true, false);
     assert_eq!(blocks.len(), 1);
     match &blocks[0] {
         ContentBlock::ReasoningTrace { text } => assert_eq!(text, "openai reasoning"),
@@ -811,7 +844,7 @@ fn push_reasoning_blocks_openai_keeps_readable_trace() {
 #[test]
 fn push_reasoning_blocks_openrouter_replay_is_readable() {
     let mut blocks = Vec::new();
-    push_reasoning_blocks(&mut blocks, "openrouter", "or reasoning", None, true);
+    push_reasoning_blocks(&mut blocks, "openrouter", "or reasoning", None, true, false);
     // OpenRouter stores a readable Reasoning block, which doubles as history.
     assert_eq!(blocks.len(), 1);
     assert!(matches!(blocks[0], ContentBlock::Reasoning { .. }));
@@ -836,6 +869,7 @@ fn push_reasoning_blocks_many_preserves_anthropic_signature_pairing() {
             },
         ],
         true,
+        false,
     );
     // Two separate signed blocks, each with its own signature, so Anthropic can
     // validate every thinking block it replays on a later turn.
@@ -881,6 +915,7 @@ fn push_reasoning_blocks_many_mixed_signature_falls_back_per_block() {
             },
         ],
         true,
+        false,
     );
     assert_eq!(blocks.len(), 2);
     assert!(matches!(&blocks[0], ContentBlock::AnthropicThinking { .. }));
@@ -890,7 +925,7 @@ fn push_reasoning_blocks_many_mixed_signature_falls_back_per_block() {
 #[test]
 fn push_reasoning_blocks_skips_empty() {
     let mut blocks = Vec::new();
-    push_reasoning_blocks(&mut blocks, "anthropic", "", None, false);
+    push_reasoning_blocks(&mut blocks, "anthropic", "", None, false, false);
     assert!(blocks.is_empty());
 }
 

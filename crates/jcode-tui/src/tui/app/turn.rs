@@ -328,6 +328,7 @@ impl App {
                                                 &provider_name,
                                                 &reasoning_blocks,
                                                 store_reasoning_content,
+                                                self.provider.replays_unsigned_reasoning(),
                                             );
                                             if store_reasoning_content {
                                                 content_blocks.extend(openai_reasoning_items.iter().cloned());
@@ -401,6 +402,7 @@ impl App {
                                                 &provider_name,
                                                 &reasoning_blocks,
                                                 store_reasoning_content,
+                                                self.provider.replays_unsigned_reasoning(),
                                             );
                                             if store_reasoning_content {
                                                 content_blocks.extend(openai_reasoning_items.iter().cloned());
@@ -1100,6 +1102,7 @@ impl App {
                 &provider_name,
                 &reasoning_blocks,
                 store_reasoning_content,
+                self.provider.replays_unsigned_reasoning(),
             );
             if store_reasoning_content {
                 content_blocks.extend(openai_reasoning_items.iter().cloned());

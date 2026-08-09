@@ -13,7 +13,11 @@ const CLAUDE_CODE_IDENTITY: &str = "You are a Claude agent, built on Anthropic's
 /// on an assistant message, which Anthropic rejects on non-prefill models.
 pub(crate) const CONTINUATION_USER_TURN: &str = "Continue.";
 
-pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> {
+pub fn format_messages(
+    messages: &[Message],
+    is_oauth: bool,
+    replay_unsigned_reasoning: bool,
+) -> Vec<ApiMessage> {
     use std::collections::HashSet;
 
     // First pass: collect all tool_use IDs and tool_result IDs
@@ -53,7 +57,7 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
             Role::Assistant => "assistant",
         };
 
-        let content = format_content_blocks(&msg.content, is_oauth);
+        let content = format_content_blocks(&msg.content, is_oauth, replay_unsigned_reasoning);
 
         if !content.is_empty() {
             result.push(ApiMessage {
@@ -191,7 +195,11 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
 }
 
 /// Convert our ContentBlock to Anthropic API format
-pub fn format_content_blocks(blocks: &[ContentBlock], is_oauth: bool) -> Vec<ApiContentBlock> {
+pub fn format_content_blocks(
+    blocks: &[ContentBlock],
+    is_oauth: bool,
+    replay_unsigned_reasoning: bool,
+) -> Vec<ApiContentBlock> {
     let mut result: Vec<ApiContentBlock> = Vec::new();
     for block in blocks {
         match block {
@@ -226,6 +234,19 @@ pub fn format_content_blocks(blocks: &[ContentBlock], is_oauth: bool) -> Vec<Api
                 result.push(ApiContentBlock::Thinking {
                     thinking: thinking.clone(),
                     signature: signature.clone(),
+                });
+            }
+            ContentBlock::Reasoning { text } if replay_unsigned_reasoning => {
+                // Unsigned reasoning stored for a third-party Anthropic-format
+                // gateway that requires it echoed back (DeepSeek-style,
+                // `replay_reasoning_content = true` on the profile). Serialize
+                // it as a thinking block with an empty signature. The official
+                // Anthropic provider never passes `replay_unsigned_reasoning`,
+                // so this branch cannot emit an unsigned thinking block that
+                // the official API would reject.
+                result.push(ApiContentBlock::Thinking {
+                    thinking: text.clone(),
+                    signature: String::new(),
                 });
             }
             ContentBlock::ToolUse {
@@ -918,7 +939,7 @@ mod cache_prefix_invariant_tests {
     }
 
     fn formatted_with_breakpoints(messages: &[Message]) -> Vec<ApiMessage> {
-        let mut api = format_messages(messages, false);
+        let mut api = format_messages(messages, false, false);
         add_message_cache_breakpoint(&mut api, false);
         api
     }

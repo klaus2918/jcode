@@ -33,6 +33,7 @@ fn transcript_ending_on_assistant_gets_a_continuation_user_turn() {
             text_msg(Role::Assistant, "A1 (interrupted by reload)"),
         ],
         false,
+        false,
     );
 
     assert_eq!(roles(&formatted), vec!["user", "assistant", "user"]);
@@ -51,6 +52,7 @@ fn transcript_already_ending_on_user_is_left_alone() {
             text_msg(Role::Assistant, "A1"),
             text_msg(Role::User, "Q2"),
         ],
+        false,
         false,
     );
 
@@ -80,7 +82,7 @@ fn dangling_tool_use_repair_already_ends_on_user_and_is_not_double_patched() {
         },
     ];
 
-    let formatted = format_messages(&messages, false);
+    let formatted = format_messages(&messages, false, false);
     assert_eq!(roles(&formatted), vec!["user", "assistant", "user"]);
     assert!(matches!(
         formatted.last().expect("trailing turn").content.first(),

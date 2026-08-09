@@ -123,6 +123,22 @@ pub trait Provider: Send + Sync {
         self.name().to_string()
     }
 
+    /// Whether this provider instance is a third-party Anthropic-format
+    /// gateway that requires unsigned reasoning ("thinking") content to be
+    /// echoed back on subsequent turns.
+    ///
+    /// DeepSeek-style gateways (e.g. a `[providers.<name>]` profile with
+    /// `api = "anthropic"` talking to `api.deepseek.com/anthropic` or a
+    /// company proxy) return thinking *without* an Anthropic signature and
+    /// reject follow-up requests whose assistant history omits it
+    /// ("reasoning_content must be passed back"). The official Anthropic API,
+    /// by contrast, rejects unsigned thinking blocks, so only third-party
+    /// gateways should opt in. Defaults to `false`; `NamedAnthropicProvider`
+    /// overrides this to `true`.
+    fn replays_unsigned_reasoning(&self) -> bool {
+        false
+    }
+
     /// The `[providers.<key>]` config entry whose explicit model settings
     /// apply to this provider instance, when one exists.
     ///

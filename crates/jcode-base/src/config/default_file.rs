@@ -665,6 +665,7 @@ desktop_notifications = true
 # type = "openai-compatible"
 # base_url = "http://127.0.0.1:15721"   # cc-switch proxy address shown in its panel
 # api = "anthropic"                     # proxy routes this as a Claude-channel request
+# replay_reasoning_content = true       # DeepSeek 风格网关要求回传无签名 thinking
 # auth = "none"                         # real key is injected by cc-switch
 # [[providers.cc-switch.models]]
 # id = "deepseek-v4-flash"
