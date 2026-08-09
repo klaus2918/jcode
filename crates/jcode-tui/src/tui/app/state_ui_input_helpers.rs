@@ -42,7 +42,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/models", "Alias for /model"),
     RegisteredCommand::public(
         "/provider",
-        "Switch to a provider (built-in id or [providers.<name>] profile)",
+        "切换 provider（内置 id 或 [providers.<name>] profile）",
     ),
     RegisteredCommand::public(
         "/provider-test-coverage",

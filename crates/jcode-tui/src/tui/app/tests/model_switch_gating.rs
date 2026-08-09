@@ -286,8 +286,8 @@ fn provider_command_unknown_provider_reports_error() {
         assert!(
             app.display_messages
                 .iter()
-                .any(|message| message.content.contains("Unknown provider")),
-            "expected Unknown provider error, got: {:?}",
+                .any(|message| message.content.contains("未知的 provider")),
+            "expected unknown-provider error, got: {:?}",
             app.display_messages
         );
         assert!(

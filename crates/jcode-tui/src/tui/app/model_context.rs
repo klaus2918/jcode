@@ -1649,10 +1649,23 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
                 app.set_status_notice(format!("Effort: {} {}", label, bar));
             }
             Err(e) => {
-                app.push_display_message(DisplayMessage::error(format!(
-                    "Failed to set effort: {}",
-                    e
-                )));
+                let message = e.to_string();
+                // Provider/model simply not supporting reasoning effort is
+                // not an error: silently reset to default (mirrors the server
+                // side in provider_control::send_reasoning_effort_result).
+                let unsupported = message.contains("does not support reasoning effort")
+                    || message.contains("Reasoning effort is not supported");
+                if unsupported {
+                    app.push_display_message(DisplayMessage::system(
+                        "推理强度 → 默认（当前 provider 不支持）",
+                    ));
+                    app.set_status_notice("Effort: default");
+                } else {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Failed to set effort: {}",
+                        message
+                    )));
+                }
             }
         }
         return true;
@@ -2097,12 +2110,12 @@ pub(super) fn handle_provider_command(app: &mut App, trimmed: &str) -> bool {
     }
     if let Some(reason) = runtime_switch_busy_reason(app) {
         app.push_display_message(DisplayMessage::error(model_switch_busy_message(reason)));
-        app.set_status_notice("Provider switch busy");
+        app.set_status_notice("provider 切换进行中");
         return true;
     }
     let Some(spec) = provider_default_model_spec(provider_name) else {
         app.push_display_message(DisplayMessage::error(format!(
-            "Unknown provider '{}'. Use: claude, openai, openrouter, cursor, copilot, gemini, antigravity, or a [providers.<name>] profile",
+            "未知的 provider '{}'。可用：claude、openai、openrouter、cursor、copilot、gemini、antigravity，或 [providers.<name>] 配置的 profile",
             provider_name
         )));
         return true;
@@ -2128,10 +2141,10 @@ pub(super) fn handle_provider_command(app: &mut App, trimmed: &str) -> bool {
                 && before_key == after_key
             {
                 app.push_display_message(DisplayMessage::system(format!(
-                    "Already using provider: {}",
+                    "已在用 provider：{}",
                     provider_name
                 )));
-                app.set_status_notice(format!("Already using provider: {}", provider_name));
+                app.set_status_notice(format!("已在用 provider：{}", provider_name));
                 return true;
             }
             let active_model = app.finalize_model_switch(&active_model);
@@ -2141,19 +2154,19 @@ pub(super) fn handle_provider_command(app: &mut App, trimmed: &str) -> bool {
                 crate::config::Config::set_default_model(Some(&active_model), after_key.as_deref())
             {
                 app.push_display_message(DisplayMessage::system(format!(
-                    "Switched to {}; failed to save as default: {}",
+                    "已切换到 {}；保存为默认失败：{}",
                     active_model, error
                 )));
             }
             app.push_display_message(DisplayMessage::system(format!(
-                "Switched to provider {} · {}",
+                "已切换到 provider {} · {}",
                 provider_name, active_model
             )));
             app.set_status_notice(format!("Switched provider: {}", provider_name));
         }
         Err(error) => {
             app.push_display_message(DisplayMessage::error(format!(
-                "Failed to switch provider: {}",
+                "切换 provider 失败：{}",
                 error
             )));
             app.set_status_notice("Provider switch failed");

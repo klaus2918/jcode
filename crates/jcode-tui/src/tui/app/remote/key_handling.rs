@@ -1155,14 +1155,14 @@ async fn handle_remote_key_internal(
                         app.push_display_message(DisplayMessage::error(
                             app_mod::model_context::model_switch_busy_message(reason),
                         ));
-                        app.set_status_notice("Provider switch busy");
+                        app.set_status_notice("provider 切换进行中");
                         return Ok(());
                     }
                     let Some(spec) =
                         app_mod::model_context::provider_default_model_spec(provider_name)
                     else {
                         app.push_display_message(DisplayMessage::error(format!(
-                            "Unknown provider '{}'. Use: claude, openai, openrouter, cursor, copilot, gemini, antigravity, or a [providers.<name>] profile",
+                            "未知的 provider '{}'。可用：claude、openai、openrouter、cursor、copilot、gemini、antigravity，或 [providers.<name>] 配置的 profile",
                             provider_name
                         )));
                         return Ok(());
