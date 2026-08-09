@@ -2047,44 +2047,75 @@ pub(super) fn provider_switch_candidates() -> Vec<String> {
     names
 }
 
-/// Model routes for the `/provider` picker: one entry per configured provider
-/// (named profiles plus built-ins with live credentials), each pointing at the
-/// provider's default model. Selecting an entry reuses the model-picker switch
-/// path (`set_model("<provider>:<model>")`), so `/provider` lists providers the
-/// way `/model` lists models.
+/// Model routes for the `/provider` picker: one entry **per model** across all
+/// configured providers (named profiles plus built-ins with live credentials),
+/// each bound to its owning provider. Selecting an entry reuses the
+/// model-picker switch path (`set_model("<provider>:<model>")`), so the same
+/// picker serves both "switch provider" and "switch model within a provider" —
+/// `/provider` and bare `/model` both open it, and the server-catalog
+/// snapshot path (which the remote `/model` previously depended on and which
+/// could come up empty) is bypassed entirely.
 pub(super) fn provider_picker_routes() -> Vec<crate::provider::ModelRoute> {
     let mut routes = Vec::new();
     for name in provider_switch_candidates() {
-        let Some(spec) = provider_default_model_spec(&name) else {
-            continue;
-        };
         let is_named = crate::config::config().providers.contains_key(&name);
-        let (model, api_method) = if is_named {
-            let prefix = format!("{}:", name);
-            (
-                spec.strip_prefix(&prefix)
-                    .unwrap_or(&spec)
-                    .to_string(),
-                format!("openai-compatible:{}", name),
-            )
-        } else {
-            let method = match name.as_str() {
-                "claude" => "claude-api",
-                "openai" => "openai-api",
-                "openrouter" => "openrouter",
-                _ => "current",
+        let mut models: Vec<String> = Vec::new();
+        if is_named {
+            let profile = &crate::config::config().providers[&name];
+            for candidate in &profile.models {
+                let id = candidate.id.trim();
+                if !id.is_empty() && !models.iter().any(|m| m == id) {
+                    models.push(id.to_string());
+                }
+            }
+            if let Some(default) = profile
+                .default_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+            {
+                if !models.iter().any(|m| m == default) {
+                    models.push(default.to_string());
+                }
+            }
+        }
+        if models.is_empty() {
+            // Fall back to the provider's default model spec for built-ins
+            // and named profiles without an explicit model list.
+            if let Some(spec) = provider_default_model_spec(&name) {
+                let prefix = format!("{}:", name);
+                let model = if is_named {
+                    spec.strip_prefix(&prefix).unwrap_or(&spec).to_string()
+                } else {
+                    spec
+                };
+                if !models.iter().any(|m| m == &model) {
+                    models.push(model);
+                }
+            }
+        }
+        for model in models {
+            let api_method = if is_named {
+                format!("openai-compatible:{}", name)
+            } else {
+                match name.as_str() {
+                    "claude" => "claude-api",
+                    "openai" => "openai-api",
+                    "openrouter" => "openrouter",
+                    _ => "current",
+                }
+                .to_string()
             };
-            (spec, method.to_string())
-        };
-        routes.push(crate::provider::ModelRoute {
-            capability: None,
-            model,
-            provider: name.clone(),
-            api_method,
-            available: true,
-            detail: String::new(),
-            cheapness: None,
-        });
+            routes.push(crate::provider::ModelRoute {
+                capability: None,
+                model: model.clone(),
+                provider: name.clone(),
+                api_method,
+                available: true,
+                detail: String::new(),
+                cheapness: None,
+            });
+        }
     }
     routes
 }

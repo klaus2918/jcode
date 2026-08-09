@@ -916,7 +916,12 @@ impl App {
     }
 
     pub(super) fn open_model_picker(&mut self) {
-        self.open_model_picker_inner(false);
+        // `/model` (bare) opens the same picker as `/provider`: one entry per
+        // model across configured providers. This bypasses the remote
+        // server-catalog snapshot path that could come up empty ("No models
+        // are available") and gives a single list-and-pick surface for both
+        // switching provider and switching model within a provider.
+        self.open_provider_picker();
     }
 
     /// Open the picker for the `/provider` command: one entry per configured
