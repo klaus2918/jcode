@@ -937,6 +937,26 @@ impl MultiProvider {
             .then(|| (prefix.to_string(), rest.to_string()))
     }
 
+    /// Unified check: does `model` carry *any* known routing prefix?
+    ///
+    /// Every prefix-routing path (config `default_model` application, `/model`
+    /// switches, session restore) must go through this single gate so no call
+    /// site can forget a layer. The three layers are:
+    ///
+    /// 1. built-in provider prefixes (`claude:`, `openai-api:`, ...) from
+    ///    `jcode_provider_core` (hard-coded protocol vocabulary -- session
+    ///    persistence, CLI `--provider`, and wire `api_method` depend on it);
+    /// 2. built-in catalog OpenAI-compatible profiles (`deepseek:`, `zai:`,
+    ///    ...);
+    /// 3. user-defined named provider profiles from config
+    ///    (`[providers.<name>]`), which is what makes `cch:deepseek-v4-flash`
+    ///    resolve to the `cch` gateway.
+    fn has_explicit_model_prefix(model: &str) -> bool {
+        explicit_model_provider_prefix(model).is_some()
+            || Self::openai_compatible_model_prefix(model).is_some()
+            || Self::named_provider_profile_model_prefix(model).is_some()
+    }
+
     /// Bind (or reuse) the runtime for a named config provider profile and
     /// select `model` on it (issue #444).
     fn set_model_on_named_provider_profile(&self, profile_name: &str, model: &str) -> Result<()> {
@@ -1293,9 +1313,7 @@ impl MultiProvider {
         // through the canonical prefix-aware path. Handing the raw spec to a
         // single provider would make it reject the id and silently keep its
         // fallback default model.
-        if explicit_model_provider_prefix(model).is_some()
-            || Self::openai_compatible_model_prefix(model).is_some()
-        {
+        if Self::has_explicit_model_prefix(model) {
             return self.set_model(model);
         }
 

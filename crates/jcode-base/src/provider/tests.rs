@@ -1338,3 +1338,58 @@ context_window = 1000000
         });
     });
 }
+
+/// 用户报告：`default_model = "cch:deepseek-v4-flash"`（带 `<profile>:` 前缀）
+/// 会原样发给 API，DeepSeek 网关拒绝（"you passed cch:deepseek-v4-flash"）。
+/// 启动挂载 default_provider + default_model 时，前缀必须被解析并剥掉，模型名
+/// 必须存为裸 id。
+#[test]
+fn prefixed_default_model_with_named_provider_keeps_bare_model() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            std::fs::write(
+                std::path::PathBuf::from(&jcode_home).join("config.toml"),
+                r#"
+[provider]
+default_provider = "cch"
+default_model = "cch:deepseek-v4-flash"
+
+[providers.cch]
+type = "openai-compatible"
+base_url = "http://cch.skytech.io"
+api = "anthropic"
+auth = "header"
+auth_header = "x-api-key"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[providers.cch.models]]
+id = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 1000000
+"#,
+            )
+            .expect("write test config.toml");
+            crate::env::set_var("DEEPSEEK_API_KEY", "sk-deepseek");
+            crate::config::invalidate_config_cache();
+
+            let template = MultiProvider::new_fast();
+            // 前缀必须被解析：active profile 是 cch，模型存为裸 id。
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            assert_eq!(
+                ProviderRegistry::new(&template)
+                    .active_compatible_profile_id()
+                    .as_deref(),
+                Some("cch")
+            );
+
+            // 会话内用带前缀的 spec 切换也得到裸模型 id。
+            let session = template.fork_for_new_session();
+            session
+                .set_model("cch:deepseek-v4-flash")
+                .expect("prefixed in-session switch");
+            assert_eq!(session.model(), "deepseek-v4-flash");
+        });
+    });
+}

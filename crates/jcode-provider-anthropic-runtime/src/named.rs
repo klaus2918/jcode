@@ -425,6 +425,42 @@ impl NamedAnthropicProvider {
         )
     }
 
+    /// Strip a session-routing `<profile>:` prefix from a model spec.
+    ///
+    /// Session restore persists models as `<provider-key>:<model>` (see
+    /// `MultiProvider::model_switch_request_for_session_*`), and a config
+    /// `default_model` may carry the same prefix (e.g. `cch:deepseek-v4-flash`
+    /// with `default_provider = "cch"`). For a standalone
+    /// `NamedAnthropicProvider` bound to a named profile, that prefix is a
+    /// routing token, not part of the model id, and must not reach the wire.
+    /// We strip it when the spec has a `:` separator, the prefix is NOT a
+    /// built-in routing prefix (`explicit_model_provider_prefix`), and the
+    /// prefix matches either this provider's own profile name or any
+    /// configured named provider profile.
+    ///
+    /// Built-in routing prefixes (`claude:`, `openai:`, `copilot:`, ...) are
+    /// left intact so switching the active provider from a saved session still
+    /// round-trips verbatim.
+    fn strip_session_profile_prefix<'a>(&self, model: &'a str) -> &'a str {
+        let Some((prefix, rest)) = model.split_once(':') else {
+            return model;
+        };
+        if jcode_provider_core::explicit_model_provider_prefix(model).is_some() {
+            return model;
+        }
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return model;
+        }
+        let prefix = prefix.trim();
+        let matches_known_profile = self.profile_name.eq_ignore_ascii_case(prefix)
+            || jcode_base::config::config()
+                .providers
+                .keys()
+                .any(|id| id.eq_ignore_ascii_case(prefix));
+        if matches_known_profile { rest } else { model }
+    }
+
     fn build_reasoning_request_parts(
         &self,
         model: &str,
@@ -915,7 +951,7 @@ impl Provider for NamedAnthropicProvider {
     }
 
     fn set_model(&self, model: &str) -> Result<()> {
-        let model = model.trim();
+        let model = self.strip_session_profile_prefix(model.trim());
         if model.is_empty() {
             anyhow::bail!("Model cannot be empty");
         }
@@ -1041,7 +1077,8 @@ impl Provider for NamedAnthropicProvider {
     }
 
     fn context_window(&self) -> usize {
-        let model = self.model();
+        let stored = self.model();
+        let model = self.strip_session_profile_prefix(&stored);
         self.static_context_limits
             .get(&model.to_ascii_lowercase())
             .copied()
@@ -1197,6 +1234,34 @@ mod tests {
             NamedAnthropicProvider::messages_url("https://host/anthropic"),
             "https://host/anthropic/v1/messages"
         );
+    }
+
+    #[test]
+    fn set_model_strips_own_profile_prefix() {
+        // Session restore / config default_model may carry a `<profile>:<model>`
+        // prefix (e.g. `cch:deepseek-v4-flash` with `default_provider = "cch"`).
+        // The runtime must strip it so the prefixed routing token never reaches
+        // the API (regression: "you passed cch:deepseek-v4-flash" 400).
+        let server = spawn_models_server(r#"{"models":[{"slug":"deepseek-v4-flash"}]}"#);
+        let provider =
+            NamedAnthropicProvider::new_named("cch", &cc_switch_profile(server)).unwrap();
+        provider
+            .set_model("cch:deepseek-v4-flash")
+            .expect("prefixed spec must switch");
+        assert_eq!(provider.model(), "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn set_model_keeps_builtin_routing_prefixes_verbatim() {
+        // Built-in routing prefixes (claude:, openai:, ...) round-trip
+        // verbatim so cross-provider switches from a saved session still work.
+        let server = spawn_models_server(r#"{"models":[{"slug":"deepseek-v4-flash"}]}"#);
+        let provider =
+            NamedAnthropicProvider::new_named("cch", &cc_switch_profile(server)).unwrap();
+        provider
+            .set_model("claude:claude-opus-4-6")
+            .expect("built-in prefix must not be stripped");
+        assert_eq!(provider.model(), "claude:claude-opus-4-6");
     }
 
     #[tokio::test]
