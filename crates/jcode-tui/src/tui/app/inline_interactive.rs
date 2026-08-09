@@ -919,6 +919,61 @@ impl App {
         self.open_model_picker_inner(false);
     }
 
+    /// Open the picker for the `/provider` command: one entry per configured
+    /// provider (named profiles + built-ins with live credentials), each bound
+    /// to that provider's default model. Selecting an entry reuses the
+    /// model-picker switch path, so `/provider` offers the same list-and-pick
+    /// interaction as `/model`.
+    pub(super) fn open_provider_picker(&mut self) {
+        let picker_started = std::time::Instant::now();
+        if self.is_remote && self.remote_model_options.is_empty() {
+            self.hydrate_remote_model_catalog_cache();
+        }
+        let current_model = if self.is_remote {
+            self.remote_provider_model
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+        } else {
+            self.provider.model().to_string()
+        };
+        if self.auth_catalog_refresh_pending {
+            self.open_loading_model_picker(&current_model);
+            return;
+        }
+        let config = crate::config::config();
+        let config_default_model = config.effective_default_model().map(str::to_string);
+        let config_default_provider = config.provider.default_provider.clone();
+        let current_effort = if self.is_remote {
+            self.remote_reasoning_effort.clone()
+        } else {
+            self.provider.reasoning_effort()
+        };
+        let available_efforts = if self.is_remote {
+            inferred_reasoning_efforts(
+                self.remote_provider_name.as_deref(),
+                Some(&current_model),
+            )
+        } else {
+            self.provider.available_efforts()
+        };
+        let cache_signature = self.model_picker_cache_signature(
+            &current_model,
+            config_default_model,
+            config_default_provider,
+            current_effort,
+            &available_efforts,
+        );
+        let routes = crate::tui::app::model_context::provider_picker_routes();
+        self.open_model_picker_with_routes(
+            cache_signature,
+            picker_started,
+            routes,
+            0,
+            false,
+            false,
+        );
+    }
+
     fn open_model_picker_preserving_input(&mut self) {
         self.open_model_picker_inner(true);
     }

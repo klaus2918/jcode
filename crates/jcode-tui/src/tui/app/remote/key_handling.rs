@@ -1146,17 +1146,9 @@ async fn handle_remote_key_internal(
                 {
                     let provider_name = trimmed.strip_prefix("/provider").unwrap().trim();
                     if provider_name.is_empty() {
-                        let list = app_mod::model_context::provider_switch_candidates();
-                        let available = if list.is_empty() {
-                            "(none configured)".to_string()
-                        } else {
-                            list.join(" · ")
-                        };
-                        app.push_display_message(DisplayMessage::system(format!(
-                            "Usage: /provider <name> — switch provider in-session. Available: {}",
-                            available
-                        )));
-                        app.set_status_notice("Usage: /provider <name>");
+                        // List configured providers in the picker, mirroring
+                        // `/model` (remote mode too).
+                        app.open_provider_picker();
                         return Ok(());
                     }
                     if let Some(reason) = app_mod::model_context::runtime_switch_busy_reason(app) {

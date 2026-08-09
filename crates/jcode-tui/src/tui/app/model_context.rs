@@ -2034,6 +2034,48 @@ pub(super) fn provider_switch_candidates() -> Vec<String> {
     names
 }
 
+/// Model routes for the `/provider` picker: one entry per configured provider
+/// (named profiles plus built-ins with live credentials), each pointing at the
+/// provider's default model. Selecting an entry reuses the model-picker switch
+/// path (`set_model("<provider>:<model>")`), so `/provider` lists providers the
+/// way `/model` lists models.
+pub(super) fn provider_picker_routes() -> Vec<crate::provider::ModelRoute> {
+    let mut routes = Vec::new();
+    for name in provider_switch_candidates() {
+        let Some(spec) = provider_default_model_spec(&name) else {
+            continue;
+        };
+        let is_named = crate::config::config().providers.contains_key(&name);
+        let (model, api_method) = if is_named {
+            let prefix = format!("{}:", name);
+            (
+                spec.strip_prefix(&prefix)
+                    .unwrap_or(&spec)
+                    .to_string(),
+                format!("openai-compatible:{}", name),
+            )
+        } else {
+            let method = match name.as_str() {
+                "claude" => "claude-api",
+                "openai" => "openai-api",
+                "openrouter" => "openrouter",
+                _ => "current",
+            };
+            (spec, method.to_string())
+        };
+        routes.push(crate::provider::ModelRoute {
+            capability: None,
+            model,
+            provider: name.clone(),
+            api_method,
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        });
+    }
+    routes
+}
+
 /// Handle `/provider <name>` in local (non-remote) mode: resolve the provider
 /// to a model spec and switch the shared provider, persisting the new default.
 /// A bare `/provider` (no argument) shows usage and the selectable providers
@@ -2049,17 +2091,8 @@ pub(super) fn handle_provider_command(app: &mut App, trimmed: &str) -> bool {
     }
     let provider_name = rest.trim();
     if provider_name.is_empty() {
-        let list = provider_switch_candidates();
-        let available = if list.is_empty() {
-            "(none configured)".to_string()
-        } else {
-            list.join(" · ")
-        };
-        app.push_display_message(DisplayMessage::system(format!(
-            "Usage: /provider <name> — switch provider in-session. Available: {}",
-            available
-        )));
-        app.set_status_notice("Usage: /provider <name>");
+        // List configured providers in the picker, mirroring `/model`.
+        app.open_provider_picker();
         return true;
     }
     if let Some(reason) = runtime_switch_busy_reason(app) {

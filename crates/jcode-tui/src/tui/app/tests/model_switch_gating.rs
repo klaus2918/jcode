@@ -213,32 +213,16 @@ default_model = "deepseek-v4-flash"
 
         let (mut app, _, set_model_calls) = create_model_switch_probe_app();
         // A bare `/provider` must be recognized (not fall through to the
-        // "Unknown skill" fallback) and show usage + available providers.
+        // "Unknown skill" fallback) and open the provider picker listing
+        // configured providers, mirroring `/model`.
         assert!(super::model_context::handle_provider_command(
             &mut app,
             "/provider"
         ));
-        let usage = app
-            .display_messages
-            .iter()
-            .find(|message| message.content.contains("Usage: /provider <name>"))
-            .map(|message| message.content.clone())
-            .unwrap_or_else(|| {
-                panic!(
-                    "bare /provider should show usage, got: {:?}",
-                    app.display_messages
-                )
-            });
         assert!(
-            usage.contains("deepseek-official"),
-            "listing must include the configured named profile: {usage}"
+            app.inline_interactive_state.is_some(),
+            "bare /provider should open the picker"
         );
-        for unconfigured in ["claude", "openai", "openrouter", "copilot", "gemini"] {
-            assert!(
-                !usage.contains(unconfigured),
-                "listing must not advertise unconfigured built-in provider '{unconfigured}': {usage}"
-            );
-        }
         assert!(
             set_model_calls.lock().unwrap().is_empty(),
             "bare /provider must not trigger a switch"
