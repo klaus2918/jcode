@@ -3027,10 +3027,20 @@ impl App {
                         provider_key.as_deref().unwrap_or("auto")
                     );
 
-                    match crate::config::Config::set_default_model(
-                        Some(&model_spec),
-                        provider_key.as_deref(),
-                    ) {
+                    // When the picker entry resolved to a concrete provider
+                    // route, persist both model and provider. When it did not
+                    // (e.g. an `unavailable` placeholder route with an unknown
+                    // api_method), persist only the model so an existing
+                    // `default_provider` (e.g. a named profile) is not wiped
+                    // back to `(auto)` by a `None` overwrite.
+                    let save_default = match provider_key.as_deref() {
+                        Some(provider_key) => crate::config::Config::set_default_model(
+                            Some(&model_spec),
+                            Some(provider_key),
+                        ),
+                        None => crate::config::Config::set_default_model_only(Some(&model_spec)),
+                    };
+                    match save_default {
                         Ok(()) => {
                             // Persist the effort variant the user picked, so an
                             // effort-qualified entry (e.g. "Claude Opus 5 (high)")

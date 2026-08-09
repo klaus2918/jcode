@@ -535,40 +535,75 @@ pub(super) async fn execute_debug_command(
     }
 
     if trimmed.starts_with("set_provider:") {
-        let provider = trimmed
+        let raw_provider = trimmed
             .strip_prefix("set_provider:")
             .unwrap_or("")
-            .trim()
-            .to_lowercase();
+            .trim();
+        let provider = raw_provider.to_lowercase();
         let claude_usage = crate::usage::get_sync();
         let claude_usage_exhausted =
             claude_usage.five_hour >= 0.99 && claude_usage.seven_day >= 0.99;
-        let default_model = match provider.as_str() {
+        let default_model: String = match provider.as_str() {
             "claude" | "anthropic" => {
                 if claude_usage_exhausted {
-                    "claude-sonnet-4-6"
+                    "claude-sonnet-4-6".to_string()
                 } else {
                     // Provider-core's quality-first default was removed with the
                     // built-in Claude/OpenAI providers; keep a stable literal
                     // for the debug `set_provider:` command.
-                    "claude-fable-5"
+                    "claude-fable-5".to_string()
                 }
             }
-            "openai" | "codex" => "gpt-5.6-sol",
-            "openrouter" => "anthropic/claude-sonnet-4",
-            "cursor" => "gpt-5",
-            "copilot" => "copilot:claude-sonnet-4",
-            "gemini" => "gemini-2.5-pro",
-            "antigravity" => "default",
+            "openai" | "codex" => "gpt-5.6-sol".to_string(),
+            "openrouter" => "anthropic/claude-sonnet-4".to_string(),
+            "cursor" => "gpt-5".to_string(),
+            "copilot" => "copilot:claude-sonnet-4".to_string(),
+            "gemini" => "gemini-2.5-pro".to_string(),
+            "antigravity" => "default".to_string(),
             _ => {
-                return Err(anyhow::anyhow!(
-                    "Unknown provider '{}'. Use: claude, openai, openrouter, cursor, copilot, gemini, antigravity",
-                    provider
-                ));
+                // User-defined named provider profile from config
+                // (`[providers.<name>]`). Route through `set_model` with an
+                // explicit `<profile>:<model>` spec so the runtime binds to
+                // that profile (issue #444 path) instead of the built-in list.
+                let providers = &crate::config::config().providers;
+                let profile = providers
+                    .get(raw_provider)
+                    .or_else(|| providers.get(&provider));
+                match profile {
+                    Some(profile) => {
+                        let model = profile
+                            .default_model
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|model| !model.is_empty())
+                            .or_else(|| {
+                                profile
+                                    .models
+                                    .iter()
+                                    .map(|model| model.id.trim())
+                                    .find(|model| !model.is_empty())
+                            });
+                        match model {
+                            Some(model) => format!("{}:{}", raw_provider, model),
+                            None => {
+                                return Err(anyhow::anyhow!(
+                                    "Named provider '{}' has no model configured; use set_model:<profile>:<model>",
+                                    raw_provider
+                                ))
+                            }
+                        }
+                    }
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "Unknown provider '{}'. Use: claude, openai, openrouter, cursor, copilot, gemini, antigravity, or a [providers.<name>] profile",
+                            raw_provider
+                        ));
+                    }
+                }
             }
         };
         let mut agent = agent.lock().await;
-        agent.set_model(default_model)?;
+        agent.set_model(&default_model)?;
         let payload = serde_json::json!({
             "model": agent.provider_model(),
             "provider": agent.provider_name(),

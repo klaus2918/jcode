@@ -815,6 +815,65 @@ models = ["deepseek-v4-flash", "deepseek-v4-pro"]
     });
 }
 
+/// Regression: the remote `/model` picker builds its route list through
+/// `remote_model_routes_fallback`, which previously ignored user-defined
+/// named provider profiles (`[providers.<name>]`) entirely. Models owned by a
+/// configured named profile surfaced as `unavailable · no matching configured
+/// provider route` and could not be selected, and the fallback `provider_key`
+/// of `None` then wiped `default_provider` on the next default-model save.
+#[test]
+fn remote_model_routes_fallback_includes_named_provider_profile_models() {
+    with_clean_provider_test_env(|| {
+        let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+        std::fs::write(
+            std::path::PathBuf::from(jcode_home).join("config.toml"),
+            r#"
+[providers.deepseek-official]
+type = "openai-compatible"
+base_url = "https://api.deepseek.com/anthropic"
+api = "anthropic"
+auth = "header"
+auth_header = "x-api-key"
+api_key_env = "MY_DEEPSEEK_API_KEY"
+default_model = "deepseek-v4-flash"
+
+[[providers.deepseek-official.models]]
+id = "deepseek-v4-flash"
+
+[[providers.deepseek-official.models]]
+id = "deepseek-v4-pro"
+"#,
+        )
+        .expect("write test config.toml");
+        crate::env::set_var("MY_DEEPSEEK_API_KEY", "sk-test-deepseek");
+        crate::config::invalidate_config_cache();
+
+        let entries = vec![
+            "deepseek-v4-flash".to_string(),
+            "deepseek-v4-pro".to_string(),
+        ];
+        let routes = crate::provider::remote_model_routes_fallback(None, &entries);
+        for model in &entries {
+            let route = routes
+                .iter()
+                .find(|r| r.model == *model)
+                .unwrap_or_else(|| panic!("{model} should have a route: {routes:?}"));
+            assert!(route.available, "{model} route should be available: {route:?}");
+            assert_eq!(
+                route.api_method,
+                "openai-compatible:deepseek-official",
+                "route must point back at the named profile: {route:?}"
+            );
+        }
+        assert!(
+            routes
+                .iter()
+                .all(|r| r.detail != "no matching configured provider route"),
+            "no route should fall through to the unavailable placeholder: {routes:?}"
+        );
+    });
+}
+
 /// The configured named profile must keep the model list and in-session
 /// switching usable even when the API key is missing (fresh machine, unset
 /// env var, different environment than the one where the key exists). A

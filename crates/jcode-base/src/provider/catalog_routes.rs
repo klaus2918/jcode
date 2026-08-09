@@ -905,6 +905,17 @@ pub fn remote_model_routes_fallback(
             added_any = true;
         }
 
+        // User-defined named provider profiles (`[providers.<name>]`). The
+        // remote fallback previously ignored these entirely, so models owned
+        // by a configured named profile (static `[[providers.<name>.models]]`
+        // or `default_model`) surfaced in the remote `/model` picker as
+        // `unavailable · no matching configured provider route` and could not
+        // be selected. Route them back to their profile here.
+        if !added_any && let Some(route) = remote_named_provider_route_for_model(model) {
+            routes.push(route);
+            added_any = true;
+        }
+
         if !added_any {
             routes.push(ModelRoute {
                 capability: route_capability(model),
@@ -918,6 +929,54 @@ pub fn remote_model_routes_fallback(
         }
     }
     routes
+}
+
+/// Route for a model owned by a user-defined named provider profile
+/// (`[providers.<name>]` static models or `default_model`).
+///
+/// Availability mirrors [`crate::provider_catalog::named_provider_profile_is_configured`]
+/// (no-auth profiles and key-configured profiles are selectable; profiles whose
+/// credential is missing are shown but refused, consistent with the local
+/// `named_provider_profile_routes` path). This lets the remote `/model` picker
+/// list and switch to named-profile models via `set_model_on_named_provider_profile`.
+fn remote_named_provider_route_for_model(model: &str) -> Option<ModelRoute> {
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    for (profile_name, profile_config) in &crate::config::config().providers {
+        let owns_model = profile_config
+            .models
+            .iter()
+            .any(|candidate| candidate.id.trim().eq_ignore_ascii_case(model))
+            || profile_config
+                .default_model
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|default| default.eq_ignore_ascii_case(model));
+        if !owns_model {
+            continue;
+        }
+        let configured = crate::provider_catalog::named_provider_profile_is_configured(
+            profile_name,
+            profile_config,
+        );
+        let detail = if profile_config.base_url.trim().is_empty() {
+            "configured provider profile".to_string()
+        } else {
+            profile_config.base_url.trim().to_string()
+        };
+        return Some(ModelRoute {
+            capability: route_capability(model),
+            model: model.to_string(),
+            provider: profile_name.clone(),
+            api_method: format!("openai-compatible:{}", profile_name),
+            available: configured,
+            detail,
+            cheapness: None,
+        });
+    }
+    None
 }
 
 pub fn remote_model_routes_lightweight_fallback(
