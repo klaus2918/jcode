@@ -834,11 +834,33 @@ fn send_reasoning_effort_result(
             });
         }
         Err(e) => {
-            let _ = client_event_tx.send(ServerEvent::ReasoningEffortChanged {
-                id,
-                effort: None,
-                error: Some(e.to_string()),
-            });
+            let message = e.to_string();
+            // A provider/model that simply does not support reasoning effort
+            // is not an error for the caller: the effort is silently dropped
+            // and the provider runs on its default. Surfacing this as an
+            // error ("Failed to set effort: ...") after a successful model
+            // switch reads as a broken switch (issue #448-style reports).
+            // Keep a server-side trace for debugging, and report `None`
+            // effort back so the client resets its effort display.
+            let unsupported = message.contains("does not support reasoning effort")
+                || message.contains("Reasoning effort is not supported");
+            if unsupported {
+                crate::logging::info(&format!(
+                    "Reasoning effort not supported by the active provider; using provider default: {}",
+                    message
+                ));
+                let _ = client_event_tx.send(ServerEvent::ReasoningEffortChanged {
+                    id,
+                    effort: None,
+                    error: None,
+                });
+            } else {
+                let _ = client_event_tx.send(ServerEvent::ReasoningEffortChanged {
+                    id,
+                    effort: None,
+                    error: Some(message),
+                });
+            }
         }
     }
 }
@@ -1522,6 +1544,40 @@ mod tests {
         )));
         let (client_event_tx, client_event_rx) = mpsc::unbounded_channel();
         (provider, agent, client_event_tx, client_event_rx)
+    }
+
+    #[test]
+    fn unsupported_reasoning_effort_is_silently_reset_not_an_error() {
+        let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+        // The provider-core default ("This provider does not support reasoning
+        // effort") and the OpenRouter runtime message must both be downgraded
+        // to a quiet reset instead of a client-facing error (a model switch
+        // onto such a provider read as "Failed to set effort").
+        for message in [
+            "This provider does not support reasoning effort",
+            "Reasoning effort is not supported by the current model/profile. It works for OpenRouter, DeepSeek-family and GPT-family reasoning models, and profiles with supports_reasoning_effort = true.",
+        ] {
+            send_reasoning_effort_result(
+                7,
+                Err(anyhow::anyhow!("{}", message)),
+                &client_event_tx,
+            );
+            let event = client_event_rx.blocking_recv().expect("event");
+            match event {
+                ServerEvent::ReasoningEffortChanged {
+                    id: _,
+                    effort,
+                    error,
+                } => {
+                    assert_eq!(effort, None);
+                    assert_eq!(
+                        error, None,
+                        "unsupported reasoning effort must not surface as a client error: {message}"
+                    );
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
     }
 
     #[tokio::test]
