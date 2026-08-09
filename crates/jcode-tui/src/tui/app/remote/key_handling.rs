@@ -1140,6 +1140,40 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if let Some(provider_name) =
+                    app_mod::model_context::slash_command_arg(trimmed, "/provider")
+                {
+                    let provider_name = provider_name.trim();
+                    if provider_name.is_empty() {
+                        app.push_display_message(DisplayMessage::error(
+                            "Usage: /provider <name>",
+                        ));
+                        return Ok(());
+                    }
+                    if let Some(reason) =
+                        app_mod::model_context::runtime_switch_busy_reason(app)
+                    {
+                        app.push_display_message(DisplayMessage::error(
+                            app_mod::model_context::model_switch_busy_message(reason),
+                        ));
+                        app.set_status_notice("Provider switch busy");
+                        return Ok(());
+                    }
+                    let Some(spec) =
+                        app_mod::model_context::provider_default_model_spec(provider_name)
+                    else {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Unknown provider '{}'. Use: claude, openai, openrouter, cursor, copilot, gemini, antigravity, or a [providers.<name>] profile",
+                            provider_name
+                        )));
+                        return Ok(());
+                    };
+                    app.upstream_provider = None;
+                    remote.set_model(&spec).await?;
+                    app.remote_model_switch_in_flight = true;
+                    return Ok(());
+                }
+
                 if trimmed == "/effort" {
                     let current = app.remote_reasoning_effort_hint();
                     let current = current.as_deref();

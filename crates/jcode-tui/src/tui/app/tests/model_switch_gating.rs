@@ -190,6 +190,109 @@ fn model_switch_persist_failure_does_not_block_the_switch() {
 }
 
 #[test]
+fn provider_command_switches_to_named_profile_model() {
+    with_temp_jcode_home(|| {
+        // Seed a named provider profile so `provider_default_model_spec`
+        // resolves `<profile>:<default_model>`.
+        let home = crate::storage::jcode_dir().expect("test home");
+        std::fs::create_dir_all(&home).expect("home dir");
+        std::fs::write(
+            home.join("config.toml"),
+            r#"
+[providers.deepseek-official]
+type = "openai-compatible"
+base_url = "https://api.deepseek.com/anthropic"
+api = "anthropic"
+auth = "header"
+auth_header = "x-api-key"
+api_key_env = "MY_DEEPSEEK_API_KEY"
+default_model = "deepseek-v4-flash"
+"#,
+        )
+        .expect("seed config");
+        crate::config::invalidate_config_cache();
+
+        let (mut app, model, set_model_calls) = create_model_switch_probe_app();
+        assert!(super::model_context::handle_provider_command(
+            &mut app,
+            "/provider deepseek-official"
+        ));
+        assert_eq!(
+            set_model_calls.lock().unwrap().as_slice(),
+            &["deepseek-official:deepseek-v4-flash".to_string()]
+        );
+        assert_eq!(
+            *model.lock().unwrap(),
+            "deepseek-official:deepseek-v4-flash"
+        );
+        let cfg = crate::config::config();
+        assert_eq!(
+            cfg.provider.default_model.as_deref(),
+            Some("deepseek-official:deepseek-v4-flash"),
+            "/provider switch must persist the new default model"
+        );
+    });
+}
+
+#[test]
+fn provider_command_unknown_provider_reports_error() {
+    with_temp_jcode_home(|| {
+        let (mut app, _, set_model_calls) = create_model_switch_probe_app();
+        assert!(super::model_context::handle_provider_command(
+            &mut app,
+            "/provider nope"
+        ));
+        assert!(
+            app.display_messages
+                .iter()
+                .any(|message| message.content.contains("Unknown provider")),
+            "expected Unknown provider error, got: {:?}",
+            app.display_messages
+        );
+        assert!(
+            set_model_calls.lock().unwrap().is_empty(),
+            "no set_model call for an unknown provider"
+        );
+    });
+}
+
+#[test]
+fn provider_default_model_spec_maps_builtin_and_named() {
+    with_temp_jcode_home(|| {
+        let home = crate::storage::jcode_dir().expect("test home");
+        std::fs::create_dir_all(&home).expect("home dir");
+        std::fs::write(
+            home.join("config.toml"),
+            r#"
+[providers.my-gw]
+type = "openai-compatible"
+base_url = "http://localhost:8080/v1"
+default_model = "model-a"
+"#,
+        )
+        .expect("seed config");
+        crate::config::invalidate_config_cache();
+
+        assert_eq!(
+            super::model_context::provider_default_model_spec("claude").as_deref(),
+            Some("claude-fable-5")
+        );
+        assert_eq!(
+            super::model_context::provider_default_model_spec("openai").as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            super::model_context::provider_default_model_spec("my-gw").as_deref(),
+            Some("my-gw:model-a")
+        );
+        assert_eq!(
+            super::model_context::provider_default_model_spec("nope"),
+            None
+        );
+    });
+}
+
+#[test]
 fn remote_model_switch_rejects_while_turn_is_running() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();

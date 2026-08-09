@@ -1973,6 +1973,121 @@ pub(super) fn slash_command_arg<'a>(input: &'a str, command: &str) -> Option<&'a
         .then(|| &input[prefix.len()..])
 }
 
+/// Resolve a provider name (built-in id or `[providers.<name>]` config
+/// profile) to the model spec passed to `set_model`, mirroring the debug
+/// `set_provider:` mapping so `/provider <name>` and the debug command behave
+/// identically. Named profiles use `<profile>:<model>` so the spec binds to
+/// that profile (`set_model_on_named_provider_profile`) instead of falling
+/// back to the active runtime.
+pub(super) fn provider_default_model_spec(provider_name: &str) -> Option<String> {
+    match provider_name.trim().to_lowercase().as_str() {
+        "claude" | "anthropic" => Some("claude-fable-5".to_string()),
+        "openai" | "codex" => Some("gpt-5.6-sol".to_string()),
+        "openrouter" => Some("anthropic/claude-sonnet-4".to_string()),
+        "cursor" => Some("gpt-5".to_string()),
+        "copilot" => Some("copilot:claude-sonnet-4".to_string()),
+        "gemini" => Some("gemini-2.5-pro".to_string()),
+        "antigravity" => Some("default".to_string()),
+        _ => {
+            let providers = &crate::config::config().providers;
+            let (key, profile) = providers
+                .get_key_value(provider_name)
+                .or_else(|| providers.get_key_value(&provider_name.to_lowercase()))?;
+            let model = profile
+                .default_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .or_else(|| {
+                    profile
+                        .models
+                        .iter()
+                        .map(|model| model.id.trim())
+                        .find(|model| !model.is_empty())
+                })?;
+            Some(format!("{}:{}", key, model))
+        }
+    }
+}
+
+/// Handle `/provider <name>` in local (non-remote) mode: resolve the provider
+/// to a model spec and switch the shared provider, persisting the new default.
+pub(super) fn handle_provider_command(app: &mut App, trimmed: &str) -> bool {
+    let Some(provider_name) = slash_command_arg(trimmed, "/provider") else {
+        return false;
+    };
+    let provider_name = provider_name.trim();
+    if provider_name.is_empty() {
+        app.push_display_message(DisplayMessage::error("Usage: /provider <name>"));
+        return true;
+    }
+    if let Some(reason) = runtime_switch_busy_reason(app) {
+        app.push_display_message(DisplayMessage::error(model_switch_busy_message(reason)));
+        app.set_status_notice("Provider switch busy");
+        return true;
+    }
+    let Some(spec) = provider_default_model_spec(provider_name) else {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Unknown provider '{}'. Use: claude, openai, openrouter, cursor, copilot, gemini, antigravity, or a [providers.<name>] profile",
+            provider_name
+        )));
+        return true;
+    };
+
+    // Snapshot the current session before the provider changes so the carried
+    // history is on disk even if the switch itself fails (same as /model).
+    let _ = app.session.save();
+    let before_model = app.provider.model();
+    let before_provider = app.provider.name();
+    let before_key = app.session.provider_key.clone();
+    match app.provider.set_model(&spec) {
+        Ok(()) => {
+            let active_model = app.provider.model();
+            let after_provider = app.provider.name();
+            let after_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                &spec,
+                after_provider,
+                before_key.as_deref(),
+            );
+            if before_model == active_model
+                && before_provider == after_provider
+                && before_key == after_key
+            {
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Already using provider: {}",
+                    provider_name
+                )));
+                app.set_status_notice(format!("Already using provider: {}", provider_name));
+                return true;
+            }
+            let active_model = app.finalize_model_switch(&active_model);
+            // Persist the provider as the new default for future sessions; a
+            // failed write must not block the in-memory switch.
+            if let Err(error) =
+                crate::config::Config::set_default_model(Some(&active_model), after_key.as_deref())
+            {
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Switched to {}; failed to save as default: {}",
+                    active_model, error
+                )));
+            }
+            app.push_display_message(DisplayMessage::system(format!(
+                "Switched to provider {} · {}",
+                provider_name, active_model
+            )));
+            app.set_status_notice(format!("Switched provider: {}", provider_name));
+        }
+        Err(error) => {
+            app.push_display_message(DisplayMessage::error(format!(
+                "Failed to switch provider: {}",
+                error
+            )));
+            app.set_status_notice("Provider switch failed");
+        }
+    }
+    true
+}
+
 pub(super) fn is_refresh_model_list_command(trimmed: &str) -> bool {
     slash_command_matches(trimmed, "/refresh-model-list")
 }
