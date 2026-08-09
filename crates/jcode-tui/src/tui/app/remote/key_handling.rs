@@ -1140,12 +1140,32 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if let Some(provider_name) =
-                    app_mod::model_context::slash_command_arg(trimmed, "/provider")
+                if trimmed
+                    .strip_prefix("/provider")
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
                 {
-                    let provider_name = provider_name.trim();
+                    let provider_name = trimmed.strip_prefix("/provider").unwrap().trim();
                     if provider_name.is_empty() {
-                        app.push_display_message(DisplayMessage::error("Usage: /provider <name>"));
+                        let builtins = [
+                            "claude",
+                            "openai",
+                            "openrouter",
+                            "cursor",
+                            "copilot",
+                            "gemini",
+                            "antigravity",
+                        ];
+                        let mut list: Vec<String> =
+                            builtins.iter().map(|name| (*name).to_string()).collect();
+                        for name in crate::config::config().providers.keys() {
+                            list.push(name.clone());
+                        }
+                        list.sort();
+                        app.push_display_message(DisplayMessage::system(format!(
+                            "Usage: /provider <name> — switch provider in-session. Available: {}",
+                            list.join(" · ")
+                        )));
+                        app.set_status_notice("Usage: /provider <name>");
                         return Ok(());
                     }
                     if let Some(reason) = app_mod::model_context::runtime_switch_busy_reason(app) {

@@ -2012,13 +2012,30 @@ pub(super) fn provider_default_model_spec(provider_name: &str) -> Option<String>
 
 /// Handle `/provider <name>` in local (non-remote) mode: resolve the provider
 /// to a model spec and switch the shared provider, persisting the new default.
+/// A bare `/provider` (no argument) shows usage and the selectable providers
+/// instead of falling through to the "Unknown skill" fallback.
 pub(super) fn handle_provider_command(app: &mut App, trimmed: &str) -> bool {
-    let Some(provider_name) = slash_command_arg(trimmed, "/provider") else {
+    // Match `/provider` or `/provider <arg>` at a word boundary so
+    // `/provider-test-coverage` and friends are left alone.
+    let Some(rest) = trimmed.strip_prefix("/provider") else {
         return false;
     };
-    let provider_name = provider_name.trim();
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return false;
+    }
+    let provider_name = rest.trim();
     if provider_name.is_empty() {
-        app.push_display_message(DisplayMessage::error("Usage: /provider <name>"));
+        let builtins = ["claude", "openai", "openrouter", "cursor", "copilot", "gemini", "antigravity"];
+        let mut list: Vec<String> = builtins.iter().map(|name| (*name).to_string()).collect();
+        for name in crate::config::config().providers.keys() {
+            list.push(name.clone());
+        }
+        list.sort();
+        app.push_display_message(DisplayMessage::system(format!(
+            "Usage: /provider <name> — switch provider in-session. Available: {}",
+            list.join(" · ")
+        )));
+        app.set_status_notice("Usage: /provider <name>");
         return true;
     }
     if let Some(reason) = runtime_switch_busy_reason(app) {

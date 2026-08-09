@@ -190,6 +190,30 @@ fn model_switch_persist_failure_does_not_block_the_switch() {
 }
 
 #[test]
+fn provider_command_without_argument_shows_usage() {
+    with_temp_jcode_home(|| {
+        let (mut app, _, set_model_calls) = create_model_switch_probe_app();
+        // A bare `/provider` must be recognized (not fall through to the
+        // "Unknown skill" fallback) and show usage + available providers.
+        assert!(super::model_context::handle_provider_command(
+            &mut app,
+            "/provider"
+        ));
+        assert!(
+            app.display_messages
+                .iter()
+                .any(|message| message.content.contains("Usage: /provider <name>")),
+            "bare /provider should show usage, got: {:?}",
+            app.display_messages
+        );
+        assert!(
+            set_model_calls.lock().unwrap().is_empty(),
+            "bare /provider must not trigger a switch"
+        );
+    });
+}
+
+#[test]
 fn provider_command_switches_to_named_profile_model() {
     with_temp_jcode_home(|| {
         // Seed a named provider profile so `provider_default_model_spec`
