@@ -192,6 +192,25 @@ fn model_switch_persist_failure_does_not_block_the_switch() {
 #[test]
 fn provider_command_without_argument_shows_usage() {
     with_temp_jcode_home(|| {
+        // Seed only a named profile; the bare `/provider` listing must show
+        // configured providers only - no hardcoded built-in ids that are not
+        // configured (issue: advertised claude/openai/openrouter/copilot/...).
+        let home = crate::storage::jcode_dir().expect("test home");
+        std::fs::create_dir_all(&home).expect("home dir");
+        std::fs::write(
+            home.join("config.toml"),
+            r#"
+[providers.deepseek-official]
+type = "openai-compatible"
+base_url = "https://api.deepseek.com/anthropic"
+api_key_env = "MY_DEEPSEEK_API_KEY"
+default_model = "deepseek-v4-flash"
+"#,
+        )
+        .expect("seed config");
+        crate::config::invalidate_config_cache();
+        crate::auth::AuthStatus::invalidate_cache();
+
         let (mut app, _, set_model_calls) = create_model_switch_probe_app();
         // A bare `/provider` must be recognized (not fall through to the
         // "Unknown skill" fallback) and show usage + available providers.
@@ -199,13 +218,27 @@ fn provider_command_without_argument_shows_usage() {
             &mut app,
             "/provider"
         ));
+        let usage = app
+            .display_messages
+            .iter()
+            .find(|message| message.content.contains("Usage: /provider <name>"))
+            .map(|message| message.content.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "bare /provider should show usage, got: {:?}",
+                    app.display_messages
+                )
+            });
         assert!(
-            app.display_messages
-                .iter()
-                .any(|message| message.content.contains("Usage: /provider <name>")),
-            "bare /provider should show usage, got: {:?}",
-            app.display_messages
+            usage.contains("deepseek-official"),
+            "listing must include the configured named profile: {usage}"
         );
+        for unconfigured in ["claude", "openai", "openrouter", "copilot", "gemini"] {
+            assert!(
+                !usage.contains(unconfigured),
+                "listing must not advertise unconfigured built-in provider '{unconfigured}': {usage}"
+            );
+        }
         assert!(
             set_model_calls.lock().unwrap().is_empty(),
             "bare /provider must not trigger a switch"

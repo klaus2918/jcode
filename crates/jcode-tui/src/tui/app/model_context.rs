@@ -2010,6 +2010,30 @@ pub(super) fn provider_default_model_spec(provider_name: &str) -> Option<String>
     }
 }
 
+/// Providers that are actually configured and switchable: every
+/// `[providers.<name>]` named profile plus built-in providers with live
+/// credentials. Unconfigured built-in ids (no key/OAuth) are omitted so the
+/// bare `/provider` listing does not advertise unusable entries.
+pub(super) fn provider_switch_candidates() -> Vec<String> {
+    let mut names: Vec<String> = crate::config::config().providers.keys().cloned().collect();
+    let auth = crate::auth::AuthStatus::check_fast();
+    if auth.anthropic.has_oauth || auth.anthropic.has_api_key {
+        names.push("claude".to_string());
+    }
+    if auth.openai_has_oauth || auth.openai_has_api_key {
+        names.push("openai".to_string());
+    }
+    if auth.openrouter != crate::auth::AuthState::NotConfigured {
+        names.push("openrouter".to_string());
+    }
+    if auth.azure != crate::auth::AuthState::NotConfigured {
+        names.push("azure".to_string());
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Handle `/provider <name>` in local (non-remote) mode: resolve the provider
 /// to a model spec and switch the shared provider, persisting the new default.
 /// A bare `/provider` (no argument) shows usage and the selectable providers
@@ -2025,15 +2049,15 @@ pub(super) fn handle_provider_command(app: &mut App, trimmed: &str) -> bool {
     }
     let provider_name = rest.trim();
     if provider_name.is_empty() {
-        let builtins = ["claude", "openai", "openrouter", "cursor", "copilot", "gemini", "antigravity"];
-        let mut list: Vec<String> = builtins.iter().map(|name| (*name).to_string()).collect();
-        for name in crate::config::config().providers.keys() {
-            list.push(name.clone());
-        }
-        list.sort();
+        let list = provider_switch_candidates();
+        let available = if list.is_empty() {
+            "(none configured)".to_string()
+        } else {
+            list.join(" · ")
+        };
         app.push_display_message(DisplayMessage::system(format!(
             "Usage: /provider <name> — switch provider in-session. Available: {}",
-            list.join(" · ")
+            available
         )));
         app.set_status_notice("Usage: /provider <name>");
         return true;
