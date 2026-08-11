@@ -51,6 +51,11 @@ pub(super) async fn process_turn_with_input(
         }
     }
 
+    // Re-read the MCP manager after the turn: the agent may have called the
+    // `mcp` tool (connect/disconnect/reload), which mutates the manager
+    // directly without a wire event in local mode.
+    app.sync_mcp_server_names().await;
+
     if app.pending_queued_dispatch {
         finish_turn(app);
         return;
@@ -265,6 +270,22 @@ pub(super) fn handle_bus_event(
         }
         Ok(BusEvent::ManualToolCompleted(result)) => {
             handle_manual_tool_completed(app, result);
+            true
+        }
+        Ok(BusEvent::McpReloadCompleted(result)) => {
+            if result.session_id != app.session.id {
+                return false;
+            }
+            app.mcp_server_names = App::parse_mcp_status_servers(result.servers);
+            if result.ok {
+                app.push_display_message(
+                    DisplayMessage::system(result.message).with_title("MCP: Reloaded"),
+                );
+                app.set_status_notice("MCP reloaded");
+            } else {
+                app.push_display_message(DisplayMessage::error(result.message));
+                app.set_status_notice("MCP reload failed");
+            }
             true
         }
         _ => false,

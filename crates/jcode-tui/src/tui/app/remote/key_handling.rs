@@ -900,6 +900,42 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if trimmed == "/mcp reload" {
+                    app.push_display_message(DisplayMessage::system(
+                        "Reloading MCP servers on the server...".to_string(),
+                    ));
+                    match remote.reload_mcp().await {
+                        Ok(_) => app.set_status_notice("Reloading MCP..."),
+                        Err(error) => {
+                            app.push_display_message(DisplayMessage::error(format!(
+                                "Failed to send MCP reload: {}",
+                                error
+                            )));
+                            app.set_status_notice("MCP reload failed");
+                        }
+                    }
+                    return Ok(());
+                }
+
+                if trimmed == "/skills" {
+                    // Ask the server to re-read its global skill registry, then
+                    // show the refreshed list when the `Skills` event arrives.
+                    app.push_display_message(DisplayMessage::system(
+                        "Reloading skills on the server...".to_string(),
+                    ));
+                    match remote.reload_skills().await {
+                        Ok(_) => app.set_status_notice("Reloading skills..."),
+                        Err(error) => {
+                            app.push_display_message(DisplayMessage::error(format!(
+                                "Failed to send skill reload: {}",
+                                error
+                            )));
+                            app.set_status_notice("Skill reload failed");
+                        }
+                    }
+                    return Ok(());
+                }
+
                 if trimmed == "/continue" || trimmed == "/resumeall" || trimmed == "/resume-all" {
                     app.push_display_message(DisplayMessage::system(
                         "Continuing all interrupted sessions...".to_string(),

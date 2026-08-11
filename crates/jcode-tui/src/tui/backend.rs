@@ -588,6 +588,26 @@ impl RemoteConnection {
         Ok(id)
     }
 
+    /// Ask the server to reload the session's MCP config and re-register
+    /// `mcp__*` tools. The server replies with `McpStatus` + `Done` (or
+    /// `Error`) which the client event loop applies.
+    pub async fn reload_mcp(&mut self) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::ReloadMcp { id }).await?;
+        Ok(id)
+    }
+
+    /// Ask the server to reload the shared global skill registry. The server
+    /// replies with `Skills` + `Done` (or `Error`), updating the remote
+    /// client's skill list without a History re-bootstrap.
+    pub async fn reload_skills(&mut self) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::ReloadSkills { id }).await?;
+        Ok(id)
+    }
+
     /// Re-request the session history payload from the server.
     ///
     /// Used by the client-side history-recovery watchdog: if the bootstrap

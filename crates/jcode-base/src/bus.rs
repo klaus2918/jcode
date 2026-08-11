@@ -78,6 +78,21 @@ pub struct ManualToolCompleted {
     pub duration_ms: u64,
 }
 
+/// Result of a local `/mcp reload` that ran off the UI thread. Carries the
+/// refreshed `"name:count"` server list so the MCP indicator can sync without
+/// a restart, mirroring the remote `McpStatus` wire event.
+#[derive(Clone, Debug)]
+pub struct McpReloadCompleted {
+    pub session_id: String,
+    /// Whether the reload itself succeeded (reconnect failures still succeed
+    /// overall when the reload ran; hard errors like a bad config are failures).
+    pub ok: bool,
+    /// Human-readable result (tool output or error message).
+    pub message: String,
+    /// `"name:count"` entries, matching `ServerEvent::McpStatus`.
+    pub servers: Vec<String>,
+}
+
 /// Type of file operation for swarm awareness
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FileOp {
@@ -427,6 +442,8 @@ pub enum BusEvent {
     SidePanelUpdated(SidePanelUpdated),
     /// Deferred Mermaid rendering completed and cached content may now be visible
     MermaidRenderCompleted,
+    /// Local `/mcp reload` finished off the UI thread.
+    McpReloadCompleted(McpReloadCompleted),
 }
 
 pub struct Bus {

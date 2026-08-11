@@ -2,6 +2,32 @@ use super::*;
 use crate::tui::{TuiState, detect_kv_cache_problem, ui};
 
 impl App {
+    /// Parse `"name:count"` entries (from `ServerEvent::McpStatus` or the
+    /// local `/mcp reload` bus event) into the `(name, tool_count)` list the
+    /// MCP indicator renders. Keep in sync with the server's
+    /// `tool::mcp::mcp_status_servers` format.
+    pub(super) fn parse_mcp_status_servers(servers: Vec<String>) -> Vec<(String, usize)> {
+        servers
+            .iter()
+            .filter_map(|s| {
+                let (name, count_str) = s.split_once(':')?;
+                let count = count_str.parse::<usize>().unwrap_or(0);
+                Some((name.to_string(), count))
+            })
+            .collect()
+    }
+
+    /// Re-read the local MCP manager's connections into `mcp_server_names` so
+    /// the indicator reflects agent-side `mcp` tool connect/disconnect/reload
+    /// calls after a turn, without a restart.
+    pub(super) async fn sync_mcp_server_names(&mut self) {
+        let servers = crate::tool::mcp::mcp_status_servers(&self.mcp_manager).await;
+        let list = Self::parse_mcp_status_servers(servers);
+        if list != self.mcp_server_names {
+            self.mcp_server_names = list;
+        }
+    }
+
     pub(super) fn current_skills_snapshot(&self) -> std::sync::Arc<crate::skill::SkillRegistry> {
         // Global skills from the shared registry plus this session's
         // project-local overlay, resolved fresh from the session working dir

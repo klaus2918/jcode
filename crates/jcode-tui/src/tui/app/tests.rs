@@ -906,6 +906,255 @@ fn skills_command_marks_active_skill_in_remote_mode() {
     );
 }
 
+#[test]
+fn mcp_command_lists_connected_servers_with_tool_counts() {
+    let mut app = create_test_app();
+    app.mcp_server_names = vec![("agentcard".to_string(), 8), ("filesystem".to_string(), 1)];
+
+    assert!(super::state_ui::handle_info_command(&mut app, "/mcp"));
+    let content = app.display_messages().last().unwrap().content.clone();
+
+    assert!(content.contains("- agentcard (8 tools)"), "{content}");
+    assert!(content.contains("- filesystem (1 tool)"), "{content}");
+    assert!(
+        app.display_messages().last().unwrap().title.as_deref() == Some("MCP"),
+        "{content}"
+    );
+}
+
+#[test]
+fn mcp_command_reload_local_mode_kicks_off_reload() {
+    let mut app = create_test_app();
+    app.is_remote = false;
+
+    assert!(super::state_ui::handle_info_command(
+        &mut app,
+        "/mcp reload"
+    ));
+    let content = app.display_messages().last().unwrap().content.clone();
+    assert!(content.contains("Reloading MCP servers"), "{content}");
+    assert_eq!(app.status_notice(), Some("Reloading MCP...".to_string()));
+}
+
+#[test]
+fn mcp_command_reload_remote_mode_points_at_reconnect() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+
+    assert!(super::state_ui::handle_info_command(
+        &mut app,
+        "/mcp reload"
+    ));
+    let content = app.display_messages().last().unwrap().content.clone();
+    assert!(content.contains("server process"), "{content}");
+}
+
+#[test]
+fn server_event_skills_updates_remote_skill_list_and_report() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Skills {
+            skills: vec!["optimization".to_string(), "docx".to_string()],
+        },
+        &mut remote,
+    );
+
+    assert_eq!(
+        app.remote_skills,
+        vec!["optimization".to_string(), "docx".to_string()]
+    );
+    let content = app.display_messages().last().unwrap().content.clone();
+    assert!(content.contains("- /optimization"), "{content}");
+    assert!(content.contains("- /docx"), "{content}");
+    assert_eq!(
+        app.display_messages().last().unwrap().title.as_deref(),
+        Some("Skills")
+    );
+}
+
+#[test]
+fn remote_enter_mcp_reload_sends_request_and_shows_status() {
+    use tokio::io::AsyncBufReadExt;
+
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.runtime_mode = crate::tui::app::AppRuntimeMode::RemoteClient;
+    app.input = "/mcp reload".to_string();
+    app.cursor_pos = app.input.len();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let line = rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        let peer = remote
+            .take_dummy_peer()
+            .expect("dummy remote should retain peer stream");
+        let (reader, _writer) = peer.into_split();
+        let mut reader = tokio::io::BufReader::new(reader);
+
+        app.handle_remote_key(
+            ratatui::crossterm::event::KeyCode::Enter,
+            ratatui::crossterm::event::KeyModifiers::empty(),
+            &mut remote,
+        )
+        .await
+        .expect("/mcp reload should succeed in remote mode");
+
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .expect("ReloadMcp request should be readable by peer");
+        line
+    });
+
+    assert!(app.input.is_empty(), "command input should be consumed");
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.content.contains("Reloading MCP servers on the server")),
+        "should announce the remote reload"
+    );
+    assert_eq!(app.status_notice(), Some("Reloading MCP...".to_string()));
+    match serde_json::from_str::<crate::protocol::Request>(&line)
+        .expect("ReloadMcp request should deserialize")
+    {
+        crate::protocol::Request::ReloadMcp { id } => assert_eq!(id, 1),
+        other => panic!("expected ReloadMcp request, got {:?}", other),
+    }
+}
+
+#[test]
+fn remote_enter_skills_reload_sends_request_and_shows_status() {
+    use tokio::io::AsyncBufReadExt;
+
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.runtime_mode = crate::tui::app::AppRuntimeMode::RemoteClient;
+    app.input = "/skills".to_string();
+    app.cursor_pos = app.input.len();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let line = rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        let peer = remote
+            .take_dummy_peer()
+            .expect("dummy remote should retain peer stream");
+        let (reader, _writer) = peer.into_split();
+        let mut reader = tokio::io::BufReader::new(reader);
+
+        app.handle_remote_key(
+            ratatui::crossterm::event::KeyCode::Enter,
+            ratatui::crossterm::event::KeyModifiers::empty(),
+            &mut remote,
+        )
+        .await
+        .expect("/skills should succeed in remote mode");
+
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .expect("ReloadSkills request should be readable by peer");
+        line
+    });
+
+    assert!(app.input.is_empty(), "command input should be consumed");
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.content.contains("Reloading skills on the server")),
+        "should announce the remote skill reload"
+    );
+    assert_eq!(app.status_notice(), Some("Reloading skills...".to_string()));
+    match serde_json::from_str::<crate::protocol::Request>(&line)
+        .expect("ReloadSkills request should deserialize")
+    {
+        crate::protocol::Request::ReloadSkills { id } => assert_eq!(id, 1),
+        other => panic!("expected ReloadSkills request, got {:?}", other),
+    }
+}
+
+#[test]
+fn local_mcp_reload_completed_updates_indicator_and_shows_message() {
+    let mut app = create_test_app();
+    let before = app.display_messages().len();
+    let session_id = app.session.id.clone();
+
+    let handled = super::local::handle_bus_event(
+        &mut app,
+        Ok(crate::bus::BusEvent::McpReloadCompleted(
+            crate::bus::McpReloadCompleted {
+                session_id,
+                ok: true,
+                message: "Reloaded MCP config. Connected: 1/1".to_string(),
+                servers: vec!["agentcard:8".to_string()],
+            },
+        )),
+    );
+
+    assert!(handled, "matching session reload must be consumed");
+    assert_eq!(app.mcp_server_names, vec![("agentcard".to_string(), 8)]);
+    assert_eq!(app.status_notice(), Some("MCP reloaded".to_string()));
+    let message = &app.display_messages()[before..];
+    assert_eq!(message.len(), 1);
+    assert_eq!(message[0].title.as_deref(), Some("MCP: Reloaded"));
+    assert!(message[0].content.contains("Connected: 1/1"));
+}
+
+#[test]
+fn local_mcp_reload_failed_still_syncs_indicator_and_reports_error() {
+    let mut app = create_test_app();
+    let before = app.display_messages().len();
+    let session_id = app.session.id.clone();
+
+    let handled = super::local::handle_bus_event(
+        &mut app,
+        Ok(crate::bus::BusEvent::McpReloadCompleted(
+            crate::bus::McpReloadCompleted {
+                session_id,
+                ok: false,
+                message: "MCP reload failed: bad config".to_string(),
+                servers: vec![],
+            },
+        )),
+    );
+
+    assert!(handled, "matching session reload must be consumed");
+    assert!(app.mcp_server_names.is_empty());
+    assert_eq!(app.status_notice(), Some("MCP reload failed".to_string()));
+    let message = &app.display_messages()[before..];
+    assert_eq!(message.len(), 1);
+    assert_eq!(message[0].role, "error");
+    assert!(message[0].content.contains("bad config"));
+}
+
+#[test]
+fn local_mcp_reload_completed_is_ignored_for_other_sessions() {
+    let mut app = create_test_app();
+    let before = app.display_messages().len();
+
+    let handled = super::local::handle_bus_event(
+        &mut app,
+        Ok(crate::bus::BusEvent::McpReloadCompleted(
+            crate::bus::McpReloadCompleted {
+                session_id: "some-other-session".to_string(),
+                ok: true,
+                message: "irrelevant".to_string(),
+                servers: vec!["agentcard:8".to_string()],
+            },
+        )),
+    );
+
+    assert!(!handled, "other-session reload must be ignored");
+    assert!(app.mcp_server_names.is_empty());
+    assert_eq!(app.display_messages().len(), before);
+}
+
 /// Regression for issue #431 (and #457): skills added on disk after startup
 /// must show up in `/skills` and the skills snapshot without a session
 /// restart. With the session-scoped project overlay, project-local skills are

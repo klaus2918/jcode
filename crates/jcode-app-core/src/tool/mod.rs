@@ -93,6 +93,10 @@ pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
     skills: Arc<RwLock<SkillRegistry>>,
     compaction: Arc<RwLock<CompactionManager>>,
+    /// Session MCP manager, set by [`Self::register_mcp_tools_for_dir`]. Used
+    /// by the server-side `ReloadMcp` request handler to reload config and
+    /// tools without going through the agent loop.
+    mcp_manager: Arc<std::sync::RwLock<Option<Arc<RwLock<crate::mcp::McpManager>>>>>,
 }
 
 impl Clone for Registry {
@@ -103,6 +107,7 @@ impl Clone for Registry {
             // Each clone gets a fresh CompactionManager to prevent parallel
             // subagents from corrupting each other's message history
             compaction: Arc::new(RwLock::new(CompactionManager::new())),
+            mcp_manager: self.mcp_manager.clone(),
         }
     }
 }
@@ -139,6 +144,7 @@ impl Registry {
             tools: Arc::new(RwLock::new(HashMap::new())),
             skills: Arc::new(RwLock::new(SkillRegistry::default())),
             compaction: Arc::new(RwLock::new(CompactionManager::new())),
+            mcp_manager: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -254,6 +260,7 @@ impl Registry {
             tools: Arc::new(RwLock::new(HashMap::new())),
             skills: skills.clone(),
             compaction: compaction.clone(),
+            mcp_manager: Arc::new(std::sync::RwLock::new(None)),
         };
         let registry_struct_ms = registry_struct_start.elapsed().as_millis();
 
@@ -749,10 +756,17 @@ impl Registry {
         } else {
             Arc::new(RwLock::new(McpManager::new()))
         };
+        // Remember the manager so the server-side `ReloadMcp` request handler
+        // can reload the session's MCP config and tools directly. The last
+        // registration wins, matching the `mcp` tool instance just below.
+        if let Ok(mut slot) = self.mcp_manager.write() {
+            *slot = Some(Arc::clone(&mcp_manager));
+        }
 
         // Register MCP management tool immediately (with registry for dynamic tool registration)
-        let mcp_tool =
-            mcp::McpManagementTool::new(Arc::clone(&mcp_manager)).with_registry(self.clone());
+        let mcp_tool = mcp::McpManagementTool::new(Arc::clone(&mcp_manager))
+            .with_registry(self.clone())
+            .with_events(event_tx.clone());
         self.register("mcp".to_string(), Arc::new(mcp_tool) as Arc<dyn Tool>)
             .await;
 
@@ -1027,6 +1041,41 @@ impl Registry {
             tools.remove(name);
         }
         to_remove
+    }
+
+    /// Reload MCP config for this session: re-read config from disk, reconnect
+    /// servers, re-register `mcp__*` tools, and push an `McpStatus` event.
+    ///
+    /// Used by the server-side `Request::ReloadMcp` handler so a running
+    /// session picks up newly added/edited MCP servers without a restart.
+    /// The agent's locked tool snapshot is unlocked by the caller (see
+    /// [`Agent::unlock_tools`](crate::agent::Agent::unlock_tools)) so the next
+    /// request carries the fresh toolset.
+    pub async fn reload_mcp(
+        &self,
+        event_tx: Option<&tokio::sync::mpsc::UnboundedSender<crate::protocol::ServerEvent>>,
+        session_id: &str,
+    ) -> anyhow::Result<crate::tool::ToolOutput> {
+        let manager = self
+            .mcp_manager
+            .read()
+            .map_err(|_| anyhow::anyhow!("MCP manager lock poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("MCP is not registered for this session"))?;
+        mcp::reload_mcp_config(Some(self), &manager, event_tx, session_id).await
+    }
+
+    /// Reload the shared global skill registry from disk.
+    ///
+    /// Used by the server-side `Request::ReloadSkills` handler. Project-local
+    /// skills stay a per-session overlay (issue #457) and are re-read fresh on
+    /// every access, so only the global sources need reloading here.
+    pub async fn reload_skills(&self) -> anyhow::Result<usize> {
+        let mut skills = self
+            .skills
+            .try_write()
+            .map_err(|_| anyhow::anyhow!("skill registry is busy; retry the reload"))?;
+        skills.reload_global()
     }
 
     /// Get shared access to the skill registry

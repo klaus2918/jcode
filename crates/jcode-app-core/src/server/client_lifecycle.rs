@@ -2694,6 +2694,71 @@ pub(super) async fn handle_client(
                 .await;
             }
 
+            Request::ReloadMcp { id } => {
+                // Unlock the agent's tool snapshot first so the next provider
+                // request picks up the re-registered `mcp__*` tools. The agent
+                // lock is released before the (potentially slow) reconnect.
+                {
+                    let mut agent_guard = agent.lock().await;
+                    agent_guard.unlock_tools();
+                }
+                let result = registry
+                    .reload_mcp(Some(&client_event_tx), &client_session_id)
+                    .await;
+                match result {
+                    Ok(output) => {
+                        crate::logging::info(&format!(
+                            "[request:reload_mcp] session={} output_bytes={}",
+                            client_session_id,
+                            output.output.len()
+                        ));
+                        let _ = client_event_tx.send(ServerEvent::Done { id });
+                    }
+                    Err(error) => {
+                        crate::logging::warn(&format!(
+                            "[request:reload_mcp] failed session={} error={}",
+                            client_session_id, error
+                        ));
+                        let _ = client_event_tx.send(ServerEvent::Error {
+                            id,
+                            message: format!("MCP reload failed: {}", error),
+                            retry_after_secs: None,
+                        });
+                    }
+                }
+            }
+
+            Request::ReloadSkills { id } => {
+                let result = registry.reload_skills().await;
+                match result {
+                    Ok(count) => {
+                        // Push the fresh name list so the remote client's skill
+                        // display syncs without a History re-bootstrap. Use the
+                        // agent's effective set (global + session project
+                        // overlay) so it matches the History bootstrap and the
+                        // system prompt's "Available Skills" section.
+                        let names: Vec<String> = agent.lock().await.available_skill_names();
+                        let _ = client_event_tx.send(ServerEvent::Skills { skills: names });
+                        let _ = client_event_tx.send(ServerEvent::Done { id });
+                        crate::logging::info(&format!(
+                            "[request:reload_skills] reloaded {} global skills for session {}",
+                            count, client_session_id
+                        ));
+                    }
+                    Err(error) => {
+                        crate::logging::warn(&format!(
+                            "[request:reload_skills] failed session={} error={}",
+                            client_session_id, error
+                        ));
+                        let _ = client_event_tx.send(ServerEvent::Error {
+                            id,
+                            message: format!("Skill reload failed: {}", error),
+                            retry_after_secs: None,
+                        });
+                    }
+                }
+            }
+
             // These are handled via channels, not direct requests from TUI
             Request::ClientDebugCommand { id, .. } => {
                 handle_client_debug_command(id, &client_event_tx).await;

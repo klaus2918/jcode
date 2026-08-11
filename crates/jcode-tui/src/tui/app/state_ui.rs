@@ -1616,7 +1616,7 @@ fn format_cache_stats(app: &App) -> String {
 
 /// Build the `/skills` report: currently loaded skills (marking the active one)
 /// plus the curated list of jcode-endorsed skills (marking which are installed).
-fn build_skills_report(app: &App) -> String {
+pub(super) fn build_skills_report(app: &App) -> String {
     let mut out = String::new();
 
     let active = app.active_skill().map(|s| s.to_string());
@@ -1718,6 +1718,66 @@ fn build_skills_report(app: &App) -> String {
     out.trim_end().to_string()
 }
 
+/// Render the MCP indicator state for `/mcp` (status). In remote mode the list
+/// comes from `McpStatus` wire events; locally it is maintained by the reload
+/// task and `init_mcp`.
+fn build_mcp_report(app: &App) -> String {
+    let mut out = String::new();
+    if app.mcp_server_names.is_empty() {
+        out.push_str("No MCP servers connected.\n");
+        out.push_str("\nAdd servers to ~/.jcode/mcp.json (global) or .jcode/mcp.json (project), then run /mcp reload.");
+    } else {
+        out.push_str("Connected MCP servers\n");
+        for (name, count) in &app.mcp_server_names {
+            out.push_str(&format!(
+                "- {} ({} tool{})\n",
+                name,
+                count,
+                if *count == 1 { "" } else { "s" }
+            ));
+        }
+    }
+    out.push_str("\nUse /mcp reload to re-read the config and reconnect.");
+    out.trim_end().to_string()
+}
+
+/// Run the local MCP reload off the UI thread (re-reading config, reconnecting
+/// servers, re-registering `mcp__*` tools) and publish the result over the bus
+/// so the main loop can refresh `mcp_server_names` without a restart.
+fn spawn_local_mcp_reload(app: &App) {
+    use crate::bus::{Bus, BusEvent, McpReloadCompleted};
+
+    let registry = app.registry.clone();
+    let manager = std::sync::Arc::clone(&app.mcp_manager);
+    let session_id = app.session.id.clone();
+
+    let run = async move {
+        let result =
+            crate::tool::mcp::reload_mcp_config(Some(&registry), &manager, None, &session_id).await;
+        let servers = crate::tool::mcp::mcp_status_servers(&manager).await;
+        let (ok, message) = match result {
+            Ok(output) => (true, output.output),
+            Err(error) => (false, format!("MCP reload failed: {}", error)),
+        };
+        Bus::global().publish(BusEvent::McpReloadCompleted(McpReloadCompleted {
+            session_id,
+            ok,
+            message,
+            servers,
+        }));
+    };
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::spawn(run);
+    } else {
+        std::thread::spawn(move || {
+            if let Ok(runtime) = tokio::runtime::Runtime::new() {
+                runtime.block_on(run);
+            }
+        });
+    }
+}
+
 pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed == "/skills" {
         // Sync from disk first so skills added by agent-side `skill_manage
@@ -1728,6 +1788,41 @@ pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
             DisplayMessage::system(build_skills_report(app)).with_title("Skills"),
         );
         app.set_status_notice("Skills");
+        return true;
+    }
+
+    if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
+        let arg = trimmed.strip_prefix("/mcp").unwrap_or("").trim();
+        match arg {
+            "" | "status" | "list" => {
+                app.push_display_message(
+                    DisplayMessage::system(build_mcp_report(app)).with_title("MCP"),
+                );
+                app.set_status_notice("MCP");
+            }
+            "reload" => {
+                if app.is_remote {
+                    // Remote mode handles `/mcp reload` in the async remote key
+                    // handler (it needs the live connection). This sync path is
+                    // only reached while disconnected, so guide the user.
+                    app.push_display_message(DisplayMessage::error(
+                        "MCP servers live on the server process. Reconnect and run /mcp reload there."
+                            .to_string(),
+                    ));
+                } else {
+                    app.push_display_message(DisplayMessage::system(
+                        "Reloading MCP servers...".to_string(),
+                    ));
+                    app.set_status_notice("Reloading MCP...");
+                    spawn_local_mcp_reload(app);
+                }
+            }
+            _ => {
+                app.push_display_message(DisplayMessage::error(
+                    "Usage: /mcp (status) | /mcp reload".to_string(),
+                ));
+            }
+        }
         return true;
     }
 

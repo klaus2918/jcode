@@ -2203,18 +2203,26 @@ pub(in crate::tui::app) fn handle_server_event(
             false
         }
         ServerEvent::McpStatus { servers } => {
-            app.mcp_server_names = servers
-                .iter()
-                .filter_map(|s| {
-                    let (name, count_str) = s.split_once(':')?;
-                    let count = count_str.parse::<usize>().unwrap_or(0);
-                    Some((name.to_string(), count))
-                })
-                .collect();
+            app.mcp_server_names = super::super::App::parse_mcp_status_servers(servers);
             // Keep MCP readiness non-intrusive. The footer/tool indicator reads
             // `mcp_server_names` directly, so avoid a transient status notice here:
             // status notices render near the prompt and can cover text while the
             // user is typing during startup.
+            false
+        }
+        ServerEvent::Skills { skills } => {
+            // Fresh skill names pushed by the server after a `ReloadSkills`
+            // request (or any future server-side skill reload), so the remote
+            // TUI's skill list stays in sync without a History re-bootstrap.
+            app.remote_skills = skills;
+            app.invalidate_command_candidates_cache();
+            // Reflect the reloaded list exactly like the local `/skills`
+            // command does.
+            app.push_display_message(
+                DisplayMessage::system(super::super::state_ui::build_skills_report(app))
+                    .with_title("Skills"),
+            );
+            app.set_status_notice("Skills reloaded");
             false
         }
         ServerEvent::ModelChanged {

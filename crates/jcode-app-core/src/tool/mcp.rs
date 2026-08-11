@@ -26,6 +26,10 @@ struct McpToolInput {
 pub struct McpManagementTool {
     manager: Arc<RwLock<McpManager>>,
     registry: Option<crate::tool::Registry>,
+    /// Client event channel for pushing `McpStatus` updates after
+    /// connect/disconnect/reload, so remote TUIs stay in sync with the
+    /// session's MCP state without waiting for a History re-bootstrap.
+    event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::protocol::ServerEvent>>,
 }
 
 impl McpManagementTool {
@@ -33,11 +37,20 @@ impl McpManagementTool {
         Self {
             manager,
             registry: None,
+            event_tx: None,
         }
     }
 
     pub fn with_registry(mut self, registry: crate::tool::Registry) -> Self {
         self.registry = Some(registry);
+        self
+    }
+
+    pub fn with_events(
+        mut self,
+        event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::protocol::ServerEvent>>,
+    ) -> Self {
+        self.event_tx = event_tx;
         self
     }
 }
@@ -296,6 +309,9 @@ impl McpManagementTool {
                         }
                     }
                 }
+                // Push the updated status so remote TUIs sync their MCP
+                // indicator without a History re-bootstrap.
+                send_mcp_status(&self.manager, self.event_tx.as_ref()).await;
 
                 Ok(ToolOutput::new(output).with_title(format!("MCP: Connected {}", server_name)))
             }
@@ -357,6 +373,8 @@ impl McpManagementTool {
                 ],
             );
         }
+        // Push the updated status so remote TUIs sync their MCP indicator.
+        send_mcp_status(&self.manager, self.event_tx.as_ref()).await;
 
         Ok(
             ToolOutput::new(format!("Disconnected from MCP server '{}'", server_name))
@@ -365,97 +383,152 @@ impl McpManagementTool {
     }
 
     async fn reload_config(&self, session_id: &str) -> Result<ToolOutput> {
-        // Load fresh config, resolved against the session's project directory
-        // rather than the server process cwd (issue #420).
-        let config = self.manager.read().await.load_fresh_config();
+        reload_mcp_config(
+            self.registry.as_ref(),
+            &self.manager,
+            self.event_tx.as_ref(),
+            session_id,
+        )
+        .await
+    }
+}
 
-        if config.servers.is_empty() {
-            // Unregister all existing MCP tools before reporting empty
-            if let Some(ref registry) = self.registry {
-                registry.unregister_prefix("mcp__").await;
-            }
-            return Ok(ToolOutput::new(
-                "No servers found in config.\n\n\
-                Add servers to ~/.jcode/mcp.json (global) or .jcode/mcp.json (project):\n\
-                {\n  \"servers\": {\n    \"server-name\": {\n      \"command\": \"/path/to/server\",\n      \"args\": [],\n      \"env\": {},\n      \"shared\": true\n    }\n  }\n}\n\n\
-                .claude/mcp.json is also supported for compatibility."
-            ).with_title("MCP: Empty config"));
-        }
+/// Compute the `"name:count"` MCP status list for a manager, used by the
+/// `McpStatus` wire event and the TUI MCP indicator.
+pub async fn mcp_status_servers(manager: &Arc<RwLock<McpManager>>) -> Vec<String> {
+    let manager_guard = manager.read().await;
+    let servers = manager_guard.connected_servers().await;
+    let all_tools = manager_guard.all_tools().await;
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for server in &servers {
+        counts.insert(server.clone(), 0);
+    }
+    for (server, _) in all_tools {
+        *counts.entry(server).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(name, count)| format!("{name}:{count}"))
+        .collect()
+}
 
-        // Unregister all existing MCP server tools before reload
-        if let Some(ref registry) = self.registry {
+/// Send an `McpStatus` event reflecting the manager's current connections, so
+/// remote TUIs sync their MCP indicator without a History re-bootstrap.
+pub(crate) async fn send_mcp_status(
+    manager: &Arc<RwLock<McpManager>>,
+    event_tx: Option<&tokio::sync::mpsc::UnboundedSender<crate::protocol::ServerEvent>>,
+) {
+    if let Some(tx) = event_tx {
+        let servers = mcp_status_servers(manager).await;
+        let _ = tx.send(crate::protocol::ServerEvent::McpStatus { servers });
+    }
+}
+
+/// Reload MCP config for a session: re-read the config from disk (resolved
+/// against the session's project directory), disconnect and reconnect servers,
+/// re-register `mcp__*` tools in `registry`, and push an `McpStatus` event.
+///
+/// Shared by the `mcp` management tool and the server-side
+/// `Request::ReloadMcp` handler so both paths behave identically.
+pub async fn reload_mcp_config(
+    registry: Option<&crate::tool::Registry>,
+    manager: &Arc<RwLock<McpManager>>,
+    event_tx: Option<&tokio::sync::mpsc::UnboundedSender<crate::protocol::ServerEvent>>,
+    session_id: &str,
+) -> Result<ToolOutput> {
+    // Load fresh config, resolved against the session's project directory
+    // rather than the server process cwd (issue #420).
+    let config = manager.read().await.load_fresh_config();
+
+    if config.servers.is_empty() {
+        // Unregister all existing MCP tools before reporting empty
+        if let Some(registry) = registry {
             registry.unregister_prefix("mcp__").await;
         }
-
-        let mut manager = self.manager.write().await;
-        let (successes, failures) = manager.reload().await?;
-
-        let servers = manager.connected_servers().await;
-        let all_tools = manager.all_tools().await;
-        drop(manager);
-
-        // Re-register tools from fresh connections
-        if let Some(ref registry) = self.registry {
-            let mcp_tools = crate::mcp::create_mcp_tools(Arc::clone(&self.manager)).await;
-            for (name, tool) in mcp_tools {
-                registry.register(name, tool).await;
-            }
-        }
-
-        let enabled_count = config
-            .servers
-            .values()
-            .filter(|cfg| cfg.is_enabled())
-            .count();
-        let disabled_count = config.servers.len() - enabled_count;
-        let mut output = format!(
-            "Reloaded MCP config. Connected: {}/{}\n\n",
-            successes, enabled_count
-        );
-        if disabled_count > 0 {
-            output.push_str(&format!(
-                "{} server(s) disabled in config (kept, not spawned).\n\n",
-                disabled_count
-            ));
-        }
-
-        // Show failures first
-        if !failures.is_empty() {
-            crate::logging::event_warn(
-                "MCP_LIFECYCLE",
-                vec![
-                    ("phase", "reload_connect_failures".to_string()),
-                    ("session_id", session_id.to_string()),
-                    ("failure_count", failures.len().to_string()),
-                    (
-                        "servers",
-                        failures
-                            .iter()
-                            .map(|(name, _)| name.clone())
-                            .collect::<Vec<_>>()
-                            .join(","),
-                    ),
-                ],
-            );
-            output.push_str("## Connection Failures\n");
-            for (name, error) in &failures {
-                output.push_str(&format!("  - {}: {}\n", name, error));
-            }
-            output.push('\n');
-        }
-
-        for server in &servers {
-            output.push_str(&format!("## {}\n", server));
-            let server_tools: Vec<_> = all_tools.iter().filter(|(s, _)| s == server).collect();
-
-            for (_, tool) in server_tools {
-                output.push_str(&format!("  - {}\n", tool.name));
-            }
-            output.push('\n');
-        }
-
-        Ok(ToolOutput::new(output).with_title("MCP: Reloaded"))
+        send_mcp_status(manager, event_tx).await;
+        return Ok(ToolOutput::new(
+            "No servers found in config.\n\n\
+            Add servers to ~/.jcode/mcp.json (global) or .jcode/mcp.json (project):\n\
+            {\n  \"servers\": {\n    \"server-name\": {\n      \"command\": \"/path/to/server\",\n      \"args\": [],\n      \"env\": {},\n      \"shared\": true\n    }\n  }\n}\n\n\
+            .claude/mcp.json is also supported for compatibility."
+        ).with_title("MCP: Empty config"));
     }
+
+    // Unregister all existing MCP server tools before reload
+    if let Some(registry) = registry {
+        registry.unregister_prefix("mcp__").await;
+    }
+
+    let mut manager_guard = manager.write().await;
+    let (successes, failures) = manager_guard.reload().await?;
+
+    let servers = manager_guard.connected_servers().await;
+    let all_tools = manager_guard.all_tools().await;
+    drop(manager_guard);
+
+    // Re-register tools from fresh connections
+    if let Some(registry) = registry {
+        let mcp_tools = crate::mcp::create_mcp_tools(Arc::clone(manager)).await;
+        for (name, tool) in mcp_tools {
+            registry.register(name, tool).await;
+        }
+    }
+
+    send_mcp_status(manager, event_tx).await;
+
+    let enabled_count = config
+        .servers
+        .values()
+        .filter(|cfg| cfg.is_enabled())
+        .count();
+    let disabled_count = config.servers.len() - enabled_count;
+    let mut output = format!(
+        "Reloaded MCP config. Connected: {}/{}\n\n",
+        successes, enabled_count
+    );
+    if disabled_count > 0 {
+        output.push_str(&format!(
+            "{} server(s) disabled in config (kept, not spawned).\n\n",
+            disabled_count
+        ));
+    }
+
+    // Show failures first
+    if !failures.is_empty() {
+        crate::logging::event_warn(
+            "MCP_LIFECYCLE",
+            vec![
+                ("phase", "reload_connect_failures".to_string()),
+                ("session_id", session_id.to_string()),
+                ("failure_count", failures.len().to_string()),
+                (
+                    "servers",
+                    failures
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+            ],
+        );
+        output.push_str("## Connection Failures\n");
+        for (name, error) in &failures {
+            output.push_str(&format!("  - {}: {}\n", name, error));
+        }
+        output.push('\n');
+    }
+
+    for server in &servers {
+        output.push_str(&format!("## {}\n", server));
+        let server_tools: Vec<_> = all_tools.iter().filter(|(s, _)| s == server).collect();
+
+        for (_, tool) in server_tools {
+            output.push_str(&format!("  - {}\n", tool.name));
+        }
+        output.push('\n');
+    }
+
+    Ok(ToolOutput::new(output).with_title("MCP: Reloaded"))
 }
 
 #[cfg(test)]

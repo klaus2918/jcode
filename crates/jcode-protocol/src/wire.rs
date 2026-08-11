@@ -714,6 +714,22 @@ pub enum Request {
         #[serde(default = "default_true")]
         wake: bool,
     },
+
+    /// Reload MCP config and reconnect servers for the current session. The
+    /// server re-reads the MCP config from disk, re-registers `mcp__*` tools,
+    /// unlocks the agent's tool snapshot, and replies with `McpStatus` +
+    /// `Done`. Lets a running session pick up newly added/edited MCP servers
+    /// without a restart.
+    #[serde(rename = "reload_mcp")]
+    ReloadMcp { id: u64 },
+
+    /// Reload skills from disk for the current session. The server re-reads
+    /// the shared global skill registry and replies with `Skills` + `Done`,
+    /// so the session's "Available Skills" prompt section and the remote
+    /// client's skill list reflect the latest SKILL.md files without a
+    /// restart.
+    #[serde(rename = "reload_skills")]
+    ReloadSkills { id: u64 },
 }
 
 /// Server event sent to client
@@ -1037,6 +1053,12 @@ pub enum ServerEvent {
         /// Server names with tool counts in "name:count" format
         servers: Vec<String>,
     },
+
+    /// Updated skill name list, pushed after a `reload_skills` request so a
+    /// remote client's skill display stays in sync with the server process's
+    /// shared skill registry without a History re-bootstrap.
+    #[serde(rename = "skills")]
+    Skills { skills: Vec<String> },
 
     /// Client debug command forwarded from debug socket to TUI
     #[serde(rename = "client_debug_request")]
