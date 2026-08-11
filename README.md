@@ -574,6 +574,10 @@ Example MCP config:
 
 On first run, jcode also tries to import MCP servers from `~/.claude.json` (falling back to the legacy `~/.claude/mcp.json`) and `~/.codex/config.toml` if `~/.jcode/mcp.json` does not exist yet.
 
+Inside the TUI, `/mcp` shows the live server list and `/mcp-reload`
+re-reads the config files above and reconnects every server in place,
+without restarting jcode.
+
 ### Supported providers
 
 Any service that speaks OpenAI-compatible (or Anthropic Messages) chat APIs can
@@ -617,6 +621,11 @@ image of /Resume for codex sessions
 
 
 Skills are not all loaded on startup. The conversation is embedded as a semantic vector, and will automatically inject a skill if there is an embedding hit similar to memories. The agent has a skill tool for you to manually activate a skill at anytime. You may also activate via slash commands. 
+
+To manage skills from the TUI: `/skill` lists the currently loaded skills
+and jcode-endorsed recommendations without touching disk, while
+`/skill-reload` re-reads the skill directories and loads new skills into
+the current session without restarting.
 
 ---
 
