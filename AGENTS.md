@@ -31,3 +31,7 @@
 - On Windows, the equivalents are `%LOCALAPPDATA%\\jcode\\bin\\jcode.exe` for the launcher, `%LOCALAPPDATA%\\jcode\\builds\\stable\\jcode.exe` for stable, and `%LOCALAPPDATA%\\jcode\\builds\\versions\\<version>\\jcode.exe` for immutable installs; `scripts/install.ps1` currently installs the stable channel.
 - Ensure `~/.local/bin` is **before** `~/.cargo/bin` in `PATH`.
 
+## 用户手册（本地）
+- 用户手册位于 `000-task/04-用户手册/manual/`（git 忽略，不入库）：`01-用户指南.md`、`02-模型接入与配置.md`、`03-命令与快捷键参考.md`、`04-架构与设计.md`、`05-运维参考.md`。
+- 修改命令/功能时，同步更新 `03-命令与快捷键参考.md`（斜杠命令表）与 `01-用户指南.md`（能力速览）。
+
