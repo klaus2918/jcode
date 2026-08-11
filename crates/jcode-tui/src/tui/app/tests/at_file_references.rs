@@ -133,3 +133,54 @@ fn paste_escape_cancel_removes_opening_at_and_noop_elsewhere() {
     assert_eq!(app.input, "", "Esc undoes the auto-inserted @");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn at_reference_expands_into_submitted_message() {
+    let root = temp_workspace("expand");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+
+    app.set_input_for_test("@README.md");
+    app.submit_input();
+
+    // Display keeps the reference as typed; the model receives the file content.
+    assert_eq!(app.display_messages().len(), 1);
+    assert_eq!(app.display_messages()[0].content, "@README.md");
+    let provider_messages = app.materialized_provider_messages();
+    let user_message = provider_messages
+        .iter()
+        .rev()
+        .find(|message| message.role == crate::message::Role::User)
+        .expect("expected submitted user message");
+    match &user_message.content[0] {
+        crate::message::ContentBlock::Text { text, .. } => {
+            assert_eq!(text, "<@README.md>\n# readme");
+        }
+        _ => panic!("Expected Text content block"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn at_reference_missing_file_stays_as_typed() {
+    let root = temp_workspace("missing");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+
+    app.set_input_for_test("@nope.txt");
+    app.submit_input();
+
+    let provider_messages = app.materialized_provider_messages();
+    let user_message = provider_messages
+        .iter()
+        .rev()
+        .find(|message| message.role == crate::message::Role::User)
+        .expect("expected submitted user message");
+    match &user_message.content[0] {
+        crate::message::ContentBlock::Text { text, .. } => {
+            assert_eq!(text, "@nope.txt", "missing file keeps the typed reference");
+        }
+        _ => panic!("Expected Text content block"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
