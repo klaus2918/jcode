@@ -229,8 +229,12 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Show the full session context snapshot",
     ));
     lines.push(help_entry(
-        "/skills",
+        "/skill",
         "Show loaded skills and jcode-endorsed recommendations",
+    ));
+    lines.push(help_entry(
+        "/skill-reload",
+        "Re-read skills from disk and load them into this session",
     ));
     lines.push(help_entry("/info", "Show session info and token usage"));
     lines.push(help_entry(

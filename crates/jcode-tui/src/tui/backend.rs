@@ -1262,6 +1262,14 @@ impl RemoteConnection {
         self.session_id.as_deref()
     }
 
+    /// Test helper: the next request id is only advanced when a request is
+    /// actually written, so it proves a command path sent (or did not send) a
+    /// wire frame without reading from the peer socket.
+    #[cfg(test)]
+    pub(crate) fn next_request_id(&self) -> u64 {
+        self.next_request_id
+    }
+
     /// Create a dummy RemoteConnection for replay mode (no real server)
     #[cfg(test)]
     pub fn dummy() -> Self {

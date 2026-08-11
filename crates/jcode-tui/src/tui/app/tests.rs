@@ -844,7 +844,7 @@ fn version_command_shows_remote_server_identity_and_update_status() {
 fn skills_command_lists_loaded_and_endorsed_skills() {
     let mut app = create_test_app();
 
-    assert!(super::state_ui::handle_info_command(&mut app, "/skills"));
+    assert!(super::state_ui::handle_info_command(&mut app, "/skill"));
     let content = app.display_messages().last().unwrap().content.clone();
 
     assert!(content.contains("Loaded skills"), "{content}");
@@ -894,7 +894,7 @@ fn skills_command_marks_active_skill_in_remote_mode() {
     ];
     app.active_skill = Some("optimization".to_string());
 
-    assert!(super::state_ui::handle_info_command(&mut app, "/skills"));
+    assert!(super::state_ui::handle_info_command(&mut app, "/skill"));
     let content = app.display_messages().last().unwrap().content.clone();
 
     assert!(content.contains("- /optimization (active)"), "{content}");
@@ -929,7 +929,7 @@ fn mcp_command_reload_local_mode_kicks_off_reload() {
 
     assert!(super::state_ui::handle_info_command(
         &mut app,
-        "/mcp reload"
+        "/mcp-reload"
     ));
     let content = app.display_messages().last().unwrap().content.clone();
     assert!(content.contains("Reloading MCP servers"), "{content}");
@@ -943,7 +943,7 @@ fn mcp_command_reload_remote_mode_points_at_reconnect() {
 
     assert!(super::state_ui::handle_info_command(
         &mut app,
-        "/mcp reload"
+        "/mcp-reload"
     ));
     let content = app.display_messages().last().unwrap().content.clone();
     assert!(content.contains("server process"), "{content}");
@@ -984,7 +984,7 @@ fn remote_enter_mcp_reload_sends_request_and_shows_status() {
     let mut app = create_test_app();
     app.is_remote = true;
     app.runtime_mode = crate::tui::app::AppRuntimeMode::RemoteClient;
-    app.input = "/mcp reload".to_string();
+    app.input = "/mcp-reload".to_string();
     app.cursor_pos = app.input.len();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1002,7 +1002,7 @@ fn remote_enter_mcp_reload_sends_request_and_shows_status() {
             &mut remote,
         )
         .await
-        .expect("/mcp reload should succeed in remote mode");
+        .expect("/mcp-reload should succeed in remote mode");
 
         let mut line = String::new();
         reader
@@ -1035,7 +1035,7 @@ fn remote_enter_skills_reload_sends_request_and_shows_status() {
     let mut app = create_test_app();
     app.is_remote = true;
     app.runtime_mode = crate::tui::app::AppRuntimeMode::RemoteClient;
-    app.input = "/skills".to_string();
+    app.input = "/skill-reload".to_string();
     app.cursor_pos = app.input.len();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1053,7 +1053,7 @@ fn remote_enter_skills_reload_sends_request_and_shows_status() {
             &mut remote,
         )
         .await
-        .expect("/skills should succeed in remote mode");
+        .expect("/skill-reload should succeed in remote mode");
 
         let mut line = String::new();
         reader
@@ -1077,6 +1077,52 @@ fn remote_enter_skills_reload_sends_request_and_shows_status() {
         crate::protocol::Request::ReloadSkills { id } => assert_eq!(id, 1),
         other => panic!("expected ReloadSkills request, got {:?}", other),
     }
+}
+
+#[test]
+fn remote_enter_skills_lists_without_sending_request() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.runtime_mode = crate::tui::app::AppRuntimeMode::RemoteClient;
+    app.remote_skills = vec!["optimization".to_string(), "docx".to_string()];
+    app.input = "/skill".to_string();
+    app.cursor_pos = app.input.len();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+        app.handle_remote_key(
+            ratatui::crossterm::event::KeyCode::Enter,
+            ratatui::crossterm::event::KeyModifiers::empty(),
+            &mut remote,
+        )
+        .await
+        .expect("/skill should succeed in remote mode");
+
+        // A view command must not write any request frame: the request id only
+        // advances when a wire frame is actually sent.
+        assert!(
+            remote.next_request_id() == 1,
+            "/skill view must not send a request, next_request_id={}",
+            remote.next_request_id()
+        );
+    });
+
+    assert!(app.input.is_empty(), "command input should be consumed");
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.title.as_deref() == Some("Skills")),
+        "should show the skills report"
+    );
+    assert!(
+        app.display_messages()
+            .iter()
+            .any(|m| m.content.contains("- /optimization")),
+        "should render the remote skill list"
+    );
+    assert_eq!(app.status_notice(), Some("Skills".to_string()));
 }
 
 #[test]
@@ -1156,9 +1202,9 @@ fn local_mcp_reload_completed_is_ignored_for_other_sessions() {
 }
 
 /// Regression for issue #431 (and #457): skills added on disk after startup
-/// must show up in `/skills` and the skills snapshot without a session
-/// restart. With the session-scoped project overlay, project-local skills are
-/// visible immediately, without even running `/skills` first.
+/// must show up in `/skills reload` and the skills snapshot without a session
+/// restart. `/skills` alone only views the already-loaded list, so the reload
+/// subcommand is the "load fresh skills into the session" entry point.
 #[test]
 fn skills_command_refreshes_registry_from_disk_before_listing() {
     let mut app = create_test_app();
@@ -1182,17 +1228,116 @@ fn skills_command_refreshes_registry_from_disk_before_listing() {
         "project-local skill must be visible immediately without reload"
     );
 
-    assert!(super::state_ui::handle_info_command(&mut app, "/skills"));
+    assert!(super::state_ui::handle_info_command(
+        &mut app,
+        "/skill-reload"
+    ));
     let content = app.display_messages().last().unwrap().content.clone();
 
     assert!(
         content.contains("- /late-skill"),
-        "expected late-added skill in /skills output:\n{content}"
+        "expected late-added skill in /skill-reload output:\n{content}"
     );
     assert!(
         app.current_skills_snapshot().get("late-skill").is_some(),
         "registry snapshot must be synced so /late-skill invocations resolve"
     );
+}
+
+#[test]
+fn skills_view_lists_without_reload_but_reload_loads_fresh_skills() {
+    let mut app = create_test_app();
+    let skill_name = "late-global-skill";
+    let home = crate::storage::jcode_dir().expect("test jcode dir");
+    let skill_dir = home.join("skills").join(skill_name);
+    std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: late-global-skill\ndescription: Added after startup\n---\n# Late global skill\n",
+    )
+    .expect("write SKILL.md");
+
+    // Guard: remove the skill from the shared process-level test JCODE_HOME
+    // so parallel tests are not affected.
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(skill_dir);
+
+    // `/skill` (view) must not re-read disk: the skill added after startup
+    // stays hidden until an explicit reload.
+    assert!(super::state_ui::handle_info_command(&mut app, "/skill"));
+    let view = app.display_messages().last().unwrap().content.clone();
+    assert!(
+        !view.contains("- /late-global-skill"),
+        "view must not pick up disk changes:\n{view}"
+    );
+    assert!(
+        app.current_skills_snapshot().get(skill_name).is_none(),
+        "view must not refresh the snapshot"
+    );
+
+    // `/skill-reload` re-reads disk and loads the new skill into the session.
+    assert!(super::state_ui::handle_info_command(
+        &mut app,
+        "/skill-reload"
+    ));
+    let reloaded = app.display_messages().last().unwrap().content.clone();
+    assert!(
+        reloaded.contains("- /late-global-skill"),
+        "reload must pick up disk changes:\n{reloaded}"
+    );
+    assert!(
+        app.current_skills_snapshot().get(skill_name).is_some(),
+        "reload must refresh the snapshot"
+    );
+    assert_eq!(app.status_notice(), Some("Skills reloaded".to_string()));
+}
+
+#[test]
+fn skill_command_is_bare_and_subcommand_forms_fall_through() {
+    let mut app = create_test_app();
+
+    // Only the bare `/skill` command is handled locally.
+    assert!(super::state_ui::handle_info_command(&mut app, "/skill"));
+    assert_eq!(app.status_notice(), Some("Skills".to_string()));
+
+    // Subcommand forms (/skill list, /skills, /skills reload) are not
+    // recognized: the dispatch table must not claim them.
+    for legacy in [
+        "/skill list",
+        "/skill status",
+        "/skills",
+        "/skills reload",
+        "/skill foo",
+    ] {
+        let before = app.display_messages().len();
+        assert!(
+            !super::state_ui::handle_info_command(&mut app, legacy),
+            "{legacy} should fall through to the unknown-command path"
+        );
+        assert_eq!(
+            app.display_messages().len(),
+            before,
+            "{legacy} must not push a message"
+        );
+    }
+}
+
+#[test]
+fn skills_reload_remote_sync_path_points_at_reconnect() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+
+    assert!(super::state_ui::handle_info_command(
+        &mut app,
+        "/skill-reload"
+    ));
+    let content = app.display_messages().last().unwrap().content.clone();
+    assert!(content.contains("server process"), "{content}");
 }
 
 #[test]

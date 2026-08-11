@@ -3,7 +3,7 @@ use crate::tui::{TuiState, detect_kv_cache_problem, ui};
 
 impl App {
     /// Parse `"name:count"` entries (from `ServerEvent::McpStatus` or the
-    /// local `/mcp reload` bus event) into the `(name, tool_count)` list the
+    /// local `/mcp-reload` bus event) into the `(name, tool_count)` list the
     /// MCP indicator renders. Keep in sync with the server's
     /// `tool::mcp::mcp_status_servers` format.
     pub(super) fn parse_mcp_status_servers(servers: Vec<String>) -> Vec<(String, usize)> {

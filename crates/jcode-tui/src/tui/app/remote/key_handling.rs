@@ -900,7 +900,7 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if trimmed == "/mcp reload" {
+                if trimmed == "/mcp-reload" {
                     app.push_display_message(DisplayMessage::system(
                         "Reloading MCP servers on the server...".to_string(),
                     ));
@@ -917,9 +917,21 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if trimmed == "/skills" {
-                    // Ask the server to re-read its global skill registry, then
-                    // show the refreshed list when the `Skills` event arrives.
+                if trimmed == "/skill" {
+                    // View/manage: render the current remote skill list without
+                    // asking the server to re-read anything.
+                    app.push_display_message(
+                        DisplayMessage::system(super::super::state_ui::build_skills_report(app))
+                            .with_title("Skills"),
+                    );
+                    app.set_status_notice("Skills");
+                    return Ok(());
+                }
+
+                if trimmed == "/skill-reload" {
+                    // Load fresh skills into the session: ask the server to
+                    // re-read its global skill registry, then show the
+                    // refreshed list when the `Skills` event arrives.
                     app.push_display_message(DisplayMessage::system(
                         "Reloading skills on the server...".to_string(),
                     ));

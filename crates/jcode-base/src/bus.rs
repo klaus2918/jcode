@@ -78,7 +78,7 @@ pub struct ManualToolCompleted {
     pub duration_ms: u64,
 }
 
-/// Result of a local `/mcp reload` that ran off the UI thread. Carries the
+/// Result of a local `/mcp-reload` that ran off the UI thread. Carries the
 /// refreshed `"name:count"` server list so the MCP indicator can sync without
 /// a restart, mirroring the remote `McpStatus` wire event.
 #[derive(Clone, Debug)]
@@ -442,7 +442,7 @@ pub enum BusEvent {
     SidePanelUpdated(SidePanelUpdated),
     /// Deferred Mermaid rendering completed and cached content may now be visible
     MermaidRenderCompleted,
-    /// Local `/mcp reload` finished off the UI thread.
+    /// Local `/mcp-reload` finished off the UI thread.
     McpReloadCompleted(McpReloadCompleted),
 }
 

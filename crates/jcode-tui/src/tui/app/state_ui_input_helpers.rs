@@ -138,12 +138,17 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/overnight", "Run a supervised overnight coordinator"),
     RegisteredCommand::public("/context", "Show the full session context snapshot"),
     RegisteredCommand::public(
-        "/skills",
+        "/skill",
         "Show loaded skills and jcode-endorsed recommendations",
     ),
     RegisteredCommand::public(
-        "/mcp",
-        "Show MCP server status, or /mcp reload to re-read config and reconnect",
+        "/skill-reload",
+        "Re-read skills from disk and load them into this session",
+    ),
+    RegisteredCommand::public("/mcp", "Show MCP server status"),
+    RegisteredCommand::public(
+        "/mcp-reload",
+        "Re-read MCP config, reconnect servers, and re-register mcp__* tools",
     ),
     RegisteredCommand::public("/version", "Show current version"),
     RegisteredCommand::public("/changelog", "Show recent changes in this build"),

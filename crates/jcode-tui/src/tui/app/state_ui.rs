@@ -1725,7 +1725,7 @@ fn build_mcp_report(app: &App) -> String {
     let mut out = String::new();
     if app.mcp_server_names.is_empty() {
         out.push_str("No MCP servers connected.\n");
-        out.push_str("\nAdd servers to ~/.jcode/mcp.json (global) or .jcode/mcp.json (project), then run /mcp reload.");
+        out.push_str("\nAdd servers to ~/.jcode/mcp.json (global) or .jcode/mcp.json (project), then run /mcp-reload.");
     } else {
         out.push_str("Connected MCP servers\n");
         for (name, count) in &app.mcp_server_names {
@@ -1737,7 +1737,7 @@ fn build_mcp_report(app: &App) -> String {
             ));
         }
     }
-    out.push_str("\nUse /mcp reload to re-read the config and reconnect.");
+    out.push_str("\nUse /mcp-reload to re-read the config and reconnect.");
     out.trim_end().to_string()
 }
 
@@ -1779,11 +1779,8 @@ fn spawn_local_mcp_reload(app: &App) {
 }
 
 pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
-    if trimmed == "/skills" {
-        // Sync from disk first so skills added by agent-side `skill_manage
-        // reload_all` (which only updates the server process registry) show up
-        // without a restart (issue #431).
-        app.refresh_skills_snapshot();
+    if trimmed == "/skill" {
+        // View/manage the currently loaded skills without touching disk.
         app.push_display_message(
             DisplayMessage::system(build_skills_report(app)).with_title("Skills"),
         );
@@ -1791,37 +1788,51 @@ pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
-        let arg = trimmed.strip_prefix("/mcp").unwrap_or("").trim();
-        match arg {
-            "" | "status" | "list" => {
-                app.push_display_message(
-                    DisplayMessage::system(build_mcp_report(app)).with_title("MCP"),
-                );
-                app.set_status_notice("MCP");
-            }
-            "reload" => {
-                if app.is_remote {
-                    // Remote mode handles `/mcp reload` in the async remote key
-                    // handler (it needs the live connection). This sync path is
-                    // only reached while disconnected, so guide the user.
-                    app.push_display_message(DisplayMessage::error(
-                        "MCP servers live on the server process. Reconnect and run /mcp reload there."
-                            .to_string(),
-                    ));
-                } else {
-                    app.push_display_message(DisplayMessage::system(
-                        "Reloading MCP servers...".to_string(),
-                    ));
-                    app.set_status_notice("Reloading MCP...");
-                    spawn_local_mcp_reload(app);
-                }
-            }
-            _ => {
-                app.push_display_message(DisplayMessage::error(
-                    "Usage: /mcp (status) | /mcp reload".to_string(),
-                ));
-            }
+    if trimmed == "/skill-reload" {
+        // Load fresh skills into the session: re-read the disk snapshot so
+        // skills added by agent-side `skill_manage reload_all` (which only
+        // updates the server process registry) show up without a restart
+        // (issue #431).
+        if app.is_remote {
+            // Remote mode handles `/skill-reload` in the async remote key
+            // handler (it needs the live connection). This sync path is only
+            // reached while disconnected, so guide the user instead of
+            // re-reading the local disk snapshot.
+            app.push_display_message(DisplayMessage::error(
+                "Skills live on the server process. Reconnect and run /skill-reload there."
+                    .to_string(),
+            ));
+        } else {
+            app.refresh_skills_snapshot();
+            app.push_display_message(
+                DisplayMessage::system(build_skills_report(app)).with_title("Skills"),
+            );
+            app.set_status_notice("Skills reloaded");
+        }
+        return true;
+    }
+
+    if trimmed == "/mcp" {
+        app.push_display_message(DisplayMessage::system(build_mcp_report(app)).with_title("MCP"));
+        app.set_status_notice("MCP");
+        return true;
+    }
+
+    if trimmed == "/mcp-reload" {
+        if app.is_remote {
+            // Remote mode handles `/mcp-reload` in the async remote key
+            // handler (it needs the live connection). This sync path is only
+            // reached while disconnected, so guide the user.
+            app.push_display_message(DisplayMessage::error(
+                "MCP servers live on the server process. Reconnect and run /mcp-reload there."
+                    .to_string(),
+            ));
+        } else {
+            app.push_display_message(DisplayMessage::system(
+                "Reloading MCP servers...".to_string(),
+            ));
+            app.set_status_notice("Reloading MCP...");
+            spawn_local_mcp_reload(app);
         }
         return true;
     }
