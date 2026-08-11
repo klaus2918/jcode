@@ -184,3 +184,39 @@ fn at_reference_missing_file_stays_as_typed() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn file_pick_open_ctrl_chord_falls_through_to_draft_editing() {
+    let root = temp_workspace("fallthrough");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+
+    super::input::handle_text_input(&mut app, "@");
+    assert!(app.file_pick.is_some());
+    assert_eq!(app.input, "@");
+
+    // Ctrl+U is not a picker key; the modal layer must report not-consumed so
+    // the caller routes it to the normal handler (clear-to-line-start) instead
+    // of swallowing it or panicking.
+    let consumed = super::input::handle_modal_key(
+        &mut app,
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    )
+    .unwrap();
+    assert!(!consumed, "Ctrl+U must fall through to the normal handler");
+    assert!(app.file_pick.is_some(), "picker stays open on fall-through keys");
+
+    // Re-open, then verify an unhandled editing key (Delete) also falls through.
+    super::input::handle_text_input(&mut app, "@");
+    assert!(app.file_pick.is_some());
+    let consumed = super::input::handle_modal_key(
+        &mut app,
+        KeyCode::Delete,
+        KeyModifiers::NONE,
+    )
+    .unwrap();
+    assert!(!consumed, "Delete must fall through to the normal handler");
+    assert!(app.file_pick.is_some(), "picker stays open on fall-through keys");
+    let _ = std::fs::remove_dir_all(&root);
+}
