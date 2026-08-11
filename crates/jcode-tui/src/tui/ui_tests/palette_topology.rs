@@ -14,11 +14,14 @@ use jcode_tui_style::palette::role_for_rendered;
 use ratatui::style::Color;
 use std::collections::BTreeMap;
 
-/// Render a set of representative frames and tally role area plus adjacency.
-fn measure() -> (
+/// Tally of role area (role -> cells) and adjacency ((a, b) -> cells).
+type TopologyTally = (
     BTreeMap<&'static str, u32>,
     BTreeMap<(&'static str, &'static str), u32>,
-) {
+);
+
+/// Render a set of representative frames and tally role area plus adjacency.
+fn measure() -> TopologyTally {
     let mut area: BTreeMap<&'static str, u32> = BTreeMap::new();
     let mut touches: BTreeMap<(&'static str, &'static str), u32> = BTreeMap::new();
 

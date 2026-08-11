@@ -2332,13 +2332,11 @@ pub(super) fn handle_modal_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<bool> {
-    if app.file_pick.is_some() {
-        if super::at_file::handle_file_pick_key(app, code, modifiers) {
-            return Ok(true);
-        }
-        // Unhandled keys (e.g. Ctrl chords) fall through to the normal input
-        // handlers so the draft stays editable while the picker is open.
+    if app.file_pick.is_some() && super::at_file::handle_file_pick_key(app, code, modifiers) {
+        return Ok(true);
     }
+    // Unhandled keys (e.g. Ctrl chords) fall through to the normal input
+    // handlers so the draft stays editable while the picker is open.
 
     if app.prompt_history_search.is_some() {
         app.handle_prompt_history_search_key(code, modifiers);

@@ -2073,10 +2073,9 @@ pub(super) fn provider_picker_routes() -> Vec<crate::provider::ModelRoute> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|model| !model.is_empty())
+                && !models.iter().any(|m| m == default)
             {
-                if !models.iter().any(|m| m == default) {
-                    models.push(default.to_string());
-                }
+                models.push(default.to_string());
             }
         }
         if models.is_empty() {

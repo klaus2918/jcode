@@ -1,8 +1,8 @@
 {
-  "total": 2484,
+  "total": 2491,
   "totals_by_pattern": {
-    "dot_ok": 924,
-    "let_underscore": 933,
+    "dot_ok": 930,
+    "let_underscore": 934,
     "unwrap_or_default": 627
   },
   "tracked_files": {
@@ -1405,6 +1405,11 @@
       "dot_ok": 1,
       "let_underscore": 0,
       "unwrap_or_default": 2
+    },
+    "crates/jcode-tui/src/tui/app/at_file.rs": {
+      "dot_ok": 6,
+      "let_underscore": 1,
+      "unwrap_or_default": 0
     },
     "crates/jcode-tui/src/tui/app/auth.rs": {
       "dot_ok": 1,

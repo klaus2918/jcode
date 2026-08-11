@@ -44,11 +44,9 @@ impl Provider for ModelSwitchProbeProvider {
     }
 }
 
-fn create_model_switch_probe_app() -> (
-    App,
-    StdArc<StdMutex<String>>,
-    StdArc<StdMutex<Vec<String>>>,
-) {
+type ModelSwitchProbe = (App, StdArc<StdMutex<String>>, StdArc<StdMutex<Vec<String>>>);
+
+fn create_model_switch_probe_app() -> ModelSwitchProbe {
     ensure_test_jcode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::tui::ui::clear_test_render_state_for_tests();

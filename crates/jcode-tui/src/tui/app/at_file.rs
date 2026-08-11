@@ -306,11 +306,11 @@ fn scan_dir(root: &Path, dir: &Path, depth: usize, files: &mut Vec<String>) {
             if !SKIP_DIRS.contains(&name.as_ref()) {
                 scan_dir(root, &path, depth + 1, files);
             }
-        } else if file_type.is_file() {
-            if let Ok(rel) = path.strip_prefix(root) {
-                let rel = rel.to_string_lossy().replace('\\', "/");
-                files.push(rel);
-            }
+        } else if file_type.is_file()
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            files.push(rel);
         }
     }
 }
@@ -333,17 +333,17 @@ fn write_paste_temp_file(app: &mut App, text: &str) -> Option<PathBuf> {
 /// Handle a text paste. Multi-line text (>= 2 lines) is moved to a temp file
 /// and referenced by a marker; single-line text is inserted directly.
 pub(super) fn handle_paste_text(app: &mut App, text: &str) {
-    if text.lines().count() >= 2 {
-        if let Some(path) = write_paste_temp_file(app, text) {
-            let marker = paste_marker(app.paste_file_seq);
-            app.paste_files.push(PasteFileRef {
-                marker: marker.clone(),
-                path,
-            });
-            app.remember_input_undo_state();
-            insert_input_text(app, &marker);
-            return;
-        }
+    if text.lines().count() >= 2
+        && let Some(path) = write_paste_temp_file(app, text)
+    {
+        let marker = paste_marker(app.paste_file_seq);
+        app.paste_files.push(PasteFileRef {
+            marker: marker.clone(),
+            path,
+        });
+        app.remember_input_undo_state();
+        insert_input_text(app, &marker);
+        return;
     }
     insert_input_text(app, text);
 }
