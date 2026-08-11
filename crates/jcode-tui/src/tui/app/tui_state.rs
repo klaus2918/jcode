@@ -736,6 +736,10 @@ impl crate::tui::TuiState for App {
         self.prompt_history_search_view()
     }
 
+    fn file_pick_view(&self) -> Option<crate::tui::FilePickView> {
+        super::at_file::file_pick_view(self)
+    }
+
     fn active_skill(&self) -> Option<String> {
         self.active_skill.clone()
     }

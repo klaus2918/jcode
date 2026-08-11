@@ -3443,6 +3443,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // palette so it wins when both could be visible).
     input_ui::draw_prompt_history_search_overlay(frame, app, chunks[7]);
 
+    // `@` workspace-file picker overlay.
+    input_ui::draw_file_pick_overlay(frame, app, chunks[7]);
+
     // Observe the rendered messages area for the anchor-stability (smoothness)
     // report. Runs on the final buffer so it sees exactly what the user sees.
     smoothness::observe_frame(

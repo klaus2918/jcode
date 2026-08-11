@@ -311,6 +311,10 @@ pub trait TuiState {
     fn prompt_history_search(&self) -> Option<PromptHistorySearchView> {
         None
     }
+    /// Snapshot of the `@` workspace-file picker overlay, or None when closed.
+    fn file_pick_view(&self) -> Option<FilePickView> {
+        None
+    }
     fn active_skill(&self) -> Option<String>;
     fn subagent_status(&self) -> Option<String>;
     /// Progress of a currently-running batch tool call.
@@ -876,6 +880,17 @@ pub struct PromptHistorySearchView {
     pub query: String,
     pub matches: Vec<String>,
     pub selected: usize,
+}
+
+/// Render snapshot of the `@` workspace-file picker overlay.
+/// `matches` are relative file paths, filtered and truncated to the visible
+/// window; `total` is the full filtered count before truncation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePickView {
+    pub query: String,
+    pub matches: Vec<String>,
+    pub selected: usize,
+    pub total: usize,
 }
 
 /// What the first-run onboarding welcome screen should render in its body,

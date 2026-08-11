@@ -797,19 +797,7 @@ pub(super) fn handle_text_paste(app: &mut App, text: String) {
         text.len(),
         text.lines().count()
     ));
-
-    let line_count = text.lines().count().max(1);
-    if line_count < 5 {
-        insert_input_text(app, &text);
-    } else {
-        app.pasted_contents.push(text);
-        let placeholder = format!(
-            "[pasted {} line{}]",
-            line_count,
-            if line_count == 1 { "" } else { "s" }
-        );
-        insert_input_text(app, &placeholder);
-    }
+    super::at_file::handle_paste_text(app, &text);
 }
 
 impl App {
@@ -1069,6 +1057,11 @@ pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
         return false;
     }
 
+    // `@` at a word boundary opens the workspace file picker.
+    if super::at_file::try_trigger_file_pick(app, text) {
+        return true;
+    }
+
     let onboarding_suggestions = matches!(
         app.onboarding_phase(),
         Some(crate::tui::app::onboarding_flow::OnboardingPhase::Suggestions)
@@ -1317,7 +1310,9 @@ pub(super) fn clear_input_for_escape(app: &mut App) {
 }
 
 pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
-    let mut result = input.to_string();
+    // Temp-file pastes (`@[粘贴内容N]` markers) and `@file` references expand
+    // first; legacy in-memory pastes remain as a fallback.
+    let mut result = super::at_file::expand_placeholders(app, input);
     for content in app.pasted_contents.iter().rev() {
         let placeholder = paste_placeholder(content);
         if let Some(pos) = result.rfind(&placeholder) {
@@ -2337,6 +2332,14 @@ pub(super) fn handle_modal_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<bool> {
+    if app.file_pick.is_some() {
+        if super::at_file::handle_file_pick_key(app, code, modifiers) {
+            return Ok(true);
+        }
+        // Unhandled keys (e.g. Ctrl chords) fall through to the normal input
+        // handlers so the draft stays editable while the picker is open.
+    }
+
     if app.prompt_history_search.is_some() {
         app.handle_prompt_history_search_key(code, modifiers);
         return Ok(true);
@@ -2581,6 +2584,7 @@ pub(super) fn take_prepared_input(app: &mut App) -> PreparedInput {
     let raw_input = std::mem::take(&mut app.input);
     app.record_prompt_history(&raw_input);
     let expanded = expand_paste_placeholders(app, &raw_input);
+    super::at_file::cleanup_paste_files(app);
     app.pasted_contents.clear();
     let images = std::mem::take(&mut app.pending_images);
     app.cursor_pos = 0;
@@ -3424,6 +3428,7 @@ impl App {
             return;
         }
         self.pasted_contents.clear();
+        super::at_file::cleanup_paste_files(self);
         self.cursor_pos = 0;
         self.clear_input_undo_history();
         self.follow_chat_bottom(); // Reset to bottom and resume auto-scroll on new input

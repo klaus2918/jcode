@@ -48,6 +48,7 @@ pub enum AppRuntimeMode {
     TestHarness,
 }
 
+mod at_file;
 mod auth;
 mod catchup;
 mod commands;
@@ -1036,6 +1037,16 @@ pub struct App {
     restart_requested: Option<String>,
     // Pasted content storage (displayed as placeholders, expanded on submit)
     pasted_contents: Vec<String>,
+    // Multiline pastes stored in temp files, referenced by `@[粘贴内容...]`
+    // markers. Expanded from disk on submit, then the temp files are removed.
+    paste_files: Vec<at_file::PasteFileRef>,
+    // Active `@` workspace-file picker, or None when closed.
+    file_pick: Option<at_file::FilePickState>,
+    // Cached workspace file list (relative paths) for the `@` picker. Built
+    // once per session on first `@`, bounded by the index limit.
+    file_index: Option<Vec<String>>,
+    // Monotonic counter for naming paste temp files.
+    paste_file_seq: u64,
     // Pending pasted images (media_type, base64_data) attached to next message
     pending_images: Vec<(String, String)>,
     // One-shot flag: the next submitted prompt is routed to a new headed session.

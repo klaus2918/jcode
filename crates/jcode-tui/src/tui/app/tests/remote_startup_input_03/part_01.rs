@@ -307,9 +307,9 @@ fn test_handle_paste_multi_line() {
 
     app.handle_paste("line 1\nline 2\nline 3".to_string());
 
-    // Small paste (< 5 lines) is inlined directly
-    assert_eq!(app.input(), "line 1\nline 2\nline 3");
-    assert!(app.pasted_contents.is_empty());
+    // Multi-line paste (>= 2 lines) is moved to a temp file and shown as a marker
+    assert_eq!(app.input(), "@[粘贴内容1]");
+    assert_eq!(app.paste_files.len(), 1);
 }
 
 #[test]
@@ -318,9 +318,9 @@ fn test_handle_paste_large() {
 
     app.handle_paste("a\nb\nc\nd\ne".to_string());
 
-    // Large paste (5+ lines) uses placeholder
-    assert_eq!(app.input(), "[pasted 5 lines]");
-    assert_eq!(app.pasted_contents.len(), 1);
+    // Large paste uses the compact marker
+    assert_eq!(app.input(), "@[粘贴内容1]");
+    assert_eq!(app.paste_files.len(), 1);
 }
 
 #[test]
@@ -341,15 +341,15 @@ fn test_paste_expansion_on_submit() {
     app.handle_key(KeyCode::Char('B'), KeyModifiers::empty())
         .unwrap();
 
-    // Input shows placeholder
-    assert_eq!(app.input(), "A: [pasted 5 lines] B");
+    // Input shows the compact marker
+    assert_eq!(app.input(), "A: @[粘贴内容1] B");
 
     // Submit expands placeholder
     app.submit_input();
 
-    // Display shows placeholder (user sees condensed view)
+    // Display shows the compact marker (user sees condensed view)
     assert_eq!(app.display_messages().len(), 1);
-    assert_eq!(app.display_messages()[0].content, "A: [pasted 5 lines] B");
+    assert_eq!(app.display_messages()[0].content, "A: @[粘贴内容1] B");
 
     // Model receives expanded content (actual pasted text). Local sessions keep the
     // provider message cache lazy, so inspect the materialized provider view.
@@ -366,27 +366,27 @@ fn test_paste_expansion_on_submit() {
         _ => panic!("Expected Text content block"),
     }
 
-    // Pasted contents should be cleared
-    assert!(app.pasted_contents.is_empty());
+    // Paste temp files should be cleaned up
+    assert!(app.paste_files.is_empty());
 }
 
 #[test]
 fn test_multiple_pastes() {
     let mut app = create_test_app();
 
-    // Small pastes are inlined
+    // Single-line paste is inlined
     app.handle_paste("first".to_string());
     app.handle_key(KeyCode::Char(' '), KeyModifiers::empty())
         .unwrap();
     app.handle_paste("second\nline".to_string());
 
-    // Both small pastes inlined directly
-    assert_eq!(app.input(), "first second\nline");
-    assert!(app.pasted_contents.is_empty());
+    // Single-line stays inline; multi-line collapses to a marker
+    assert_eq!(app.input(), "first @[粘贴内容1]");
+    assert_eq!(app.paste_files.len(), 1);
 
     app.submit_input();
-    // Display and model both get the same content (no expansion needed)
-    assert_eq!(app.display_messages()[0].content, "first second\nline");
+    // Display keeps the marker; the model receives expanded content
+    assert_eq!(app.display_messages()[0].content, "first @[粘贴内容1]");
     let provider_messages = app.materialized_provider_messages();
     let user_message = provider_messages
         .iter()

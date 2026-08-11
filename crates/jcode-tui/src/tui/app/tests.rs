@@ -42,6 +42,7 @@ include!("tests/terminal_setup_command.rs");
 include!("tests/issue_497_copy_ctrl_c.rs");
 include!("tests/spinner_slash_commands.rs");
 include!("tests/skill_invocation_multi_word.rs");
+include!("tests/at_file_references.rs");
 #[test]
 fn kv_cache_signature_prefix_match_allows_appended_messages() {
     let baseline_messages = vec![
@@ -2061,7 +2062,10 @@ fn oversized_pasted_submit_is_rejected_and_preserves_input() {
 
     crate::tui::app::input::handle_text_paste(&mut app, pasted);
     let placeholder = app.input.clone();
-    assert!(placeholder.starts_with("[pasted "));
+    assert!(
+        placeholder.starts_with(crate::tui::app::at_file::PASTE_MARKER_PREFIX),
+        "multi-line paste collapses to a marker, got: {placeholder}"
+    );
 
     app.submit_input();
 
@@ -2074,7 +2078,7 @@ fn oversized_pasted_submit_is_rejected_and_preserves_input() {
         "placeholder input should be preserved"
     );
     assert_eq!(
-        app.pasted_contents.len(),
+        app.paste_files.len(),
         1,
         "expanded paste should remain recoverable"
     );

@@ -208,6 +208,67 @@ pub(super) fn draw_prompt_history_search_overlay(
     frame.render_widget(Paragraph::new(lines), rect);
 }
 
+/// Draw the `@` workspace-file picker overlay in the same popover style as the
+/// prompt-history search.
+pub(super) fn draw_file_pick_overlay(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
+    let Some(view) = app.file_pick_view() else {
+        return;
+    };
+    let accent = Style::default().fg(rgb(255, 213, 128));
+    let dim = Style::default().fg(dim_color());
+    let normal = Style::default().fg(rgb(128, 203, 196));
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut header = vec![
+        Span::styled("(file reference) ", dim),
+        Span::styled("@".to_string(), accent),
+        Span::styled(view.query.clone(), accent),
+        Span::styled("█", accent),
+    ];
+    header.push(Span::styled(
+        "  ↑↓ select · ↵ insert · Esc cancel".to_string(),
+        dim,
+    ));
+    lines.push(Line::from(header));
+
+    if view.matches.is_empty() {
+        if view.query.trim().is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  no workspace files indexed",
+                dim,
+            )));
+        } else {
+            lines.push(Line::from(Span::styled("  no matches", dim)));
+        }
+    } else {
+        // `view.matches` is already a window centered on the selection.
+        for (index, path) in view.matches.iter().enumerate() {
+            let is_selected = index == view.selected;
+            let marker = if is_selected { "▸ " } else { "  " };
+            let style = if is_selected { accent } else { normal };
+            let mut spans = vec![
+                Span::styled(marker.to_string(), style),
+                Span::styled(path.clone(), style),
+            ];
+            if index == view.matches.len() - 1 && view.total > view.matches.len() {
+                spans.push(Span::styled(
+                    format!("  +{} more", view.total - view.matches.len()),
+                    dim,
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+
+    let Some(rect) = command_suggestions_overlay_rect(area, lines.len() as u16, frame.area())
+    else {
+        return;
+    };
+    lines.truncate(rect.height as usize);
+    frame.render_widget(ratatui::widgets::Clear, rect);
+    frame.render_widget(Paragraph::new(lines), rect);
+}
+
 /// Draw the command-suggestion popover as a late overlay pass.
 ///
 /// Called after the chunked layout (and info widgets) have rendered so the
