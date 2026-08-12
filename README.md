@@ -578,6 +578,13 @@ Inside the TUI, `/mcp` shows the live server list and `/mcp-reload`
 re-reads the config files above and reconnects every server in place,
 without restarting jcode.
 
+In the input box, typing `@` at a word boundary opens a fuzzy file picker
+over the session's workspace (skipping `.git`/`target`/`node_modules`);
+on send, `@path` is expanded to `<@path>` plus the file content so the
+model reads it directly. Pasting multi-line text never submits on its own:
+2+ lines are moved to a temp file shown as a compact `@[粘贴内容N]` marker
+and expanded on send, while single-line pastes stay inline.
+
 ### Supported providers
 
 Any service that speaks OpenAI-compatible (or Anthropic Messages) chat APIs can
