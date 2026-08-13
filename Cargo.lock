@@ -2891,11 +2891,6 @@ dependencies = [
 [[package]]
 name = "jcode-update-core"
 version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "sha2",
-]
 
 [[package]]
 name = "jcode-usage-types"

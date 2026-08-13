@@ -65,7 +65,6 @@ impl Config {
 - Message timestamps: {}
 - Persist memory injections: {}
 - KV cache miss notices: {}
-- Update channel: {}
 
 **Tools:**
 - Profile: {}
@@ -199,7 +198,6 @@ impl Config {
             self.features.message_timestamps,
             self.features.persist_memory_injections,
             self.features.kv_cache_miss_notices,
-            self.features.update_channel,
             if self.tools.profile.trim().is_empty() {
                 "full"
             } else {

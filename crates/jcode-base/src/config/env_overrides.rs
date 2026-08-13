@@ -313,11 +313,6 @@ impl Config {
                 self.features.kv_cache_miss_notices = parsed;
             }
         }
-        if let Ok(v) = std::env::var("JCODE_UPDATE_CHANNEL")
-            && let Some(channel) = UpdateChannel::parse(&v)
-        {
-            self.features.update_channel = channel;
-        }
 
         // Agents (spawned helper sessions)
         if let Ok(v) = std::env::var("JCODE_SWARM_MODEL") {

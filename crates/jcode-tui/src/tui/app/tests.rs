@@ -1486,45 +1486,6 @@ fn endorsed_but_not_installed_skill_invocation_surfaces_install_hint() {
 }
 
 #[test]
-fn update_command_reloads_stale_remote_server_before_client_update_check() {
-    use tokio::io::AsyncBufReadExt;
-
-    let mut app = create_test_app();
-    app.is_remote = true;
-    app.remote_server_has_update = Some(true);
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let mut line = String::new();
-    let reloaded = rt.block_on(async {
-        let mut remote = crate::tui::backend::RemoteConnection::dummy();
-        let peer = remote
-            .take_dummy_peer()
-            .expect("dummy remote should retain peer stream");
-        let (reader, _writer) = peer.into_split();
-        let mut reader = tokio::io::BufReader::new(reader);
-
-        let reloaded =
-            super::remote::reload_stale_remote_server_before_update(&mut app, &mut remote)
-                .await
-                .expect("stale server reload request should send");
-        reader
-            .read_line(&mut line)
-            .await
-            .expect("reload request should be readable by peer");
-        reloaded
-    });
-
-    assert!(reloaded);
-    assert!(matches!(
-        serde_json::from_str::<crate::protocol::Request>(&line)
-            .expect("reload request should deserialize"),
-        crate::protocol::Request::Reload { id: 1, force: true }
-    ));
-    let content = app.display_messages().last().unwrap().content.clone();
-    assert!(content.contains("Reloading stale server"), "{content}");
-}
-
-#[test]
 fn stale_server_history_is_deferred_before_remote_state_is_applied() {
     crate::env::remove_var("JCODE_ALLOW_SERVER_VERSION_MISMATCH");
     let mut app = create_test_app();

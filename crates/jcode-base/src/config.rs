@@ -11,8 +11,8 @@ pub use jcode_config_types::{
     NamedProviderModelConfig, NamedProviderModelOverrides, NamedProviderType,
     NativeScrollbarConfig, NetworkConfig, NotificationsConfig, OverscrollStatusMode, PowerConfig,
     ProviderApiFormat, ProviderConfig, ProviderPrice, ReasoningDisplayMode, SafetyConfig,
-    SessionPickerResumeAction, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
-    WebSearchConfig, WebSearchEngine,
+    SessionPickerResumeAction, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, WebSearchConfig,
+    WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -729,7 +729,6 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_TOOLS",
     "JCODE_TRUSTED_EXTERNAL_AUTH_SOURCES",
     "JCODE_TYPING_SCROLL_LOCK_TOGGLE_KEY",
-    "JCODE_UPDATE_CHANNEL",
     "JCODE_WEBSEARCH_ENGINE",
     "JCODE_WEBSEARCH_FALLBACK_ENGINES",
     "JCODE_WORKSPACE_DOWN_KEY",

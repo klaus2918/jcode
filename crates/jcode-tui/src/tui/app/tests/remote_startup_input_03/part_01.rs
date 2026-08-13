@@ -662,10 +662,8 @@ fn test_startup_update_checking_stays_quiet_until_update_work_starts() {
     );
     assert_eq!(app.status_notice(), None);
 
-    app.handle_update_status(UpdateStatus::Downloading {
+    app.handle_update_status(UpdateStatus::Installing {
         version: "v1.2.3".to_string(),
-        downloaded: 512 * 1024,
-        total: Some(1024 * 1024),
     });
 
     let update_cards = app
@@ -678,16 +676,14 @@ fn test_startup_update_checking_stays_quiet_until_update_work_starts() {
         .display_messages()
         .last()
         .expect("expected update display message");
-    assert!(message.content.contains("Status: downloading v1.2.3"));
+    assert!(message.content.contains("Status: installing v1.2.3"));
     assert!(
-        message.content.contains("50%"),
-        "download card should show progress: {}",
+        message.content.contains("jcode will restart automatically"),
+        "installing card should note the restart: {}",
         message.content
     );
-    assert!(message.content.contains("reload in place"));
-    let notice = app.status_notice().expect("expected download notice");
-    assert!(notice.starts_with("Updating to v1.2.3..."));
-    assert!(notice.contains("50%"), "notice should show progress: {notice}");
+    let notice = app.status_notice().expect("expected installing notice");
+    assert_eq!(notice, "Installing v1.2.3...");
 
     app.handle_update_status(UpdateStatus::Installed {
         version: "v1.2.3".to_string(),

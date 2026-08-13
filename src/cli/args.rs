@@ -52,7 +52,7 @@ pub(crate) struct Args {
     #[arg(long, global = true)]
     pub(crate) no_update: bool,
 
-    /// Auto-update when new version is available (default: true for release builds)
+    /// Auto-update when a new version is available (default: true)
     #[arg(long, global = true, default_value = "true")]
     pub(crate) auto_update: bool,
 

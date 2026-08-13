@@ -82,25 +82,8 @@ impl App {
     }
 
     pub(super) fn start_background_client_rebuild(&mut self, session_id: String) {
-        self.start_background_client_maintenance(
-            crate::bus::ClientMaintenanceAction::Rebuild,
-            session_id,
-        );
-    }
-
-    pub(super) fn start_background_client_update(&mut self, session_id: String) {
-        self.start_background_client_maintenance(
-            crate::bus::ClientMaintenanceAction::Update,
-            session_id,
-        );
-    }
-
-    fn start_background_client_maintenance(
-        &mut self,
-        action: crate::bus::ClientMaintenanceAction,
-        session_id: String,
-    ) {
         if let Some(current) = self.background_client_action {
+            let action = crate::bus::ClientMaintenanceAction::Rebuild;
             let message = Self::client_maintenance_busy_message(current, action);
             self.set_status_notice(&message);
             self.set_client_maintenance_message(
@@ -110,26 +93,20 @@ impl App {
             return;
         }
 
+        let action = crate::bus::ClientMaintenanceAction::Rebuild;
         self.background_client_action = Some(action);
         self.pending_background_client_reload = None;
 
-        match action {
-            crate::bus::ClientMaintenanceAction::Update => {
-                crate::update::spawn_background_session_update(session_id);
-            }
-            crate::bus::ClientMaintenanceAction::Rebuild => {
-                self.set_status_notice("Starting background rebuild...");
-                self.set_client_maintenance_message(
-                    action,
-                    Self::client_maintenance_card_message(
-                        action,
-                        "starting background rebuild",
-                        "Running in the background. jcode will reload automatically after the rebuild succeeds.",
-                    ),
-                );
-                crate::session_rebuild::spawn_background_session_rebuild(session_id);
-            }
-        }
+        self.set_status_notice("Starting background rebuild...");
+        self.set_client_maintenance_message(
+            action,
+            Self::client_maintenance_card_message(
+                action,
+                "starting background rebuild",
+                "Running in the background. jcode will reload automatically after the rebuild succeeds.",
+            ),
+        );
+        crate::session_rebuild::spawn_background_session_rebuild(session_id);
     }
 
     pub(super) fn handle_update_status(&mut self, status: crate::bus::UpdateStatus) {
@@ -149,30 +126,9 @@ impl App {
                         action,
                         format!("{} → {} available", current, latest),
                         format!(
-                            "Current: `{}`\nLatest: `{}`\n\nRun `/update` to install, or wait while auto-update continues if enabled.",
+                            "Current: `{}`\nLatest: `{}`\n\nRun `jcode update` from the repository to pull and build it, or wait for auto-update if enabled.",
                             current, latest
                         ),
-                    ),
-                );
-            }
-            UpdateStatus::Downloading {
-                version,
-                downloaded,
-                total,
-            } => {
-                self.background_client_action = Some(action);
-                let progress =
-                    crate::update::format_download_progress_bar(crate::update::DownloadProgress {
-                        downloaded,
-                        total,
-                    });
-                self.set_status_notice(format!("Updating to {}... {}", version, progress));
-                self.set_client_maintenance_message(
-                    action,
-                    Self::client_maintenance_card_message(
-                        action,
-                        format!("downloading {}\n{}", version, progress),
-                        "jcode will reload in place (input preserved) when the update is ready.",
                     ),
                 );
             }

@@ -9,7 +9,6 @@ use crate::{build, tui::RunResult, update};
 pub fn has_requested_action(run_result: &RunResult) -> bool {
     run_result.reload_session.is_some()
         || run_result.rebuild_session.is_some()
-        || run_result.update_session.is_some()
         || run_result.restart_session.is_some()
 }
 
@@ -20,10 +19,6 @@ pub fn execute_requested_action(run_result: &RunResult) -> Result<()> {
 
     if let Some(ref rebuild_session_id) = run_result.rebuild_session {
         hot_rebuild(rebuild_session_id)?;
-    }
-
-    if let Some(ref update_session_id) = run_result.update_session {
-        hot_update(update_session_id)?;
     }
 
     if let Some(ref restart_session_id) = run_result.restart_session {
@@ -128,91 +123,6 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
         "Failed to exec {:?}: binary not found after retries",
         exe
     ))
-}
-
-pub fn hot_update(session_id: &str) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-
-    update::print_centered("Checking for updates...");
-
-    match update::check_for_update_blocking() {
-        Ok(Some(release)) => {
-            let current = jcode_build_meta::version();
-            update::print_centered(&format!(
-                "Update available: {} -> {}",
-                current, release.tag_name
-            ));
-            update::print_centered(&format!("Downloading {}...", release.tag_name));
-
-            match update::download_and_install_blocking_with_progress(&release, |progress| {
-                update::print_centered(&format!(
-                    "{} {}",
-                    release.tag_name,
-                    update::format_download_progress_bar(progress)
-                ));
-            }) {
-                Ok(path) => {
-                    update::print_centered(&format!("✓ Installed {}", release.tag_name));
-                    reload_server_after_update("installed update");
-
-                    let is_selfdev = crate::cli::selfdev::client_selfdev_requested();
-                    let exe = build::client_update_candidate(is_selfdev)
-                        .map(|(p, _)| p)
-                        .unwrap_or(path);
-
-                    update::print_centered(&format!("Restarting with session {}...", session_id));
-
-                    crate::env::set_var("JCODE_RESUMING", "1");
-
-                    let mut cmd = ProcessCommand::new(&exe);
-                    if is_selfdev {
-                        cmd.arg("self-dev");
-                    }
-                    cmd.arg("--resume")
-                        .arg(session_id)
-                        .arg("--no-update")
-                        .current_dir(&cwd);
-                    let err = crate::platform::replace_process(&mut cmd);
-                    return Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err));
-                }
-                Err(e) => {
-                    update::print_centered(&format!(
-                        "✗ Download failed: {}",
-                        update::summarize_update_error(&format!("{:#}", e))
-                    ));
-                }
-            }
-        }
-        Ok(None) => {
-            if repair_stale_shared_server_after_update_check() {
-                reload_server_after_update("repaired stale server target");
-            }
-            update::print_centered(&format!(
-                "Already up to date ({})",
-                jcode_build_meta::version()
-            ));
-        }
-        Err(e) => {
-            update::print_centered(&format!(
-                "✗ Update check failed: {}",
-                update::summarize_update_error(&format!("{:#}", e))
-            ));
-        }
-    }
-
-    crate::env::set_var("JCODE_RESUMING", "1");
-    let exe = std::env::current_exe()?;
-    let is_selfdev = crate::cli::selfdev::client_selfdev_requested();
-    let mut cmd = ProcessCommand::new(&exe);
-    if is_selfdev {
-        cmd.arg("self-dev");
-    }
-    cmd.arg("--resume")
-        .arg(session_id)
-        .arg("--no-update")
-        .current_dir(&cwd);
-    let err = crate::platform::replace_process(&mut cmd);
-    Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
 }
 
 pub fn get_repo_dir() -> Option<std::path::PathBuf> {
@@ -380,46 +290,6 @@ pub fn run_update(local_artifact: Option<&Path>) -> Result<()> {
         return run_local_update(path);
     }
 
-    if update::is_release_build() {
-        update::print_centered("Checking GitHub for latest release...");
-        match update::check_for_update_blocking() {
-            Ok(Some(release)) => {
-                update::print_centered(&format!(
-                    "Downloading {} \u{2192} {}...",
-                    jcode_build_meta::version(),
-                    release.tag_name
-                ));
-                let _path =
-                    update::download_and_install_blocking_with_progress(&release, |progress| {
-                        update::print_centered(&format!(
-                            "{} {}",
-                            release.tag_name,
-                            update::format_download_progress_bar(progress)
-                        ));
-                    })?;
-                update::print_centered(&format!("✅ Updated to {}", release.tag_name));
-                reload_server_after_update("installed update");
-                update::print_centered("Restart jcode to use the new version.");
-            }
-            Ok(None) => {
-                if repair_stale_shared_server_after_update_check() {
-                    reload_server_after_update("repaired stale server target");
-                }
-                update::print_centered(&format!(
-                    "Already up to date ({})",
-                    jcode_build_meta::version()
-                ));
-            }
-            Err(e) => {
-                anyhow::bail!(
-                    "Update check failed: {}",
-                    update::summarize_update_error(&format!("{:#}", e))
-                );
-            }
-        }
-        return Ok(());
-    }
-
     let repo_dir =
         get_repo_dir().ok_or_else(|| anyhow::anyhow!("Could not find jcode repository"))?;
 
@@ -475,33 +345,6 @@ fn run_local_update(path: &Path) -> Result<()> {
     reload_server_after_update("installed local update");
     update::print_centered("Restart jcode to use the new version.");
     Ok(())
-}
-
-fn repair_stale_shared_server_after_update_check() -> bool {
-    match build::repair_stale_shared_server_channel() {
-        Ok(build::SharedServerRepair::Repaired {
-            previous,
-            repaired_to,
-        }) => {
-            crate::logging::info(&format!(
-                "update: repaired stale shared-server channel {:?} -> {}",
-                previous, repaired_to
-            ));
-            update::print_centered(&format!(
-                "Repaired stale server reload target: {}",
-                repaired_to
-            ));
-            true
-        }
-        Ok(build::SharedServerRepair::AlreadyCurrent) => false,
-        Err(error) => {
-            crate::logging::warn(&format!(
-                "update: failed to repair stale shared-server channel: {}",
-                error
-            ));
-            false
-        }
-    }
 }
 
 fn reload_server_after_update(reason: &str) {

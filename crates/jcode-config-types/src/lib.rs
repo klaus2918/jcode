@@ -280,53 +280,6 @@ impl ReasoningDisplayMode {
     }
 }
 
-/// Update channel: how aggressively to receive updates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum UpdateChannel {
-    /// Only update from tagged GitHub Releases (default).
-    #[default]
-    Stable,
-    /// Update from latest commit on main branch (bleeding edge).
-    Main,
-}
-
-impl UpdateChannel {
-    /// Parse a channel name, returning `None` for unknown values.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "stable" | "release" => Some(Self::Stable),
-            "main" | "nightly" | "edge" => Some(Self::Main),
-            _ => None,
-        }
-    }
-}
-
-/// Config deserialization is deliberately lenient: an unknown or removed
-/// channel name (e.g. a stale `update_channel = "manual"` left in
-/// config.toml) falls back to the default channel instead of failing the
-/// entire config parse. A strict enum here once made the freshly exec'd
-/// server die during the reload handoff, leaving the handoff marker stuck
-/// in `starting` and clients re-requesting the reload forever (issue #349).
-impl<'de> Deserialize<'de> for UpdateChannel {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Ok(Self::parse(&value).unwrap_or_default())
-    }
-}
-
-impl std::fmt::Display for UpdateChannel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stable => write!(f, "stable"),
-            Self::Main => write!(f, "main"),
-        }
-    }
-}
-
 /// Cross-provider failover behavior when the same input would be resent elsewhere.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -1498,8 +1451,6 @@ pub struct FeatureConfig {
     /// that something in the harness silently invalidated the prefix cache
     /// (default: true).
     pub kv_cache_miss_notices: bool,
-    /// Update channel: "stable" (releases only) or "main" (latest commits)
-    pub update_channel: UpdateChannel,
 }
 
 impl Default for FeatureConfig {
@@ -1512,7 +1463,6 @@ impl Default for FeatureConfig {
             message_timestamps: true,
             persist_memory_injections: false,
             kv_cache_miss_notices: true,
-            update_channel: UpdateChannel::default(),
         }
     }
 }

@@ -27,8 +27,6 @@ mod swarm_plan_core;
 mod swarm_status_core;
 mod workspace;
 
-#[cfg(test)]
-pub(super) use key_handling::reload_stale_remote_server_before_update;
 use queue_recovery::{
     recover_local_interleave_to_queue, recover_stranded_soft_interrupts,
     recover_undelivered_queued_continuation,
