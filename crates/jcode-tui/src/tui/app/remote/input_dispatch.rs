@@ -152,6 +152,14 @@ pub(in crate::tui::app) async fn submit_remote_slash_input(
 ) -> Result<()> {
     let raw_input = prepared.raw_input.clone();
 
+    // Re-read global skills from disk for slash-leading input before resolving
+    // so a skill added or edited while this session was open is visible to the
+    // running remote session immediately (in-progress refresh), matching the
+    // local path.
+    if raw_input.trim_start().starts_with('/') {
+        app.refresh_skills_snapshot();
+    }
+
     // Text that merely starts with `/` is not necessarily a command. A terminal
     // file drop (`/tmp/shot.png`) or a bare path (`/home/me/notes`) is ordinary
     // user input. Routing those through `App::submit_input` stages a *local*

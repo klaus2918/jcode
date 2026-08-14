@@ -1780,7 +1780,10 @@ fn spawn_local_mcp_reload(app: &App) {
 
 pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed == "/skill" {
-        // View/manage the currently loaded skills without touching disk.
+        // View/manage the currently loaded skills. Re-read the disk snapshot
+        // first so a skill added or edited while this session was open shows
+        // up in the running session (in-progress refresh, issue #431).
+        app.refresh_skills_snapshot();
         app.push_display_message(
             DisplayMessage::system(build_skills_report(app)).with_title("Skills"),
         );

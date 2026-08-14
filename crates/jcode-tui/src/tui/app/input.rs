@@ -3481,27 +3481,29 @@ impl App {
 
         // File drops remain ordinary input. Registry-aware resolution supports
         // multi-word skill names without weakening that guard.
-        let initial_snapshot = self.current_skills_snapshot();
-        let skill_invocation = parse_dropped_paths(&input)
-            .is_none()
-            .then(|| initial_snapshot.resolve_invocation(&input))
+        //
+        // Re-read global skills from disk for any slash-leading input before
+        // resolving, so a skill added or edited while this session was open is
+        // visible to the running session immediately (in-progress refresh), not
+        // just in freshly started sessions. Without it, a session that started
+        // before the skill existed keeps serving the startup snapshot until an
+        // explicit /skill-reload. Remote/minimal TUI clients may also start
+        // with an empty snapshot, and daemon-side `skill_manage reload_all` can
+        // update a different process.
+        let has_dropped_paths = parse_dropped_paths(&input).is_some();
+        if !has_dropped_paths && input.trim_start().starts_with('/') {
+            self.refresh_skills_snapshot();
+        }
+        let snapshot = self.current_skills_snapshot();
+        let skill_invocation = (!has_dropped_paths)
+            .then(|| snapshot.resolve_invocation(&input))
             .flatten();
 
         // Check for skill invocation.
         if let Some(invocation) = skill_invocation {
             let skill_name = invocation.name.to_string();
             let trailing_prompt = invocation.prompt.map(str::to_string);
-            let mut skill = initial_snapshot.get(&skill_name).cloned();
-
-            // Remote/minimal TUI clients may start with an empty skill snapshot, and
-            // daemon-side `skill_manage reload_all` can update a different process.
-            // On a slash miss, synchronously refresh from the active session working
-            // directory before reporting Unknown skill so project-local skills such
-            // as .jcode/skills/optimization work immediately after reload/build.
-            if skill.is_none() {
-                self.refresh_skills_snapshot();
-                skill = self.current_skills_snapshot().get(&skill_name).cloned();
-            }
+            let skill = snapshot.get(&skill_name).cloned();
 
             if let Some(skill) = skill {
                 self.active_skill = Some(skill_name.clone());

@@ -1246,7 +1246,7 @@ fn skills_command_refreshes_registry_from_disk_before_listing() {
 }
 
 #[test]
-fn skills_view_lists_without_reload_but_reload_loads_fresh_skills() {
+fn skills_view_reflects_disk_changes_without_reload() {
     let mut app = create_test_app();
     let skill_name = "late-global-skill";
     let home = crate::storage::jcode_dir().expect("test jcode dir");
@@ -1268,20 +1268,20 @@ fn skills_view_lists_without_reload_but_reload_loads_fresh_skills() {
     }
     let _cleanup = Cleanup(skill_dir);
 
-    // `/skill` (view) must not re-read disk: the skill added after startup
-    // stays hidden until an explicit reload.
+    // `/skill` (view) re-reads disk so a skill added after startup is visible
+    // to the running session immediately (in-progress refresh).
     assert!(super::state_ui::handle_info_command(&mut app, "/skill"));
     let view = app.display_messages().last().unwrap().content.clone();
     assert!(
-        !view.contains("- /late-global-skill"),
-        "view must not pick up disk changes:\n{view}"
+        view.contains("- /late-global-skill"),
+        "view must pick up disk changes:\n{view}"
     );
     assert!(
-        app.current_skills_snapshot().get(skill_name).is_none(),
-        "view must not refresh the snapshot"
+        app.current_skills_snapshot().get(skill_name).is_some(),
+        "view must refresh the snapshot"
     );
 
-    // `/skill-reload` re-reads disk and loads the new skill into the session.
+    // `/skill-reload` also re-reads disk and loads the new skill into the session.
     assert!(super::state_ui::handle_info_command(
         &mut app,
         "/skill-reload"
@@ -1291,11 +1291,95 @@ fn skills_view_lists_without_reload_but_reload_loads_fresh_skills() {
         reloaded.contains("- /late-global-skill"),
         "reload must pick up disk changes:\n{reloaded}"
     );
-    assert!(
-        app.current_skills_snapshot().get(skill_name).is_some(),
-        "reload must refresh the snapshot"
-    );
     assert_eq!(app.status_notice(), Some("Skills reloaded".to_string()));
+}
+
+#[test]
+fn skill_invocation_activates_global_skill_added_mid_session() {
+    let mut app = create_test_app();
+    let skill_name = "mid-session-new-skill";
+    let home = crate::storage::jcode_dir().expect("test jcode dir");
+    let skill_dir = home.join("skills").join(skill_name);
+    std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: mid-session-new-skill\ndescription: Added mid session\n---\n# Fresh skill\n",
+    )
+    .expect("write SKILL.md");
+
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(skill_dir);
+
+    // A skill added to ~/.jcode/skills/ after the session started is not in
+    // the cached snapshot yet...
+    assert!(app.current_skills_snapshot().get(skill_name).is_none());
+
+    // ...but typing its slash invocation in the running session must pick it
+    // up by re-reading disk (the "new skill in dir, /command can't reach it"
+    // case), not just in freshly started sessions.
+    app.input = format!("/{skill_name}").to_string();
+    app.cursor_pos = app.input.len();
+    app.submit_input();
+
+    assert_eq!(app.active_skill.as_deref(), Some(skill_name));
+    assert!(app.current_skills_snapshot().get(skill_name).is_some());
+}
+
+#[test]
+fn skill_invocation_refreshes_global_skill_edited_mid_session() {
+    let skill_name = "mid-session-edit-skill";
+    let home = crate::storage::jcode_dir().expect("test jcode dir");
+    let skill_dir = home.join("skills").join(skill_name);
+    std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: mid-session-edit-skill\ndescription: v1\n---\n# v1 body\n",
+    )
+    .expect("write v1");
+
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(skill_dir.clone());
+
+    // The app caches the snapshot (v1) at startup.
+    let mut app = create_test_app();
+    assert_eq!(
+        app.current_skills_snapshot()
+            .get(skill_name)
+            .map(|s| s.content.clone()),
+        Some("# v1 body".to_string())
+    );
+
+    // The SKILL.md is edited mid-session; the cached snapshot is stale.
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: mid-session-edit-skill\ndescription: v2\n---\n# v2 body\n",
+    )
+    .expect("write v2");
+
+    // Invoking the skill in the running session must re-read disk so the
+    // activated skill carries the fresh content (in-progress refresh).
+    app.input = format!("/{skill_name}").to_string();
+    app.cursor_pos = app.input.len();
+    app.submit_input();
+
+    assert_eq!(app.active_skill.as_deref(), Some(skill_name));
+    assert_eq!(
+        app.current_skills_snapshot()
+            .get(skill_name)
+            .map(|s| s.content.clone()),
+        Some("# v2 body".to_string()),
+        "invoking a known skill must refresh its content from disk"
+    );
 }
 
 #[test]
