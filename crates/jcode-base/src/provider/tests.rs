@@ -1393,3 +1393,75 @@ context_window = 1000000
         });
     });
 }
+
+/// 复现：真实用户 config 默认 provider=deepseek-official（非 cch）时，
+/// `/model` picker 切换到 cc-switch:deepseek-v4-flash 后 active profile
+/// 必须变为 cc-switch（display_name 反映切换后的厂商）。
+#[test]
+fn switch_to_named_profile_from_non_default_deepseek_official_default() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            std::fs::write(
+                std::path::PathBuf::from(&jcode_home).join("config.toml"),
+                r#"
+[provider]
+default_provider = "deepseek-official"
+default_model = "deepseek-v4-flash"
+
+[providers.cc-switch]
+type = "openai-compatible"
+base_url = "http://127.0.0.1:15721"
+api = "anthropic"
+auth = "none"
+
+[[providers.cc-switch.models]]
+id = "deepseek-v4-flash"
+context_window = 1000000
+
+[providers.deepseek-official]
+type = "openai-compatible"
+base_url = "https://api.deepseek.com/anthropic"
+api = "anthropic"
+auth = "header"
+auth_header = "x-api-key"
+api_key_env = "MY_DEEPSEEK_API_KEY"
+default_model = "deepseek-v4-flash"
+
+[[providers.deepseek-official.models]]
+id = "deepseek-v4-flash"
+context_window = 1000000
+
+[[providers.deepseek-official.models]]
+id = "deepseek-v4-pro"
+context_window = 1000000
+"#,
+            )
+            .expect("write test config.toml");
+            crate::env::set_var("MY_DEEPSEEK_API_KEY", "sk-deepseek");
+            crate::config::invalidate_config_cache();
+
+            let template = MultiProvider::new_fast();
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            assert_eq!(
+                ProviderRegistry::new(&template)
+                    .active_compatible_profile_id()
+                    .as_deref(),
+                Some("deepseek-official")
+            );
+
+            // Prefixed picker route to the other configured provider.
+            let session = template.fork_for_new_session();
+            session
+                .set_model("cc-switch:deepseek-v4-flash")
+                .expect("switch to cc-switch");
+            assert_eq!(session.model(), "deepseek-v4-flash");
+            assert_eq!(
+                session.display_name(),
+                "cc-switch",
+                "active provider must become cc-switch after an explicit prefixed switch"
+            );
+        });
+    });
+}

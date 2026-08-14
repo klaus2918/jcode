@@ -1101,11 +1101,8 @@ impl Provider for NamedAnthropicProvider {
             .get(&model.to_ascii_lowercase())
             .copied()
             .unwrap_or_else(|| {
-                jcode_provider_core::context_limit_for_model_with_provider(
-                    &model,
-                    Some(self.name()),
-                )
-                .unwrap_or(jcode_provider_core::DEFAULT_CONTEXT_LIMIT)
+                jcode_provider_core::context_limit_for_model_with_provider(model, Some(self.name()))
+                    .unwrap_or(jcode_provider_core::DEFAULT_CONTEXT_LIMIT)
             })
     }
 

@@ -792,6 +792,7 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
 
     crate::env::set_var("JCODE_HOME", dir.path());
     crate::env::set_var("JCODE_NON_INTERACTIVE", "1");
+    crate::config::invalidate_config_cache();
     for key in [
         "JCODE_DEFERRED_AUTH_BOOTSTRAP",
         "ANTHROPIC_API_KEY",
@@ -911,4 +912,105 @@ fn pending_external_auth_review_candidates_include_shared_and_legacy_sources() {
     } else {
         crate::env::remove_var("JCODE_HOME");
     }
+}
+
+/// 多 provider 配置（config.providers.len() > 1）时，auto bootstrap 必须
+/// 返回 MultiProvider（而非单一 named runtime），否则 /model 无法在会话中
+/// 切换到其它配置厂商（issue: 模型切换不完整）。
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "test env locks intentionally stay held across provider init to isolate process-global runtime env"
+)]
+async fn auto_provider_with_multiple_named_profiles_returns_multi_provider_supporting_switching() {
+    let _guard = lock_env();
+    let _env_guard = crate::storage::lock_test_env();
+    let dir = TempDir::new().expect("temp dir");
+    let keys = [
+        "JCODE_HOME",
+        "JCODE_NON_INTERACTIVE",
+        "JCODE_PROVIDER_PROFILE_ACTIVE",
+        "JCODE_PROVIDER_PROFILE_NAME",
+        "JCODE_NAMED_PROVIDER_PROFILE",
+        "JCODE_RUNTIME_PROVIDER",
+        "JCODE_ACTIVE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "MY_DEEPSEEK_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GITHUB_TOKEN",
+        "GEMINI_API_KEY",
+        "CURSOR_API_KEY",
+    ];
+    let saved: Vec<(String, Option<String>)> = keys
+        .iter()
+        .map(|k| (k.to_string(), std::env::var(k).ok()))
+        .collect();
+    crate::env::set_var("JCODE_HOME", dir.path());
+    crate::env::set_var("JCODE_NON_INTERACTIVE", "1");
+    crate::config::invalidate_config_cache();
+    for key in keys {
+        crate::env::remove_var(key);
+    }
+    crate::env::set_var("MY_DEEPSEEK_API_KEY", "sk-deepseek-test");
+    std::fs::write(
+        dir.path().join("config.toml"),
+        r#"
+[provider]
+default_provider = "deepseek-official"
+default_model = "deepseek-v4-flash"
+
+[providers.cc-switch]
+api = "anthropic"
+auth = "none"
+base_url = "http://127.0.0.1:15721"
+type = "openai-compatible"
+
+[[providers.cc-switch.models]]
+context_window = 1000000
+id = "deepseek-v4-flash"
+
+[providers.deepseek-official]
+api = "anthropic"
+api_key_env = "MY_DEEPSEEK_API_KEY"
+auth = "header"
+auth_header = "x-api-key"
+base_url = "https://api.deepseek.com/anthropic"
+default_model = "deepseek-v4-flash"
+type = "openai-compatible"
+
+[[providers.deepseek-official.models]]
+context_window = 1000000
+id = "deepseek-v4-flash"
+"#,
+    )
+    .expect("write config");
+    crate::config::invalidate_config_cache();
+
+    let provider = init_provider_for_validation("auto", None)
+        .await
+        .expect("auto provider should support multi-provider config");
+
+    // MultiProvider with the OpenRouter slot active reports the OpenRouter
+    // wire name; a single named anthropic runtime would report "anthropic".
+    assert_eq!(provider.name(), "OpenRouter");
+    assert_eq!(provider.display_name(), "deepseek-official");
+
+    // Switching to another configured named profile must rebind the active
+    // runtime (this is what /model relies on in a running session).
+    provider
+        .set_model("cc-switch:deepseek-v4-flash")
+        .expect("switch to cc-switch");
+    assert_eq!(provider.display_name(), "cc-switch");
+
+    for (key, value) in saved {
+        if let Some(value) = value {
+            crate::env::set_var(&key, value);
+        } else {
+            crate::env::remove_var(&key);
+        }
+    }
+    crate::config::invalidate_config_cache();
 }

@@ -362,13 +362,30 @@ async fn init_provider_with_options(
             ));
 
             if let Some(profile_name) = config_default {
-                crate::provider_catalog::apply_named_provider_profile_env_from_config(
-                    &profile_name,
-                    cfg,
-                )?;
-                crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
-                crate::env::set_var("JCODE_PROVIDER_PROFILE_NAME", &profile_name);
-                init_openai_compatible_runtime(None, Some(&profile_name), &init_notice)?
+                if cfg.providers.len() > 1 {
+                    // 多 provider 配置：装配 MultiProvider 承载全部 named
+                    // providers，保留 config 默认厂商/模型为初始选择，并在
+                    // 运行中支持 /model 切换到其它配置厂商。单一 named
+                    // runtime 只绑定一个厂商，无法完成会话内切换。
+                    let multi = provider::MultiProvider::new_fast();
+                    init_notice(&format!(
+                        "Using {} (use /model to switch models)",
+                        multi.display_name()
+                    ));
+                    crate::env::set_var(
+                        "JCODE_ACTIVE_PROVIDER",
+                        multi.display_name().to_lowercase(),
+                    );
+                    Arc::new(multi)
+                } else {
+                    crate::provider_catalog::apply_named_provider_profile_env_from_config(
+                        &profile_name,
+                        cfg,
+                    )?;
+                    crate::env::set_var("JCODE_PROVIDER_PROFILE_ACTIVE", "1");
+                    crate::env::set_var("JCODE_PROVIDER_PROFILE_NAME", &profile_name);
+                    init_openai_compatible_runtime(None, Some(&profile_name), &init_notice)?
+                }
             } else if availability.has_any_provider() {
                 let multi = provider::MultiProvider::from_auth_status(availability.auth_status);
                 init_notice(&format!(
