@@ -41,6 +41,10 @@ pub(super) struct FilePickState {
     pub filtered: Vec<usize>,
     /// Selected row in `filtered`.
     pub selected: usize,
+    /// Cached preview text of the selected file (first lines), refreshed when
+    /// the selection or filter changes. `None` when the file is unreadable,
+    /// binary, or oversized.
+    pub preview: Option<String>,
     /// Whether the opening `@` was inserted by this picker (so Esc can undo it).
     opened_at_end: bool,
 }
@@ -51,6 +55,9 @@ pub(super) struct FilePickState {
 const MAX_EXPAND_BYTES: u64 = 128 * 1024;
 /// Maximum number of files in the workspace index, bounding scan cost.
 const MAX_INDEX_FILES: usize = 3000;
+/// Maximum number of preview lines and bytes shown in the picker preview pane.
+const PREVIEW_MAX_LINES: usize = 15;
+const PREVIEW_MAX_BYTES: u64 = 2000;
 /// Directory names never indexed (build outputs, VCS, dependencies).
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -96,9 +103,10 @@ pub(super) fn workspace_root(app: &App) -> Option<PathBuf> {
         .or_else(|| std::env::current_dir().ok().filter(|path| path.is_dir()))
 }
 
-/// Whether `@` at the cursor starts a reference: the previous character (if
-/// any) is not a path/word character, so `foo@bar` is an email and does not
-/// trigger, while ` @bar` and start-of-line `@bar` do.
+/// Whether `@` at the cursor starts a reference. ASCII word/path characters
+/// before it (`foo@bar` email, `a/b@c`) do not trigger, but Unicode text does:
+/// CJK ideographs are `is_alphabetic`, so `请参考@` opens the picker while
+/// `foo@bar` stays plain text.
 fn at_starts_reference(input: &str, cursor_pos: usize) -> bool {
     if cursor_pos == 0 {
         return true;
@@ -106,7 +114,7 @@ fn at_starts_reference(input: &str, cursor_pos: usize) -> bool {
     let Some(prev) = input[..cursor_pos].chars().next_back() else {
         return true;
     };
-    !(prev.is_alphanumeric() || matches!(prev, '_' | '-' | '/' | '.' | '\\'))
+    !(prev.is_ascii_alphanumeric() || matches!(prev, '_' | '-' | '/' | '.' | '\\'))
 }
 
 /// Open the `@` file picker after inserting the opening `@`.
@@ -123,13 +131,16 @@ pub(super) fn open_file_pick(app: &mut App) {
         }
     };
     let opened_at_end = app.cursor_pos == app.input.len();
-    app.file_pick = Some(FilePickState {
+    let mut state = FilePickState {
         filter: String::new(),
         filtered: (0..entries.len()).collect(),
         selected: 0,
         entries,
+        preview: None,
         opened_at_end,
-    });
+    };
+    refresh_file_pick_preview(app, &mut state);
+    app.file_pick = Some(state);
 }
 
 /// Try to trigger the picker for a freshly typed `@`. Returns true when the
@@ -141,11 +152,6 @@ pub(super) fn try_trigger_file_pick(app: &mut App, text: &str) -> bool {
     if !at_starts_reference(&app.input, app.cursor_pos) {
         return false;
     }
-    if app.is_remote {
-        // Remote drafts run on the server; local workspace paths may not exist
-        // there. Keep typing as plain text instead of opening a picker.
-        return false;
-    }
     app.remember_input_undo_state();
     insert_input_text(app, "@");
     open_file_pick(app);
@@ -153,77 +159,169 @@ pub(super) fn try_trigger_file_pick(app: &mut App, text: &str) -> bool {
 }
 
 /// Recompute `filtered` from the current filter, scoring with the prepared
-/// token query. Bounded to the visible candidate set for responsiveness.
+/// token query. Basename matches rank above whole-path-only matches (fzf
+/// style), with shorter paths winning ties. Bounded to the visible candidate
+/// set for responsiveness.
 fn refresh_file_pick_filter(state: &mut FilePickState) {
-    let query = jcode_fuzzy::PreparedTokenQuery::new(&state.filter);
-    let mut scored: Vec<(i32, usize)> = Vec::new();
-    for (index, entry) in state.entries.iter().enumerate() {
-        if let Some(score) = query.score(entry) {
+    if state.filter.trim().is_empty() {
+        state.filtered = (0..state.entries.len()).collect();
+    } else {
+        let query = jcode_fuzzy::PreparedTokenQuery::new(&state.filter);
+        let mut scored: Vec<(i32, usize)> = Vec::new();
+        for (index, entry) in state.entries.iter().enumerate() {
+            let Some(base) = query.score(entry) else {
+                continue;
+            };
+            let basename = entry.rsplit('/').next().unwrap_or(entry);
+            let score = if query.score(basename).is_some() {
+                base.saturating_mul(2)
+            } else {
+                base
+            };
             scored.push((score, index));
         }
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| state.entries[a.1].len().cmp(&state.entries[b.1].len()))
+                .then_with(|| a.1.cmp(&b.1))
+        });
+        state.filtered = scored.into_iter().map(|(_, index)| index).collect();
     }
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    state.filtered = scored.into_iter().map(|(_, index)| index).collect();
     if state.selected >= state.filtered.len() {
         state.selected = 0;
     }
 }
 
+/// Refresh the cached preview text for the currently selected candidate. The
+/// preview is the file's first `PREVIEW_MAX_LINES` lines; binary, oversized,
+/// or unreadable files get no preview.
+fn refresh_file_pick_preview(app: &App, state: &mut FilePickState) {
+    let Some(root) = workspace_root(app) else {
+        state.preview = None;
+        return;
+    };
+    let Some(&index) = state.filtered.get(state.selected) else {
+        state.preview = None;
+        return;
+    };
+    let Some(rel) = state.entries.get(index) else {
+        state.preview = None;
+        return;
+    };
+    let path = root.join(rel);
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        state.preview = None;
+        return;
+    };
+    if !metadata.is_file() || metadata.len() > PREVIEW_MAX_BYTES {
+        state.preview = None;
+        return;
+    }
+    let Ok(content) = std::fs::read(&path) else {
+        state.preview = None;
+        return;
+    };
+    if content.contains(&0) {
+        state.preview = None;
+        return;
+    }
+    let text = String::from_utf8_lossy(&content);
+    let preview: Vec<&str> = text.lines().take(PREVIEW_MAX_LINES).collect();
+    state.preview = Some(preview.join("\n"));
+}
+
 /// Handle keys while the `@` picker is active. Returns true when consumed.
+///
+/// Typing a character that narrows the list to zero matches is treated as the
+/// reference ending: the picker closes (keeping the opening `@`) and the
+/// character falls through to the normal draft handler, so Chinese text typed
+/// right after `@` is never swallowed or lost.
 pub(super) fn handle_file_pick_key(
     app: &mut App,
     code: crossterm::event::KeyCode,
     modifiers: crossterm::event::KeyModifiers,
 ) -> bool {
     use crossterm::event::{KeyCode, KeyModifiers};
-    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) {
-        return false;
-    }
-    let Some(state) = app.file_pick.as_mut() else {
+    let Some(mut state) = app.file_pick.take() else {
         return false;
     };
+
+    // fzf-style navigation chords, routed before the Ctrl fall-through.
+    match (code, modifiers) {
+        (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+            if !state.filtered.is_empty() && state.selected + 1 < state.filtered.len() {
+                state.selected += 1;
+                refresh_file_pick_preview(app, &mut state);
+            }
+            app.file_pick = Some(state);
+            return true;
+        }
+        (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+            if !state.filtered.is_empty() {
+                state.selected = state.selected.saturating_sub(1);
+                refresh_file_pick_preview(app, &mut state);
+            }
+            app.file_pick = Some(state);
+            return true;
+        }
+        _ => {}
+    }
+
+    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) {
+        app.file_pick = Some(state);
+        return false;
+    }
+
     match code {
         KeyCode::Char(ch) => {
             state.filter.push(ch);
-            refresh_file_pick_filter(state);
-            true
+            refresh_file_pick_filter(&mut state);
+            if state.filtered.is_empty() {
+                // Hybrid dismiss: the reference ended. Keep the opening `@`,
+                // drop the picker, and let the caller insert this character
+                // into the draft normally.
+                return false;
+            }
+            refresh_file_pick_preview(app, &mut state);
         }
         KeyCode::Backspace => {
             if !state.filter.is_empty() {
                 state.filter.pop();
-                refresh_file_pick_filter(state);
+                refresh_file_pick_filter(&mut state);
             }
-            true
+            refresh_file_pick_preview(app, &mut state);
         }
         KeyCode::Up => {
             if !state.filtered.is_empty() {
                 state.selected = state.selected.saturating_sub(1);
             }
-            true
+            refresh_file_pick_preview(app, &mut state);
         }
         KeyCode::Down => {
             if !state.filtered.is_empty() && state.selected + 1 < state.filtered.len() {
                 state.selected += 1;
             }
-            true
+            refresh_file_pick_preview(app, &mut state);
         }
-        KeyCode::Enter => {
-            accept_file_pick_selection(app);
-            true
+        KeyCode::Tab | KeyCode::Enter => {
+            accept_file_pick_selection(app, state);
+            return true;
         }
         KeyCode::Esc => {
-            cancel_file_pick(app);
-            true
+            cancel_file_pick(app, state);
+            return true;
         }
-        _ => false,
+        _ => {
+            app.file_pick = Some(state);
+            return false;
+        }
     }
+    app.file_pick = Some(state);
+    true
 }
 
 /// Insert the selected path after the opening `@` and close the picker.
-fn accept_file_pick_selection(app: &mut App) {
-    let Some(state) = app.file_pick.take() else {
-        return;
-    };
+fn accept_file_pick_selection(app: &mut App, state: FilePickState) {
     let Some(&index) = state.filtered.get(state.selected) else {
         return;
     };
@@ -236,11 +334,7 @@ fn accept_file_pick_selection(app: &mut App) {
 /// Close the picker. If the opening `@` was auto-inserted at the end of the
 /// draft and nothing else was typed around it, undo it so Esc leaves the
 /// composer exactly as it was.
-fn cancel_file_pick(app: &mut App) {
-    let state = app.file_pick.take();
-    let Some(state) = state else {
-        return;
-    };
+fn cancel_file_pick(app: &mut App, state: FilePickState) {
     if state.opened_at_end
         && app.cursor_pos == app.input.len()
         && app.input.ends_with('@')
@@ -270,6 +364,7 @@ pub(super) fn file_pick_view(app: &App) -> Option<FilePickView> {
         matches: visible,
         selected: selected_in_window,
         total,
+        preview: state.preview.clone(),
     })
 }
 

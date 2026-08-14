@@ -226,7 +226,7 @@ pub(super) fn draw_file_pick_overlay(frame: &mut Frame, app: &dyn TuiState, area
         Span::styled("█", accent),
     ];
     header.push(Span::styled(
-        "  ↑↓ select · ↵ insert · Esc cancel".to_string(),
+        "  ↑↓/Ctrl+N+P select · Tab/↵ insert · Esc cancel".to_string(),
         dim,
     ));
     lines.push(Line::from(header));
@@ -265,8 +265,65 @@ pub(super) fn draw_file_pick_overlay(frame: &mut Frame, app: &dyn TuiState, area
         return;
     };
     lines.truncate(rect.height as usize);
+
+    // Reserve a right-hand preview pane for the selected file when the overlay
+    // is wide enough. The preview text is computed in the app layer on
+    // selection changes and carried here in the view snapshot.
+    let show_preview = view.preview.is_some() && rect.width >= 60;
+    let (list_rect, preview_rect) = if show_preview {
+        let preview_width = (rect.width * 40 / 100).max(24);
+        let list_width = rect.width.saturating_sub(preview_width + 1);
+        (
+            Rect::new(rect.x, rect.y, list_width, rect.height),
+            Some(Rect::new(
+                rect.x + list_width + 1,
+                rect.y,
+                preview_width,
+                rect.height,
+            )),
+        )
+    } else {
+        (rect, None)
+    };
+
     frame.render_widget(ratatui::widgets::Clear, rect);
-    frame.render_widget(Paragraph::new(lines), rect);
+    frame.render_widget(Paragraph::new(lines), list_rect);
+
+    if let Some(preview_rect) = preview_rect {
+        // Vertical divider between the list and the preview pane.
+        let divider = Paragraph::new(Line::from(Span::styled(
+            "│".repeat(preview_rect.height as usize),
+            dim,
+        )));
+        frame.render_widget(
+            divider,
+            Rect::new(list_rect.right(), rect.y, 1, rect.height),
+        );
+
+        let mut preview_lines: Vec<Line<'static>> = Vec::new();
+        let title = view.matches.get(view.selected);
+        preview_lines.push(Line::from(Span::styled(
+            title.map_or_else(|| "no selection".to_string(), |path| path.clone()),
+            accent,
+        )));
+        if let Some(text) = view.preview.as_ref() {
+            for line in text
+                .lines()
+                .take(preview_rect.height.saturating_sub(1) as usize)
+            {
+                let mut text = line.to_string();
+                let width = preview_rect.width.saturating_sub(1) as usize;
+                if text.chars().count() > width {
+                    let truncated: String = text.chars().take(width.saturating_sub(1)).collect();
+                    text = format!("{truncated}…");
+                }
+                preview_lines.push(Line::from(Span::styled(text, normal)));
+            }
+        } else {
+            preview_lines.push(Line::from(Span::styled("no preview", dim)));
+        }
+        frame.render_widget(Paragraph::new(preview_lines), preview_rect);
+    }
 }
 
 /// Draw the command-suggestion popover as a late overlay pass.

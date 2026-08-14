@@ -51,7 +51,7 @@ fn at_reference_picker_filters_and_inserts_path() {
 }
 
 #[test]
-fn at_reference_not_triggered_mid_word_or_remote() {
+fn at_reference_not_triggered_mid_word() {
     let root = temp_workspace("midword");
     let mut app = create_test_app();
     app.session.working_dir = Some(root.to_string_lossy().to_string());
@@ -62,13 +62,24 @@ fn at_reference_not_triggered_mid_word_or_remote() {
     super::input::handle_text_input(&mut app, "@");
     assert!(app.file_pick.is_none(), "mid-word @ must not open the picker");
     assert_eq!(app.input, "foo@");
+    let _ = std::fs::remove_dir_all(&root);
+}
 
-    // Remote mode never opens the picker (paths live on the server).
+#[test]
+fn at_reference_triggers_in_remote_session() {
+    // A TUI attached to the shared server is a remote session, but the
+    // workspace root is the server-side working directory, which is local when
+    // the server runs on this machine. The picker must open there too; only a
+    // genuinely unreachable root keeps `@` as plain text.
+    let root = temp_workspace("remote");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
     app.is_remote = true;
+
     app.input = String::new();
     app.cursor_pos = 0;
     super::input::handle_text_input(&mut app, "@");
-    assert!(app.file_pick.is_none(), "remote @ must not open the picker");
+    assert!(app.file_pick.is_some(), "remote @ must open the picker");
     assert_eq!(app.input, "@");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -182,6 +193,153 @@ fn at_reference_missing_file_stays_as_typed() {
         }
         _ => panic!("Expected Text content block"),
     }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn reproduction_local_key_dispatch_opens_picker() {
+    let root = temp_workspace("repro-local");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+    app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE).unwrap();
+    assert!(
+        app.file_pick.is_some(),
+        "local handle_key(Char('@')) must open the picker"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn reproduction_remote_key_dispatch_opens_picker() {
+    use crossterm::event::{KeyEvent, KeyEventKind};
+    let root = temp_workspace("repro-remote");
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    rt.block_on(remote::handle_remote_key_event(
+        &mut app,
+        KeyEvent::new_with_kind(KeyCode::Char('@'), KeyModifiers::NONE, KeyEventKind::Press),
+        &mut remote,
+    ))
+    .unwrap();
+    assert!(
+        app.file_pick.is_some(),
+        "remote handle_remote_key_event(Char('@')) must open the picker"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn reproduction_altgr_at_still_opens_picker() {
+    let root = temp_workspace("repro-altgr");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+    app.handle_key(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT)
+        .unwrap();
+    assert!(
+        app.file_pick.is_some(),
+        "Ctrl+Alt @ (AltGr) must open the picker"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn at_triggers_after_cjk_character_mid_sentence() {
+    let root = temp_workspace("cjk");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+
+    app.input = "请参考".to_string();
+    app.cursor_pos = app.input.len();
+    super::input::handle_text_input(&mut app, "@");
+    assert!(app.file_pick.is_some(), "CJK-preceding @ must open the picker");
+    assert_eq!(app.input, "请参考@");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn at_tab_accepts_selected_path() {
+    let root = temp_workspace("tab");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+
+    super::input::handle_text_input(&mut app, "@");
+    assert!(app.file_pick.is_some());
+    assert!(super::at_file::handle_file_pick_key(
+        &mut app,
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    ));
+    assert!(app.file_pick.is_none(), "Tab closes the picker");
+    assert!(app.input.starts_with('@'));
+    assert!(app.input.len() > 1, "Tab inserts the selected path");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn at_ctrl_np_navigation_moves_selection() {
+    let root = temp_workspace("nav");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+
+    super::input::handle_text_input(&mut app, "@");
+    assert!(app.file_pick.is_some());
+    let total = app.file_pick.as_ref().unwrap().filtered.len();
+    assert!(total >= 2, "workspace should have >= 2 indexable files");
+
+    assert!(super::at_file::handle_file_pick_key(
+        &mut app,
+        KeyCode::Char('n'),
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.file_pick.as_ref().unwrap().selected, 1, "Ctrl+N moves down");
+    assert!(super::at_file::handle_file_pick_key(
+        &mut app,
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.file_pick.as_ref().unwrap().selected, 0, "Ctrl+P moves up");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn at_no_match_char_dismisses_picker_and_keeps_at_in_draft() {
+    let root = temp_workspace("dismiss");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+
+    super::input::handle_text_input(&mut app, "@");
+    assert!(app.file_pick.is_some());
+    assert_eq!(app.input, "@");
+
+    // The zero-match char falls through the full local dispatch and lands in
+    // the draft after the opening `@`.
+    app.handle_key(KeyCode::Char('文'), KeyModifiers::NONE)
+        .unwrap();
+    assert!(app.file_pick.is_none(), "picker closes when the filter empties");
+    assert_eq!(app.input, "@文", "draft keeps @ and receives the char");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn at_picker_preview_reads_selected_file_content() {
+    let root = temp_workspace("preview");
+    let mut app = create_test_app();
+    app.session.working_dir = Some(root.to_string_lossy().to_string());
+
+    super::input::handle_text_input(&mut app, "@");
+    assert!(app.file_pick.is_some());
+
+    let view = super::at_file::file_pick_view(&app).unwrap();
+    assert!(view.preview.is_some(), "selected entry carries a preview");
+    assert!(
+        view.preview.as_ref().unwrap().contains("readme"),
+        "preview shows the selected file content, got {:?}",
+        view.preview
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -1,9 +1,9 @@
 {
-  "total": 2491,
+  "total": 2466,
   "totals_by_pattern": {
-    "dot_ok": 930,
-    "let_underscore": 934,
-    "unwrap_or_default": 627
+    "dot_ok": 921,
+    "let_underscore": 927,
+    "unwrap_or_default": 618
   },
   "tracked_files": {
     "crates/jcode-app-core/src/agent.rs": {
@@ -502,19 +502,9 @@
       "unwrap_or_default": 1
     },
     "crates/jcode-app-core/src/update.rs": {
-      "dot_ok": 4,
-      "let_underscore": 10,
-      "unwrap_or_default": 11
-    },
-    "crates/jcode-app-core/src/update_metadata.rs": {
-      "dot_ok": 1,
-      "let_underscore": 2,
-      "unwrap_or_default": 0
-    },
-    "crates/jcode-app-core/src/update_rate_limit.rs": {
-      "dot_ok": 3,
-      "let_underscore": 2,
-      "unwrap_or_default": 0
+      "dot_ok": 2,
+      "let_underscore": 7,
+      "unwrap_or_default": 3
     },
     "crates/jcode-app-core/src/usage_openai.rs": {
       "dot_ok": 1,
@@ -995,11 +985,6 @@
       "dot_ok": 2,
       "let_underscore": 0,
       "unwrap_or_default": 0
-    },
-    "crates/jcode-config-types/src/lib.rs": {
-      "dot_ok": 0,
-      "let_underscore": 0,
-      "unwrap_or_default": 1
     },
     "crates/jcode-core/src/stdin_detect.rs": {
       "dot_ok": 3,
@@ -1835,11 +1820,6 @@
       "dot_ok": 0,
       "let_underscore": 5,
       "unwrap_or_default": 1
-    },
-    "crates/jcode-update-core/src/lib.rs": {
-      "dot_ok": 3,
-      "let_underscore": 0,
-      "unwrap_or_default": 0
     },
     "src/bin/memory_recall_bench.rs": {
       "dot_ok": 31,

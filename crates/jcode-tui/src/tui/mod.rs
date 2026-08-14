@@ -884,13 +884,16 @@ pub struct PromptHistorySearchView {
 
 /// Render snapshot of the `@` workspace-file picker overlay.
 /// `matches` are relative file paths, filtered and truncated to the visible
-/// window; `total` is the full filtered count before truncation.
+/// window; `total` is the full filtered count before truncation. `preview`
+/// carries the selected file's first lines for the preview pane, when the file
+/// is text and small enough to preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilePickView {
     pub query: String,
     pub matches: Vec<String>,
     pub selected: usize,
     pub total: usize,
+    pub preview: Option<String>,
 }
 
 /// What the first-run onboarding welcome screen should render in its body,
