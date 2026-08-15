@@ -1122,10 +1122,6 @@ pub enum ServerEvent {
         /// Whether this session is in canary/self-dev mode
         #[serde(skip_serializing_if = "Option::is_none")]
         is_canary: Option<bool>,
-        /// Effective working directory of the session (base for the model's
-        /// `read`/`write` tools and for `@` file references on the client).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        working_dir: Option<String>,
         /// Server binary version string (e.g. "v0.1.123 (abc1234)")
         #[serde(skip_serializing_if = "Option::is_none")]
         server_version: Option<String>,

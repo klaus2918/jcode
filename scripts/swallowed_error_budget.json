@@ -1,7 +1,7 @@
 {
-  "total": 2464,
+  "total": 2466,
   "totals_by_pattern": {
-    "dot_ok": 919,
+    "dot_ok": 921,
     "let_underscore": 927,
     "unwrap_or_default": 618
   },
@@ -1392,7 +1392,7 @@
       "unwrap_or_default": 2
     },
     "crates/jcode-tui/src/tui/app/at_file.rs": {
-      "dot_ok": 4,
+      "dot_ok": 6,
       "let_underscore": 1,
       "unwrap_or_default": 0
     },
