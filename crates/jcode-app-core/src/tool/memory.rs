@@ -499,6 +499,7 @@ mod tests {
     /// round-trip through the real (non-test-mode) manager when the tool
     /// context carries a working dir.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn project_scope_round_trips_with_working_dir() {
         let _guard = crate::storage::lock_test_env();
         let home = tempfile::tempdir().expect("home");

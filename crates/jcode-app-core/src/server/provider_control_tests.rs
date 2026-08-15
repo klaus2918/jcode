@@ -545,12 +545,8 @@ async fn notify_auth_changed_defers_busy_session_refresh_until_idle() {
 }
 
 #[tokio::test]
-async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_completion() {
+async fn notify_auth_changed_applies_openai_compatible_runtime_without_completion() {
     let _guard = EnvGuard::save(&[
-        "AZURE_OPENAI_ENDPOINT",
-        "AZURE_OPENAI_MODEL",
-        "AZURE_OPENAI_API_KEY",
-        "AZURE_OPENAI_USE_ENTRA",
         "JCODE_OPENROUTER_API_BASE",
         "JCODE_OPENROUTER_API_KEY_NAME",
         "JCODE_OPENROUTER_ENV_FILE",
@@ -565,10 +561,6 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
-    crate::env::set_var("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com");
-    crate::env::set_var("AZURE_OPENAI_MODEL", "azure-deployment");
-    crate::env::set_var("AZURE_OPENAI_API_KEY", "test-key");
-    crate::env::set_var("AZURE_OPENAI_USE_ENTRA", "0");
 
     crate::bus::reset_models_updated_publish_state_for_tests();
     let provider = Arc::new(AuthChangeMockProvider::new());
@@ -585,7 +577,7 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
 
     handle_notify_auth_changed(
         44,
-        Some("Azure OpenAI".to_string()),
+        Some("lmstudio".to_string()),
         None,
         false,
         &provider,
@@ -598,7 +590,7 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
     .await;
 
     let mut saw_done = false;
-    let mut saw_models = None;
+    let mut saw_models = false;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -610,12 +602,8 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
                 assert_eq!(id, 44);
                 saw_done = true;
             }
-            ServerEvent::AvailableModelsUpdated {
-                provider_model,
-                available_models,
-                ..
-            } => {
-                saw_models = Some((provider_model, available_models));
+            ServerEvent::AvailableModelsUpdated { .. } => {
+                saw_models = true;
                 break;
             }
             _ => {}
@@ -623,16 +611,19 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
     }
 
     assert!(saw_done, "expected immediate Done ack");
-    let (provider_model, available_models) = saw_models.expect("expected model refresh event");
-    assert_eq!(provider_model.as_deref(), Some("azure-deployment"));
-    assert!(
-        available_models
-            .iter()
-            .any(|model| model == "azure-deployment")
+    assert!(saw_models, "expected model refresh event");
+    assert_eq!(
+        std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref(),
+        Ok("lmstudio"),
+        "auth hint applies the lmstudio openai-compatible profile env"
+    );
+    assert_eq!(
+        std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
+        Ok("http://localhost:1234/v1")
     );
     assert_eq!(
         std::env::var("JCODE_RUNTIME_PROVIDER").as_deref(),
-        Ok("azure-openai")
+        Ok("openai-compatible")
     );
     assert_eq!(
         std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
@@ -646,7 +637,7 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
 }
 
 #[test]
-fn gemini_api_auth_hint_applies_openai_compatible_runtime_profile() {
+fn lmstudio_auth_hint_applies_openai_compatible_runtime_profile() {
     let _guard = EnvGuard::save(&[
         "JCODE_OPENROUTER_API_BASE",
         "JCODE_OPENROUTER_API_KEY_NAME",
@@ -663,13 +654,18 @@ fn gemini_api_auth_hint_applies_openai_compatible_runtime_profile() {
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
 
+    // LM Studio is a built-in OpenAI-compatible profile and login provider
+    // (unlike the removed built-in gemini-api), so the auth hint resolves.
     let request =
-        crate::auth::lifecycle::AuthActivationRequest::new(Some("gemini-api".to_string()), None);
-    assert_eq!(request.provider_id().as_deref(), Some("gemini-api"));
+        crate::auth::lifecycle::AuthActivationRequest::new(Some("lmstudio".to_string()), None);
+    assert_eq!(request.provider_id().as_deref(), Some("lmstudio"));
 
     let activation = crate::auth::lifecycle::activate_auth_change(&request);
     let default_model = activation.activated_model.as_deref();
-    assert_eq!(default_model, Some("gemini-2.5-flash"));
+    assert_eq!(
+        default_model, None,
+        "lmstudio has no built-in default model"
+    );
     assert_eq!(
         std::env::var("JCODE_RUNTIME_PROVIDER").as_deref(),
         Ok("openai-compatible")
@@ -680,28 +676,28 @@ fn gemini_api_auth_hint_applies_openai_compatible_runtime_profile() {
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_BASE").as_deref(),
-        Ok("https://generativelanguage.googleapis.com/v1beta/openai")
+        Ok("http://localhost:1234/v1")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_API_KEY_NAME").as_deref(),
-        Ok("GEMINI_API_KEY")
+        Ok("LMSTUDIO_API_KEY")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_ENV_FILE").as_deref(),
-        Ok("gemini.env")
+        Ok("lmstudio.env")
     );
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref(),
-        Ok("gemini-api")
+        Ok("lmstudio")
     );
     assert_eq!(
-        activation.model_switch_request("mock-auth", "gemini-2.5-pro"),
-        "gemini-api:gemini-2.5-pro"
+        activation.model_switch_request("mock-auth", "lmstudio-7b"),
+        "lmstudio:lmstudio-7b"
     );
 }
 
 #[tokio::test]
-async fn notify_auth_changed_typed_gemini_api_event_controls_user_visible_catalog_identity() {
+async fn notify_auth_changed_typed_lmstudio_event_controls_user_visible_catalog_identity() {
     let _guard = EnvGuard::save(&[
         "JCODE_OPENROUTER_API_BASE",
         "JCODE_OPENROUTER_API_KEY_NAME",
@@ -730,13 +726,13 @@ async fn notify_auth_changed_typed_gemini_api_event_controls_user_visible_catalo
     )])));
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-    let mut auth = crate::protocol::AuthChanged::new("gemini-api");
+    let mut auth = crate::protocol::AuthChanged::new("lmstudio");
     auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
     auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
     auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
         "openai-compatible",
     ));
-    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("gemini-api"));
+    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("lmstudio"));
 
     handle_notify_auth_changed(
         45,
@@ -760,7 +756,7 @@ async fn notify_auth_changed_typed_gemini_api_event_controls_user_visible_catalo
     let final_message = recv_final_catalog_notification(&mut client_event_rx).await;
 
     assert!(
-        final_message.contains("Gemini API catalog changed"),
+        final_message.contains("LM Studio catalog changed"),
         "typed auth event should control user-visible provider label, got: {}",
         final_message
     );
@@ -777,7 +773,7 @@ async fn notify_auth_changed_typed_gemini_api_event_controls_user_visible_catalo
     assert_eq!(final_message.lines().count(), 2);
     assert_eq!(
         std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref(),
-        Ok("gemini-api")
+        Ok("lmstudio")
     );
 }
 
@@ -802,8 +798,17 @@ async fn notify_auth_changed_switches_from_stale_model_to_matching_provider_rout
     crate::bus::reset_models_updated_publish_state_for_tests();
     let provider = Arc::new(AuthChangeMockProvider::new());
     *provider.state.selected_model.write().unwrap() = Some("gpt-5.5".to_string());
-    *provider.state.route_provider.write().unwrap() = "gemini-api".to_string();
-    *provider.state.route_api_method.write().unwrap() = "openai-compatible:gemini-api".to_string();
+    *provider.state.route_provider.write().unwrap() = "lmstudio".to_string();
+    *provider.state.route_api_method.write().unwrap() = "openai-compatible:lmstudio".to_string();
+    *provider.state.routes_override.write().unwrap() = Some(vec![ModelRoute {
+        capability: None,
+        model: "lmstudio-model".to_string(),
+        provider: "lmstudio".to_string(),
+        api_method: "openai-compatible:lmstudio".to_string(),
+        available: true,
+        detail: String::new(),
+        cheapness: None,
+    }]);
     let provider: Arc<dyn Provider> = provider;
     let registry = Registry::empty();
     let agent = Arc::new(Mutex::new(Agent::new(provider.clone(), registry)));
@@ -814,13 +819,13 @@ async fn notify_auth_changed_switches_from_stale_model_to_matching_provider_rout
     )])));
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-    let mut auth = crate::protocol::AuthChanged::new("gemini-api");
+    let mut auth = crate::protocol::AuthChanged::new("lmstudio");
     auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
     auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
     auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
         "openai-compatible",
     ));
-    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("gemini-api"));
+    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("lmstudio"));
 
     handle_notify_auth_changed(
         46,
@@ -839,17 +844,12 @@ async fn notify_auth_changed_switches_from_stale_model_to_matching_provider_rout
     let final_message = recv_final_catalog_notification(&mut client_event_rx).await;
 
     assert!(
-        final_message.contains("Gemini API catalog changed"),
-        "{}",
-        final_message
-    );
-    assert!(
-        final_message.contains("**Model ready:** `gemini-2.5-flash`"),
+        final_message.contains("**Model ready:** `lmstudio-model`"),
         "final auth catalog update should switch away from stale OpenAI model: {}",
         final_message
     );
     assert!(
-        !final_message.contains("**Model ready:** `gpt-5.5`"),
+        !final_message.contains("gpt-5.5"),
         "stale selected model leaked into final auth update: {}",
         final_message
     );
@@ -861,7 +861,7 @@ async fn notify_auth_changed_switches_from_stale_model_to_matching_provider_rout
 }
 
 #[tokio::test]
-async fn onboarding_auth_refresh_prefers_global_gpt_5_6_route_over_fable() {
+async fn onboarding_auth_refresh_selects_first_available_global_route() {
     let _guard = EnvGuard::save(&[
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
@@ -873,9 +873,9 @@ async fn onboarding_auth_refresh_prefers_global_gpt_5_6_route_over_fable() {
     *provider.state.routes_override.write().unwrap() = Some(vec![
         ModelRoute {
             capability: None,
-            model: "claude-fable-5".to_string(),
-            provider: "Anthropic".to_string(),
-            api_method: "claude-oauth".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            provider: "OpenAI".to_string(),
+            api_method: "openai-api-key".to_string(),
             available: true,
             detail: String::new(),
             cheapness: None,
@@ -891,9 +891,9 @@ async fn onboarding_auth_refresh_prefers_global_gpt_5_6_route_over_fable() {
         },
         ModelRoute {
             capability: None,
-            model: "gpt-5.6-sol".to_string(),
-            provider: "OpenAI".to_string(),
-            api_method: "openai-api-key".to_string(),
+            model: "claude-fable-5".to_string(),
+            provider: "Anthropic".to_string(),
+            api_method: "claude-oauth".to_string(),
             available: true,
             detail: String::new(),
             cheapness: None,
@@ -907,7 +907,7 @@ async fn onboarding_auth_refresh_prefers_global_gpt_5_6_route_over_fable() {
 
     handle_notify_auth_changed(
         49,
-        Some("claude".to_string()),
+        Some("lmstudio".to_string()),
         None,
         true,
         &provider,
@@ -949,8 +949,8 @@ async fn notify_auth_changed_does_not_override_manual_model_selected_during_refr
         .auth_refresh_delay_ms
         .store(80, Ordering::Release);
     *provider.state.selected_model.write().unwrap() = Some("stale-model".to_string());
-    *provider.state.route_provider.write().unwrap() = "gemini-api".to_string();
-    *provider.state.route_api_method.write().unwrap() = "openai-compatible:gemini-api".to_string();
+    *provider.state.route_provider.write().unwrap() = "lmstudio".to_string();
+    *provider.state.route_api_method.write().unwrap() = "openai-compatible:lmstudio".to_string();
     *provider
         .state
         .expose_selected_model_in_routes
@@ -966,13 +966,13 @@ async fn notify_auth_changed_does_not_override_manual_model_selected_during_refr
     )])));
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-    let mut auth = crate::protocol::AuthChanged::new("gemini-api");
+    let mut auth = crate::protocol::AuthChanged::new("lmstudio");
     auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
     auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
     auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
         "openai-compatible",
     ));
-    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("gemini-api"));
+    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("lmstudio"));
 
     handle_notify_auth_changed(
         48,
@@ -1076,9 +1076,9 @@ async fn auth_model_first_prompt_e2e_state_space_is_bounded_by_selection_source(
             .auth_refresh_delay_ms
             .store(80, Ordering::Release);
         *provider_concrete.state.selected_model.write().unwrap() = Some("stale-model".to_string());
-        *provider_concrete.state.route_provider.write().unwrap() = "gemini-api".to_string();
+        *provider_concrete.state.route_provider.write().unwrap() = "lmstudio".to_string();
         *provider_concrete.state.route_api_method.write().unwrap() =
-            "openai-compatible:gemini-api".to_string();
+            "openai-compatible:lmstudio".to_string();
         *provider_concrete
             .state
             .expose_selected_model_in_routes
@@ -1094,14 +1094,13 @@ async fn auth_model_first_prompt_e2e_state_space_is_bounded_by_selection_source(
         )])));
         let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-        let mut auth = crate::protocol::AuthChanged::new("gemini-api");
+        let mut auth = crate::protocol::AuthChanged::new("lmstudio");
         auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
         auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
         auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
             "openai-compatible",
         ));
-        auth.expected_catalog_namespace =
-            Some(crate::protocol::CatalogNamespace::new("gemini-api"));
+        auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("lmstudio"));
 
         handle_notify_auth_changed(
             148,
@@ -1245,14 +1244,23 @@ async fn notify_auth_changed_switches_only_current_session_model() {
     crate::bus::reset_models_updated_publish_state_for_tests();
     let current_provider = Arc::new(AuthChangeMockProvider::new());
     let current_state = Arc::clone(&current_provider.state);
-    *current_state.selected_model.write().unwrap() = Some("gpt-5.5".to_string());
-    *current_state.route_provider.write().unwrap() = "gemini-api".to_string();
-    *current_state.route_api_method.write().unwrap() = "openai-compatible:gemini-api".to_string();
+    *current_state.selected_model.write().unwrap() = Some("stale-model".to_string());
+    *current_state.route_provider.write().unwrap() = "lmstudio".to_string();
+    *current_state.route_api_method.write().unwrap() = "openai-compatible:lmstudio".to_string();
+    *current_state.routes_override.write().unwrap() = Some(vec![ModelRoute {
+        capability: None,
+        model: "lmstudio-model".to_string(),
+        provider: "lmstudio".to_string(),
+        api_method: "openai-compatible:lmstudio".to_string(),
+        available: true,
+        detail: String::new(),
+        cheapness: None,
+    }]);
     let peer_provider = Arc::new(AuthChangeMockProvider::new());
     let peer_state = Arc::clone(&peer_provider.state);
     *peer_state.selected_model.write().unwrap() = Some("gpt-5.5".to_string());
-    *peer_state.route_provider.write().unwrap() = "gemini-api".to_string();
-    *peer_state.route_api_method.write().unwrap() = "openai-compatible:gemini-api".to_string();
+    *peer_state.route_provider.write().unwrap() = "lmstudio".to_string();
+    *peer_state.route_api_method.write().unwrap() = "openai-compatible:lmstudio".to_string();
 
     let current_provider: Arc<dyn Provider> = current_provider;
     let peer_provider: Arc<dyn Provider> = peer_provider;
@@ -1269,13 +1277,13 @@ async fn notify_auth_changed_switches_only_current_session_model() {
     ])));
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
 
-    let mut auth = crate::protocol::AuthChanged::new("gemini-api");
+    let mut auth = crate::protocol::AuthChanged::new("lmstudio");
     auth.credential_source = Some(crate::protocol::AuthCredentialSource::ApiKeyFile);
     auth.auth_method = Some(crate::protocol::AuthMethod::RemoteTuiPasteApiKey);
     auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
         "openai-compatible",
     ));
-    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("gemini-api"));
+    auth.expected_catalog_namespace = Some(crate::protocol::CatalogNamespace::new("lmstudio"));
 
     handle_notify_auth_changed(
         47,
@@ -1296,7 +1304,7 @@ async fn notify_auth_changed_switches_only_current_session_model() {
         Some(ServerEvent::Done { id: 47 })
     ));
 
-    let expected = "gemini-2.5-flash";
+    let expected = "lmstudio-model";
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
         let current = current_state.selected_model.read().unwrap().clone();
@@ -1320,14 +1328,14 @@ async fn notify_auth_changed_switches_only_current_session_model() {
             assert_eq!(provider_model.as_deref(), Some("gpt-5.5"));
             assert!(available_model_routes.iter().any(|route| {
                 route.model == "gpt-5.5"
-                    && route.provider == "gemini-api"
-                    && route.api_method == "openai-compatible:gemini-api"
+                    && route.provider == "lmstudio"
+                    && route.api_method == "openai-compatible:lmstudio"
             }));
             assert!(
                 available_model_routes
                     .iter()
                     .all(|route| route.model != expected),
-                "auth-triggered Gemini API model leaked into peer session routes: {:?}",
+                "auth-triggered LM Studio model leaked into peer session routes: {:?}",
                 available_model_routes
             );
             return;
