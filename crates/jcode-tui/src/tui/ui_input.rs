@@ -214,6 +214,9 @@ pub(super) fn draw_file_pick_overlay(frame: &mut Frame, app: &dyn TuiState, area
     let Some(view) = app.file_pick_view() else {
         return;
     };
+    // Fixed height so the popover never jumps while the list scrolls or the
+    // filter narrows. The visible window holds up to 8 rows plus the header.
+    const FILE_PICK_OVERLAY_HEIGHT: u16 = 10;
     let accent = Style::default().fg(rgb(255, 213, 128));
     let dim = Style::default().fg(dim_color());
     let normal = Style::default().fg(rgb(128, 203, 196));
@@ -260,7 +263,7 @@ pub(super) fn draw_file_pick_overlay(frame: &mut Frame, app: &dyn TuiState, area
         }
     }
 
-    let Some(rect) = command_suggestions_overlay_rect(area, lines.len() as u16, frame.area())
+    let Some(rect) = command_suggestions_overlay_rect(area, FILE_PICK_OVERLAY_HEIGHT, frame.area())
     else {
         return;
     };

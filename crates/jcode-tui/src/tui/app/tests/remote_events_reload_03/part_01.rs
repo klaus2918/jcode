@@ -131,6 +131,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
 
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "ses_test_123".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -204,6 +205,7 @@ fn test_handle_server_event_history_uses_server_owned_reload_recovery_directive(
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
     let event = crate::protocol::ServerEvent::History {
+        working_dir: None,
         id: 1,
         session_id: "ses_server_owned_reload".to_string(),
         messages: vec![crate::protocol::HistoryMessage {
@@ -285,6 +287,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
 
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "ses_test_456".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -348,6 +351,7 @@ fn test_handle_server_event_history_after_reload_reports_no_continuation_needed(
 
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "ses_reload_done".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -654,6 +658,7 @@ fn test_handle_server_event_history_restores_side_panel_snapshot() {
 
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "ses_side_panel_history".to_string(),
             messages: vec![],
@@ -711,6 +716,7 @@ fn test_handle_server_event_history_restores_active_resume_processing_state() {
 
     let needs_redraw = app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "ses_resume_active".to_string(),
             messages: vec![],

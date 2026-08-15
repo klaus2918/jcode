@@ -154,7 +154,8 @@ fn at_reference_expands_into_submitted_message() {
     app.set_input_for_test("@README.md");
     app.submit_input();
 
-    // Display keeps the reference as typed; the model receives the file content.
+    // Display keeps the reference as typed; the model receives the reference
+    // preserved plus a lightweight list guiding it to `read` the files.
     assert_eq!(app.display_messages().len(), 1);
     assert_eq!(app.display_messages()[0].content, "@README.md");
     let provider_messages = app.materialized_provider_messages();
@@ -165,7 +166,18 @@ fn at_reference_expands_into_submitted_message() {
         .expect("expected submitted user message");
     match &user_message.content[0] {
         crate::message::ContentBlock::Text { text, .. } => {
-            assert_eq!(text, "<@README.md>\n# readme");
+            assert!(
+                text.contains("@README.md"),
+                "reference preserved as typed, got: {text}"
+            );
+            assert!(
+                text.contains("README.md"),
+                "reference list mentions the path, got: {text}"
+            );
+            assert!(
+                !text.contains("# readme"),
+                "file content must NOT be inlined, got: {text}"
+            );
         }
         _ => panic!("Expected Text content block"),
     }
@@ -173,7 +185,7 @@ fn at_reference_expands_into_submitted_message() {
 }
 
 #[test]
-fn at_reference_missing_file_stays_as_typed() {
+fn at_reference_missing_file_stays_as_typed_without_reference_list() {
     let root = temp_workspace("missing");
     let mut app = create_test_app();
     app.session.working_dir = Some(root.to_string_lossy().to_string());

@@ -190,6 +190,7 @@ pub(super) async fn handle_get_model_catalog(
         available_models,
         available_model_routes,
         resolved_credential,
+        working_dir,
         source,
     ) = {
         match agent.try_lock() {
@@ -199,6 +200,7 @@ pub(super) async fn handle_get_model_catalog(
                 agent_guard.available_models_display(),
                 agent_guard.model_routes(),
                 agent_guard.active_resolved_credential(),
+                agent_guard.working_dir().map(str::to_string),
                 "live",
             ),
             Err(_) => {
@@ -216,6 +218,9 @@ pub(super) async fn handle_get_model_catalog(
                     provider.available_models_display(),
                     provider.model_routes(),
                     provider.active_resolved_credential(),
+                    persisted
+                        .as_ref()
+                        .and_then(|session| session.working_dir.clone()),
                     "fallback",
                 )
             }
@@ -240,6 +245,7 @@ pub(super) async fn handle_get_model_catalog(
         all_sessions: Vec::new(),
         client_count: None,
         is_canary: None,
+        working_dir,
         server_version: None,
         server_name: None,
         server_icon: None,
@@ -497,6 +503,7 @@ async fn send_history_from_persisted_session(
         .reasoning_effort
         .clone()
         .or_else(|| provider.reasoning_effort());
+    let working_dir = session.working_dir.clone();
     drop(session);
 
     let messages = rendered_messages
@@ -532,6 +539,7 @@ async fn send_history_from_persisted_session(
         all_sessions,
         client_count: Some(current_client_count),
         is_canary: Some(is_canary),
+        working_dir,
         server_version: Some(jcode_build_meta::version().to_string()),
         server_name: Some(server_name.to_string()),
         server_icon: Some(server_icon.to_string()),
@@ -581,6 +589,7 @@ pub(super) async fn send_history(
         subagent_model,
         autoreview_enabled,
         autojudge_enabled,
+        working_dir,
         available_models,
         available_model_routes,
         skills,
@@ -656,6 +665,7 @@ pub(super) async fn send_history(
             agent_guard.subagent_model(),
             agent_guard.autoreview_enabled(),
             agent_guard.autojudge_enabled(),
+            agent_guard.working_dir().map(str::to_string),
             available_models,
             available_model_routes,
             skills,
@@ -736,6 +746,7 @@ pub(super) async fn send_history(
         subagent_model,
         autoreview_enabled,
         autojudge_enabled,
+        working_dir,
         available_models,
         available_model_routes,
         mcp_servers,

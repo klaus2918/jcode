@@ -1514,6 +1514,7 @@ pub(in crate::tui::app) fn handle_server_event(
             all_sessions,
             client_count,
             is_canary,
+            working_dir,
             server_version,
             server_name,
             server_icon,
@@ -1680,6 +1681,9 @@ pub(in crate::tui::app) fn handle_server_event(
             app.session.subagent_model = subagent_model;
             app.session.autoreview_enabled = autoreview_enabled;
             app.session.autojudge_enabled = autojudge_enabled;
+            if let Some(wd) = working_dir {
+                app.session.working_dir = Some(wd);
+            }
             app.autoreview_enabled =
                 autoreview_enabled.unwrap_or(crate::config::config().autoreview.enabled);
             app.autojudge_enabled =

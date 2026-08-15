@@ -1583,6 +1583,7 @@ fn stale_server_history_is_deferred_before_remote_state_is_applied() {
 
     let redraw = app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_from_stale_server".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -1673,6 +1674,7 @@ fn deferred_stale_server_history_captures_session_id_for_reload_handoff() {
 
     let redraw = app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_real_server_owned".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -1755,6 +1757,7 @@ fn ancient_server_history_is_deferred_via_client_side_release_check() {
 
     let redraw = app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_from_ancient_server".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -1842,6 +1845,7 @@ fn older_server_reporting_no_update_is_still_deferred_via_client_check() {
 
     let redraw = app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_from_old_server".to_string(),
             messages: vec![],
@@ -1946,6 +1950,7 @@ fn older_server_history_repairs_stale_shared_server_channel_end_to_end() {
 
     let _redraw = app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_from_old_server".to_string(),
             messages: vec![],
@@ -2022,6 +2027,7 @@ fn current_release_server_history_is_not_deferred_by_client_check() {
 
     let redraw = app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_current".to_string(),
             messages: vec![],

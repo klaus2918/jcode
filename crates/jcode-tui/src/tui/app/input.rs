@@ -2582,6 +2582,10 @@ pub(super) fn take_prepared_input(app: &mut App) -> PreparedInput {
     let raw_input = std::mem::take(&mut app.input);
     app.record_prompt_history(&raw_input);
     let expanded = expand_paste_placeholders(app, &raw_input);
+    let expanded = {
+        let references = super::at_file::collect_at_references(app, &raw_input);
+        append_reference_list(expanded, references)
+    };
     super::at_file::cleanup_paste_files(app);
     app.pasted_contents.clear();
     let images = std::mem::take(&mut app.pending_images);
@@ -2592,6 +2596,22 @@ pub(super) fn take_prepared_input(app: &mut App) -> PreparedInput {
         expanded,
         images,
     }
+}
+
+/// Append a lightweight list of referenced paths to the expanded message so
+/// the model can `read` them with its tool. The references themselves are
+/// preserved as typed in `raw_input`; the content is never inlined.
+fn append_reference_list(mut expanded: String, references: Vec<String>) -> String {
+    if references.is_empty() {
+        return expanded;
+    }
+    let mut section = String::from("（用户引用了以下文件，请用 read 工具读取以获取内容）\n");
+    section.push_str(&references.join("\n- "));
+    if !expanded.is_empty() {
+        expanded.push_str("\n\n");
+    }
+    expanded.push_str(&section);
+    expanded
 }
 
 pub(super) fn stage_local_interleave(

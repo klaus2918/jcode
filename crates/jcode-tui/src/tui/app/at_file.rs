@@ -1,17 +1,19 @@
 //! `@` workspace-file references and multiline-paste temp files.
 //!
-//! Two features share one expansion path so pasted content and explicit file
-//! references both flow into the message as file content on submit:
+//! Two features share one submit path:
 //!
 //! 1. Typing `@` at a word boundary opens a workspace file picker with fuzzy
 //!    filtering. Confirming inserts `@<relative-path>` into the composer, and
-//!    on submit the reference is expanded to the file content.
+//!    on submit the reference is preserved as typed plus a lightweight list of
+//!    referenced paths is appended so the model can `read` the files with its
+//!    tool (the content is never inlined, keeping the context window small).
 //! 2. Pasting multi-line text (>= 2 lines) is written to a temp file and the
 //!    composer gets a simplified `@[粘贴内容...]` marker instead of the raw
 //!    text, so multiline pastes never fill the input box and never race a
 //!    stray Enter. On submit the marker is replaced by the file content and
 //!    the temp file is removed.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::App;
@@ -49,10 +51,6 @@ pub(super) struct FilePickState {
     opened_at_end: bool,
 }
 
-/// Maximum size of a file whose content is expanded inline on submit. Larger
-/// files stay as `@path` text so the model can read them with tools instead
-/// of blowing up the context window.
-const MAX_EXPAND_BYTES: u64 = 128 * 1024;
 /// Maximum number of files in the workspace index, bounding scan cost.
 const MAX_INDEX_FILES: usize = 3000;
 /// Maximum number of preview lines and bytes shown in the picker preview pane.
@@ -369,12 +367,39 @@ pub(super) fn file_pick_view(app: &App) -> Option<FilePickView> {
 }
 
 /// Scan the workspace for indexable files, returning relative POSIX-style
-/// paths. Bounded by `MAX_INDEX_FILES` and `MAX_SCAN_DEPTH`.
+/// paths. Bounded by `MAX_INDEX_FILES` and `MAX_SCAN_DEPTH`. Files tracked by
+/// git are listed first so the picker surfaces the files most likely to be
+/// referenced.
 fn scan_workspace_files(root: &Path) -> Vec<String> {
     let mut files = Vec::new();
     scan_dir(root, root, 0, &mut files);
-    files.sort();
+    let tracked = git_tracked_files(root);
+    files.sort_by_key(|path| !tracked.contains(path));
     files
+}
+
+/// Files tracked by git in `root` as relative POSIX-style paths. Empty when
+/// the root is not a git work tree or git is unavailable.
+fn git_tracked_files(root: &Path) -> HashSet<String> {
+    let mut tracked = HashSet::new();
+    let Ok(output) = std::process::Command::new("git")
+        .args(["-C", &root.to_string_lossy(), "ls-files"])
+        .output()
+    else {
+        return tracked;
+    };
+    if !output.status.success() {
+        return tracked;
+    }
+    for line in output.stdout.split(|&byte| byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(path) = std::str::from_utf8(line) {
+            tracked.insert(path.to_string());
+        }
+    }
+    tracked
 }
 
 fn scan_dir(root: &Path, dir: &Path, depth: usize, files: &mut Vec<String>) {
@@ -447,11 +472,10 @@ fn paste_marker(seq: u64) -> String {
     format!("{PASTE_MARKER_PREFIX}{seq}]")
 }
 
-/// Replace paste markers and `@file` references in a draft with file content.
+/// Replace paste markers in a draft with file content. `@file` references are
+/// intentionally preserved as typed; the model reads them with its `read` tool.
 pub(super) fn expand_placeholders(app: &App, input: &str) -> String {
-    let mut result = expand_paste_markers(app, input);
-    result = expand_at_references(app, &result);
-    result
+    expand_paste_markers(app, input)
 }
 
 fn expand_paste_markers(app: &App, input: &str) -> String {
@@ -466,21 +490,22 @@ fn expand_paste_markers(app: &App, input: &str) -> String {
     result
 }
 
-/// Expand `@<path>` references to file content. Paths resolve relative to the
-/// workspace root (or absolutely when they start with a root/`~`). Missing or
-/// oversized files stay as typed text so tools can still read them.
-fn expand_at_references(app: &App, input: &str) -> String {
+/// Collect `@<path>` references that resolve to existing files, so callers can
+/// append a lightweight list guiding the model to `read` them. Paths resolve
+/// relative to the workspace root (or absolutely when they start with a
+/// root/`~`). Paste markers (`@[粘贴内容...]`) are excluded. When there is no
+/// workspace root, an empty list is returned.
+pub(super) fn collect_at_references(app: &App, input: &str) -> Vec<String> {
     let Some(root) = workspace_root(app) else {
-        return input.to_string();
+        return Vec::new();
     };
-    expand_at_references_in_root(&root, input)
+    collect_at_references_in_root(&root, input)
 }
 
-fn expand_at_references_in_root(root: &Path, input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
+fn collect_at_references_in_root(root: &Path, input: &str) -> Vec<String> {
+    let mut references = Vec::new();
     let mut rest = input;
     while let Some(at) = rest.find('@') {
-        result.push_str(&rest[..at]);
         rest = &rest[at..];
         // A reference token runs until whitespace or a closing bracket.
         let token_end = rest[1..]
@@ -488,35 +513,18 @@ fn expand_at_references_in_root(root: &Path, input: &str) -> String {
             .map(|end| end + 1)
             .unwrap_or(rest.len());
         let token = &rest[1..token_end];
-        if token.is_empty() {
-            result.push('@');
-            rest = &rest[1..];
+        if token.is_empty() || token.starts_with(PASTE_MARKER_PREFIX) {
+            rest = &rest[token_end.max(1)..];
             continue;
         }
-        let expanded = resolve_and_read_reference(root, token);
-        match expanded {
-            Some(content) => {
-                result.push_str(&content);
-            }
-            None => {
-                result.push('@');
-                result.push_str(token);
-            }
+        if let Some(path) = resolve_reference_path(root, token)
+            && path.is_file()
+        {
+            references.push(token.to_string());
         }
         rest = &rest[token_end..];
     }
-    result.push_str(rest);
-    result
-}
-
-fn resolve_and_read_reference(root: &Path, token: &str) -> Option<String> {
-    let path = resolve_reference_path(root, token)?;
-    let metadata = std::fs::metadata(&path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_EXPAND_BYTES {
-        return None;
-    }
-    let content = std::fs::read_to_string(&path).ok()?;
-    Some(format!("<@{}>\n{}", token, content.trim_end()))
+    references
 }
 
 fn resolve_reference_path(root: &Path, token: &str) -> Option<PathBuf> {
@@ -601,23 +609,54 @@ mod tests {
     }
 
     #[test]
-    fn expand_at_references_reads_workspace_files() {
-        let root = test_root().join("expand");
+    fn collect_at_references_preserves_and_filters() {
+        let root = test_root().join("collect");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("note.txt"), "hello world").unwrap();
         std::fs::write(root.join("big.bin"), vec![0u8; 200 * 1024]).unwrap();
 
-        let expanded = expand_at_references_in_root(&root, "see @note.txt ok");
-        assert_eq!(expanded, "see <@note.txt>\nhello world ok");
+        // Existing files are collected for the reference list, while missing
+        // files and paste markers are excluded.
+        let refs =
+            collect_at_references_in_root(&root, "see @note.txt and @nope.txt and @big.bin ok");
+        assert_eq!(refs, vec!["note.txt", "big.bin"]);
 
-        // Oversized files stay as typed text.
-        let big = expand_at_references_in_root(&root, "@big.bin");
-        assert_eq!(big, "@big.bin");
+        let refs_no_markers = collect_at_references_in_root(&root, "@[粘贴内容1] @note.txt");
+        assert_eq!(refs_no_markers, vec!["note.txt"]);
 
-        // Missing files stay as typed text.
-        let missing = expand_at_references_in_root(&root, "@nope.txt");
-        assert_eq!(missing, "@nope.txt");
+        let empty = collect_at_references_in_root(&root, "no references here @");
+        assert!(empty.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scan_places_git_tracked_files_first() {
+        let root = test_root().join("gitorder");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("zeta.txt"), "").unwrap();
+        std::fs::write(root.join("alpha.txt"), "").unwrap();
+
+        let init_ok = std::process::Command::new("git")
+            .args(["-C", &root.to_string_lossy(), "init", "-q"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if init_ok {
+            std::process::Command::new("git")
+                .args(["-C", &root.to_string_lossy(), "add", "alpha.txt"])
+                .output()
+                .unwrap();
+        }
+
+        let files = scan_workspace_files(&root);
+        assert_eq!(files.len(), 2);
+        if init_ok {
+            let pos_alpha = files.iter().position(|p| p == "alpha.txt").unwrap();
+            let pos_zeta = files.iter().position(|p| p == "zeta.txt").unwrap();
+            assert!(pos_alpha < pos_zeta, "tracked file listed before untracked");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

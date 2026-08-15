@@ -74,6 +74,7 @@ fn test_handle_server_event_history_clears_connection_type_on_session_change_whe
 
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_new".to_string(),
             messages: vec![],
@@ -127,6 +128,7 @@ fn test_handle_server_event_history_preserves_connection_type_for_same_session_w
 
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_same".to_string(),
             messages: vec![],
@@ -208,6 +210,7 @@ fn test_handle_server_event_history_session_change_clears_streaming_preview_diag
 
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_new".to_string(),
             messages: vec![],
@@ -305,6 +308,7 @@ fn test_handle_server_event_history_same_session_rewind_reapply_clears_streaming
     // Truncated payload after the rewind: same session id, fewer messages.
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 2,
             session_id: "session_rewind_preview".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -413,6 +417,7 @@ fn test_handle_server_event_history_same_session_midstream_duplicate_is_dropped_
     // Same-session, rewind-truncated payload this client never requested.
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 3,
             session_id: "session_midstream_dup".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -494,6 +499,7 @@ fn test_handle_server_event_history_same_session_midstream_duplicate_is_dropped_
         );
         app.handle_server_event(
             crate::protocol::ServerEvent::History {
+                working_dir: None,
                 id: 3,
                 session_id: "session_midstream_dup".to_string(),
                 messages: vec![crate::protocol::HistoryMessage {
@@ -595,6 +601,7 @@ fn test_handle_server_event_history_same_session_rewind_then_late_done_does_not_
     // Truncated payload after the rewind: same session id, fewer messages.
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 2,
             session_id: "session_rewind_done_race".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
@@ -689,6 +696,7 @@ fn test_handle_server_event_history_session_change_clears_pending_interleaves() 
 
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_new".to_string(),
             messages: vec![],
@@ -1803,6 +1811,7 @@ fn test_pending_startup_notice_survives_history_bootstrap_for_fresh_session() {
     // The bootstrap for a brand-new session clears the transcript.
     app.handle_server_event(
         crate::protocol::ServerEvent::History {
+            working_dir: None,
             id: 1,
             session_id: "session_new".to_string(),
             messages: vec![],
