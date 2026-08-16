@@ -314,6 +314,69 @@ pub fn format_content_blocks(
     result
 }
 
+/// Placeholder text for a thinking block whose original reasoning was lost.
+///
+/// DeepSeek-style gateways reject an *empty* `reasoning_content` on replay,
+/// so the placeholder carries a minimal sentinel instead of an empty string.
+pub const ELIDED_REASONING_PLACEHOLDER: &str = "(elided)";
+
+/// Fill missing thinking blocks in assistant history for gateways that
+/// require `reasoning_content` to be passed back on follow-up turns.
+///
+/// `replay_reasoning_content` only echoes thinking blocks that still exist;
+/// after compaction or a session restore, a reasoning turn can end up without
+/// its thinking block, and the gateway then rejects the whole request
+/// (`reasoning_content ... must be passed back`). This injects an `(elided)`
+/// placeholder thinking block (empty signature) at the front of every
+/// assistant message that lacks one, but only when the conversation already
+/// carries thinking elsewhere: a text-only session is left untouched, and the
+/// official Anthropic API never routes here because the behavior is opt-in
+/// per profile (`fill_missing_reasoning = true`).
+///
+/// Model-agnostic: no protocol string is inspected, so any thinking-requiring
+/// Anthropic-format gateway benefits without environment-specific coupling.
+pub fn fill_missing_reasoning_blocks(api_messages: &mut [ApiMessage]) {
+    let session_has_thinking = api_messages.iter().any(|msg| {
+        msg.role == "assistant"
+            && msg
+                .content
+                .iter()
+                .any(|block| matches!(block, ApiContentBlock::Thinking { .. }))
+    });
+    if !session_has_thinking {
+        return;
+    }
+
+    let mut filled = 0usize;
+    for msg in api_messages.iter_mut() {
+        if msg.role != "assistant" || msg.content.is_empty() {
+            continue;
+        }
+        let has_thinking = msg
+            .content
+            .iter()
+            .any(|block| matches!(block, ApiContentBlock::Thinking { .. }));
+        if has_thinking {
+            continue;
+        }
+        msg.content.insert(
+            0,
+            ApiContentBlock::Thinking {
+                thinking: ELIDED_REASONING_PLACEHOLDER.to_string(),
+                signature: String::new(),
+            },
+        );
+        filled += 1;
+    }
+
+    if filled > 0 {
+        jcode_logging::info(&format!(
+            "[anthropic] Injected {filled} elided thinking block(s) into assistant history \
+             (gateway requires reasoning_content replay)"
+        ));
+    }
+}
+
 /// Convert tool definitions to Anthropic API format
 /// Adds cache_control to the last tool for prompt caching
 /// Local tool names that are represented by the curated Claude-Code builtin
@@ -1155,6 +1218,134 @@ mod cache_prefix_invariant_tests {
             with_cache.first().copied(),
             "cache breakpoint must be on the final tool"
         );
+    }
+}
+
+#[cfg(test)]
+mod fill_missing_reasoning_tests {
+    use super::*;
+
+    fn assistant(content: Vec<ApiContentBlock>) -> ApiMessage {
+        ApiMessage {
+            role: "assistant".to_string(),
+            content,
+        }
+    }
+
+    fn user(text: &str) -> ApiMessage {
+        ApiMessage {
+            role: "user".to_string(),
+            content: vec![ApiContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn text_block(text: &str) -> ApiContentBlock {
+        ApiContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }
+    }
+
+    fn thinking_block() -> ApiContentBlock {
+        ApiContentBlock::Thinking {
+            thinking: "real reasoning".to_string(),
+            signature: "sig".to_string(),
+        }
+    }
+
+    #[test]
+    fn fills_only_assistant_messages_missing_thinking_when_session_has_thinking() {
+        let mut messages = vec![
+            user("intro"),
+            assistant(vec![thinking_block(), text_block("first answer")]),
+            user("next"),
+            // Compaction/restore survivor without its thinking block.
+            assistant(vec![text_block("second answer")]),
+        ];
+        fill_missing_reasoning_blocks(&mut messages);
+
+        let second = &messages[3];
+        assert!(matches!(
+            second.content.first(),
+            Some(ApiContentBlock::Thinking {
+                thinking,
+                signature
+            }) if thinking == ELIDED_REASONING_PLACEHOLDER && signature.is_empty()
+        ));
+        assert_eq!(second.content.len(), 2, "placeholder prepended, text kept");
+        // The already-thinking message is untouched.
+        assert!(matches!(
+            messages[1].content.first(),
+            Some(ApiContentBlock::Thinking { thinking, .. }) if thinking == "real reasoning"
+        ));
+    }
+
+    #[test]
+    fn leaves_text_only_session_untouched() {
+        let mut messages = vec![
+            user("intro"),
+            assistant(vec![text_block("plain answer")]),
+            user("next"),
+        ];
+        fill_missing_reasoning_blocks(&mut messages);
+        assert!(matches!(
+            messages[1].content.first(),
+            Some(ApiContentBlock::Text { .. })
+        ));
+        assert_eq!(messages[1].content.len(), 1);
+    }
+
+    #[test]
+    fn leaves_empty_messages_and_user_messages_untouched() {
+        let mut messages = vec![
+            user("intro"),
+            assistant(vec![]),
+            user("next"),
+        ];
+        fill_missing_reasoning_blocks(&mut messages);
+        assert!(messages[1].content.is_empty(), "empty assistant stays empty");
+        assert!(matches!(
+            messages[2].content.first(),
+            Some(ApiContentBlock::Text { .. })
+        ));
+    }
+
+    #[test]
+    fn fills_tool_use_rounds_when_session_thinks() {
+        let mut messages = vec![
+            user("intro"),
+            assistant(vec![thinking_block(), text_block("calling tool")]),
+            user("tool result"),
+            assistant(vec![ApiContentBlock::ToolUse {
+                id: "tu_1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "ls"}),
+                cache_control: None,
+            }]),
+        ];
+        fill_missing_reasoning_blocks(&mut messages);
+        assert!(matches!(
+            messages[3].content.first(),
+            Some(ApiContentBlock::Thinking { thinking, .. }) if thinking == ELIDED_REASONING_PLACEHOLDER
+        ));
+    }
+
+    #[test]
+    fn is_idempotent() {
+        let mut messages = vec![
+            assistant(vec![thinking_block(), text_block("first answer")]),
+            assistant(vec![text_block("second answer")]),
+        ];
+        fill_missing_reasoning_blocks(&mut messages);
+        let snapshot = messages.clone();
+        fill_missing_reasoning_blocks(&mut messages);
+        assert_eq!(messages.len(), snapshot.len());
+        for (before, after) in snapshot.iter().zip(messages.iter()) {
+            assert_eq!(before.content.len(), after.content.len());
+        }
     }
 }
 

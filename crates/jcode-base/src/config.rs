@@ -197,6 +197,13 @@ fn provider_to_value(config: &NamedProviderConfig) -> toml::Value {
         );
     }
 
+    if let Some(fill) = config.fill_missing_reasoning {
+        table.insert(
+            "fill_missing_reasoning".to_string(),
+            toml::Value::Boolean(fill),
+        );
+    }
+
     if let Some(price) = config.price.as_ref() {
         table.insert("price".to_string(), price_to_value(price));
     }
@@ -435,6 +442,11 @@ struct NamedProviderArrayEntry {
     /// 与 `[providers.<name>]` 表格的 `replay_reasoning_content` 语义一致。
     #[serde(default)]
     replay_reasoning_content: Option<bool>,
+    /// 是否为缺失 thinking 块的 assistant 历史注入占位块（思考模式网关
+    /// 要求回传 reasoning_content 的场景）。与 `[providers.<name>]` 表格的
+    /// `fill_missing_reasoning` 语义一致。
+    #[serde(default)]
+    fill_missing_reasoning: Option<bool>,
     /// `auth` 选择器（"none"/"bearer"/"header"）。缺省时保持 Bearer 旧行为，
     /// 因此无 key 的本地网关（cc-switch 等）必须显式写 `auth = "none"`，
     /// 否则运行时因找不到 key 直接报错。
@@ -538,6 +550,7 @@ impl NamedProviderArrayEntry {
             extra_body: self.extra_body,
             supports_reasoning_effort: self.supports_reasoning_effort,
             replay_reasoning_content: self.replay_reasoning_content,
+            fill_missing_reasoning: self.fill_missing_reasoning,
             models,
             price: self.price,
             prices: self.prices,

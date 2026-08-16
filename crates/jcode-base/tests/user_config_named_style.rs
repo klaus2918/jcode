@@ -30,6 +30,7 @@ auth = "header"
 auth_header = "x-api-key"
 api_key_env = "DEEPSEEK_API_KEY"
 default_model = "deepseek-v4-flash"
+fill_missing_reasoning = true
 
 [[providers.cch.models]]
 id = "deepseek-v4-flash"
@@ -95,6 +96,7 @@ fn user_cc_switch_and_cch_named_style_config_round_trips() {
     assert_eq!(cch.auth_header.as_deref(), Some("x-api-key"));
     assert_eq!(cch.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
     assert_eq!(cch.default_model.as_deref(), Some("deepseek-v4-flash"));
+    assert_eq!(cch.fill_missing_reasoning, Some(true));
     assert_eq!(cch.models.len(), 5);
     let minimax = cch
         .models

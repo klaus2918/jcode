@@ -720,6 +720,28 @@ pub struct NamedProviderConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub replay_reasoning_content: Option<bool>,
+    /// Fill missing thinking blocks in assistant history when the gateway
+    /// requires `reasoning_content` to be passed back.
+    ///
+    /// `replay_reasoning_content` only echoes thinking blocks that still exist;
+    /// after compaction or session restore a reasoning turn may have lost its
+    /// thinking block entirely, and the gateway then rejects the request with
+    /// a `reasoning_content ... must be passed back` error. When enabled, the
+    /// provider injects an `(elided)` placeholder thinking block into every
+    /// assistant message that lacks one (in sessions that already carry
+    /// thinking), and additionally self-heals once by re-injecting the
+    /// placeholders and retrying when the gateway reports the missing-replay
+    /// error. Model-agnostic: no protocol string is matched, so any
+    /// thinking-requiring Anthropic-format gateway benefits.
+    #[serde(
+        default,
+        alias = "fill-missing-reasoning",
+        alias = "fill_missing_thinking",
+        alias = "ensure-reasoning-replay",
+        alias = "ensure_reasoning_replay",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fill_missing_reasoning: Option<bool>,
     /// Provider-wide price fallback (resonix `price`), per 1M tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price: Option<ProviderPrice>,
@@ -769,6 +791,7 @@ impl Default for NamedProviderConfig {
             vision_models: None,
             model_overrides: None,
             replay_reasoning_content: None,
+            fill_missing_reasoning: None,
         }
     }
 }

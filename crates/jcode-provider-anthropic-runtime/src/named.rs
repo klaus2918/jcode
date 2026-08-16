@@ -425,6 +425,19 @@ impl NamedAnthropicProvider {
         )
     }
 
+    fn fills_missing_reasoning(&self) -> bool {
+        // Opt-in per profile: `fill_missing_reasoning = true` on the
+        // `[providers.<name>]` entry. When enabled, assistant history that
+        // lost its thinking blocks (compaction, session restore) is repaired
+        // before send, and a `reasoning_content ... must be passed back`
+        // rejection self-heals by re-injecting placeholders and retrying.
+        jcode_base::config::config()
+            .providers
+            .get(&self.profile_name)
+            .and_then(|profile| profile.fill_missing_reasoning)
+            .unwrap_or(false)
+    }
+
     /// Strip a session-routing `<profile>:` prefix from a model spec.
     ///
     /// Session restore persists models as `<provider-key>:<model>` (see
@@ -520,6 +533,7 @@ impl NamedAnthropicProvider {
         let per_model_auth = self.per_model_auth.clone();
         let fallback_auth = self.fallback_auth.clone();
         let model_state = Arc::clone(&self.model);
+        let fills_missing_reasoning = self.fills_missing_reasoning();
         tokio::spawn(async move {
             let token = token;
             let mut last_error = None;
@@ -528,6 +542,7 @@ impl NamedAnthropicProvider {
             let original_model = model_name.clone();
             let mut model_name = model_name;
             let mut tried_models: Vec<String> = vec![original_model.clone()];
+            let mut reasoning_repaired = false;
             // Per-model auth: recompute per attempt so a catalog-following
             // fallback to another model (cc-switch auto-follow) uses that
             // model's own key/header.
@@ -644,6 +659,29 @@ impl NamedAnthropicProvider {
                                 obj.remove("thinking");
                                 obj.remove("output_config");
                             }
+                            last_error = Some(e);
+                            continue;
+                        }
+
+                        // Reasoning replay rejection: the gateway requires
+                        // `reasoning_content` in assistant history (DeepSeek-style
+                        // thinking mode) but the conversation lost its thinking
+                        // blocks (compaction/restore). Self-heal once by injecting
+                        // elided placeholders into every assistant message and
+                        // retrying, instead of hard-failing a poisoned session.
+                        // Only active when the profile opts in via
+                        // `fill_missing_reasoning = true`.
+                        if fills_missing_reasoning
+                            && !reasoning_repaired
+                            && !saw_output
+                            && is_missing_reasoning_replay_error(&error_str)
+                        {
+                            jcode_base::logging::warn(&format!(
+                                "Anthropic-format gateway requires reasoning_content replay ({}); injecting elided thinking blocks and retrying",
+                                e
+                            ));
+                            inject_elided_reasoning_blocks(&mut request);
+                            reasoning_repaired = true;
                             last_error = Some(e);
                             continue;
                         }
@@ -870,11 +908,14 @@ impl Provider for NamedAnthropicProvider {
         let model = self.strip_session_profile_prefix(&model).to_string();
         let api_model = strip_1m_suffix(&model).to_string();
 
-        let api_messages = jcode_provider_anthropic::format_messages(
+        let mut api_messages = jcode_provider_anthropic::format_messages(
             messages,
             false,
             self.replays_unsigned_reasoning(),
         );
+        if self.fills_missing_reasoning() {
+            jcode_provider_anthropic::fill_missing_reasoning_blocks(&mut api_messages);
+        }
         let api_tools = jcode_provider_anthropic::format_tools(tools, false, is_cache_ttl_1h());
         let (thinking, output_config, temperature) = self.build_reasoning_request_parts(&model);
 
@@ -1136,6 +1177,56 @@ impl Provider for NamedAnthropicProvider {
             max_tokens_override: self.max_tokens_override,
             extra_body: self.extra_body.clone(),
         })
+    }
+}
+
+/// Detect a gateway rejection that requires `reasoning_content` to be
+/// replayed inside assistant history (DeepSeek-style thinking mode), e.g.
+/// "The reasoning_content in the thinking mode must be passed back to the
+/// API". Wording varies across gateways; match on the stable markers.
+/// `error_str` is expected to already be lowercased.
+fn is_missing_reasoning_replay_error(error_str: &str) -> bool {
+    error_str.contains("reasoning_content") && error_str.contains("passed back")
+}
+
+/// Inject `(elided)` thinking blocks into every assistant message of a
+/// serialized request body that lacks one. Unlike the pre-send repair
+/// (`fill_missing_reasoning_blocks`), no "session already thinks" guard is
+/// needed: the gateway's rejection itself is the signal that replay is
+/// required. Operates on the JSON request body so retries can mutate the
+/// already-serialized request in place.
+fn inject_elided_reasoning_blocks(request: &mut Value) {
+    let Some(messages) = request.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for msg in messages.iter_mut() {
+        let role_matches = msg
+            .get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|role| role == "assistant");
+        if !role_matches {
+            continue;
+        }
+        let Some(content) = msg.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if content.is_empty() {
+            continue;
+        }
+        let has_thinking = content
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) == Some("thinking"));
+        if has_thinking {
+            continue;
+        }
+        content.insert(
+            0,
+            serde_json::json!({
+                "type": "thinking",
+                "thinking": jcode_provider_anthropic::ELIDED_REASONING_PLACEHOLDER,
+                "signature": "",
+            }),
+        );
     }
 }
 
@@ -1457,5 +1548,72 @@ CCH_KEY_MINIMAX=sk-minimax
                 None => jcode_base::env::remove_var(key),
             }
         }
+    }
+
+    #[test]
+    fn missing_reasoning_replay_error_classifier() {
+        assert!(is_missing_reasoning_replay_error(
+            "the reasoning_content in the thinking mode must be passed back to the api"
+        ));
+        assert!(is_missing_reasoning_replay_error(
+            "400 bad request: reasoning_content must be passed back"
+        ));
+        assert!(!is_missing_reasoning_replay_error(
+            "this model does not support the effort parameter"
+        ));
+        assert!(!is_missing_reasoning_replay_error(
+            "503 service unavailable"
+        ));
+        assert!(!is_missing_reasoning_replay_error(
+            "reasoning_content must not be empty"
+        ));
+    }
+
+    #[test]
+    fn inject_elided_reasoning_blocks_fills_only_assistant_messages() {
+        let mut request = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "first"}]},
+                {"role": "user", "content": [{"type": "text", "text": "next"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "kept", "signature": "s"},
+                        {"type": "text", "text": "second"}
+                    ]
+                },
+                {"role": "assistant", "content": [{"type": "text", "text": "third"}]}
+            ]
+        });
+        inject_elided_reasoning_blocks(&mut request);
+
+        let messages = request["messages"].as_array().unwrap();
+        let first = messages[1]["content"].as_array().unwrap();
+        assert_eq!(first[0]["type"], "thinking");
+        assert_eq!(first[0]["thinking"], jcode_provider_anthropic::ELIDED_REASONING_PLACEHOLDER);
+        assert_eq!(first[0]["signature"], "");
+        assert_eq!(first.len(), 2, "placeholder prepended, text kept");
+
+        let kept = messages[3]["content"].as_array().unwrap();
+        assert_eq!(kept.len(), 2, "message that already thinks is untouched");
+        assert_eq!(kept[0]["thinking"], "kept");
+
+        let third = messages[4]["content"].as_array().unwrap();
+        assert_eq!(third[0]["type"], "thinking");
+    }
+
+    #[test]
+    fn inject_elided_reasoning_blocks_is_idempotent() {
+        let mut request = serde_json::json!({
+            "messages": [
+                {"role": "assistant", "content": [{"type": "text", "text": "only"}]}
+            ]
+        });
+        inject_elided_reasoning_blocks(&mut request);
+        let first_pass = request.clone();
+        inject_elided_reasoning_blocks(&mut request);
+        assert_eq!(request, first_pass, "second pass must not double-inject");
     }
 }
