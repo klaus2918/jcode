@@ -1,5 +1,7 @@
 # Crate 归属与模块化边界
 
+> **注（2026-08-16）**：以下独立类型 crate 已随 feature-simplification 精简合并：`jcode-gateway-types` → `jcode-base/src/gateway/types.rs`、`jcode-ambient-types` → `jcode-usage-types`、`jcode-batch-types` 与 `jcode-side-panel-types` → `jcode-protocol`、`jcode-tui-tool-display` → `jcode-tui/src/tui/tool_display.rs`、`jcode-update-core` → `jcode-app-core/src/update_core.rs`。本文的归属规则与编译速度方法论仍然有效；验证命令中涉及已删 crate 的请按新家园调整 `-p` 参数。
+
 本文档定义保持 `jcode` 模块化而不让共享 crate 变成倾倒场的目标结构。它刻意实用：决定是否把类型、助手或行为移出根 crate 时使用它。
 
 ## 目标

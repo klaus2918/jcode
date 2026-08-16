@@ -1,3 +1,6 @@
+//! Tool-name display mapping (merged from the removed jcode-tui-tool-display
+//! crate, feature-simplification #33 / M-3, 2026-08-16).
+
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Map provider-side tool names to internal display names.

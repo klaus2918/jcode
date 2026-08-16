@@ -1,3 +1,7 @@
+//! Batch progress types (merged from the removed jcode-batch-types crate,
+//! feature-simplification #35 / M-5, 2026-08-16). Hosted in jcode-protocol and
+//! re-exported by jcode-base::bus for the tool/server layer.
+
 use jcode_message_types::ToolCall;
 use serde::{Deserialize, Serialize};
 

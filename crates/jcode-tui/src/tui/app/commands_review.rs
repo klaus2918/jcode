@@ -460,9 +460,9 @@ pub(super) fn build_autoreview_startup_message(parent_session_id: &str) -> Strin
 Your job is to inspect the just-finished work and decide whether a review is needed.\n\
 \n\
 First read only the conversation history you actually need:\n\
-1. Use `conversation_search` with `stats=true` to learn the history size.\n\
-2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
-3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request or acceptance criteria.\n\
+1. Use `session_search` (include_current=true) to inspect the relevant history for this session.\n\
+2. Read the most recent turns from your session context (roughly the last 6-12 turns), widening only if needed.\n\
+3. If requirements are unclear, use `session_search` to find the latest relevant user request or acceptance criteria.\n\
 \n\
 {}\
 Then determine whether review is needed. Review is needed if the recent work likely changed code, config, docs, tests, tooling behavior, or made technical claims worth validating. If the recent turn was purely conversational or administrative, no review is needed.\n\
@@ -496,9 +496,9 @@ Your job is to act like a strong completion manager/reviewer for the parent agen
 Your purpose is not just to critique. Your purpose is to decide whether the parent agent should keep going, and if so, tell it exactly what to do next. Only tell it to stop when the user's best likely intent has been carried through thoughtfully and completely.\n\
 \n\
 First read only the conversation history you actually need:\n\
-1. Use `conversation_search` with `stats=true` to learn the history size.\n\
-2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
-3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
+1. Use `session_search` (include_current=true) to inspect the relevant history for this session.\n\
+2. Read the most recent turns from your session context (roughly the last 6-12 turns), widening only if needed.\n\
+3. If requirements are unclear, use `session_search` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
 \n\
 {}{}\
 Then determine whether a judgment pass is needed. It is needed if the recent work likely changed code, docs, tests, tooling behavior, repo state, or made claims about what was completed. If the recent turn was purely conversational or administrative, no judgment is needed.\n\
@@ -536,9 +536,9 @@ pub(super) fn build_review_startup_message(parent_session_id: &str) -> String {
 Your job is to inspect the recent work, determine whether a review is needed, and perform that review if needed.\n\
 \n\
 First read only the conversation history you actually need:\n\
-1. Use `conversation_search` with `stats=true` to learn the history size.\n\
-2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
-3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request or acceptance criteria.\n\
+1. Use `session_search` (include_current=true) to inspect the relevant history for this session.\n\
+2. Read the most recent turns from your session context (roughly the last 6-12 turns), widening only if needed.\n\
+3. If requirements are unclear, use `session_search` to find the latest relevant user request or acceptance criteria.\n\
 \n\
 {}\
 Then determine whether review is needed. Review is needed if the recent work likely changed code, config, docs, tests, tooling behavior, or made technical claims worth validating. If the recent turn was purely conversational or administrative, no review is needed.\n\
@@ -572,9 +572,9 @@ Your job is to inspect the recent work, determine whether a judgment pass is nee
 {}\
 \n\
 First read only the conversation history you actually need:\n\
-1. Use `conversation_search` with `stats=true` to learn the history size.\n\
-2. Read the most recent turns with `conversation_search turns` (start with roughly the last 6-12 turns, then widen only if needed).\n\
-3. If requirements are unclear, use `conversation_search query` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
+1. Use `session_search` (include_current=true) to inspect the relevant history for this session.\n\
+2. Read the most recent turns from your session context (roughly the last 6-12 turns), widening only if needed.\n\
+3. If requirements are unclear, use `session_search` to find the latest relevant user request, constraints, preferences, or acceptance criteria.\n\
 \n\
 {}\
 Then determine whether a judgment pass is needed. It is needed if the recent work likely changed code, docs, tests, tooling behavior, repo state, or made claims about what was completed. If the recent turn was purely conversational or administrative, no judgment is needed.\n\

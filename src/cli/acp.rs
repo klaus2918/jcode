@@ -1060,7 +1060,7 @@ pub(crate) fn tool_kind(name: &str) -> &'static str {
         "read" => "read",
         "write" | "edit" | "multiedit" | "patch" | "apply_patch" => "edit",
         "bash" | "bg" | "selfdev" => "execute",
-        "agentgrep" | "grep" | "glob" | "ls" | "session_search" | "conversation_search" => "search",
+        "agentgrep" | "grep" | "glob" | "ls" | "session_search" => "search",
         "webfetch" | "websearch" | "codesearch" => "fetch",
         _ => "other",
     }

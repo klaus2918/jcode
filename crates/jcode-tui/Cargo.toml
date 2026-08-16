@@ -80,7 +80,6 @@ jcode-tui-session-picker = { path = "../jcode-tui-session-picker", features = ["
 jcode-tui-style = { path = "../jcode-tui-style" }
 terminal-colorsaurus = "1.0"
 jcode-tui-permissions = { path = "../jcode-tui-permissions" }
-jcode-tui-tool-display = { path = "../jcode-tui-tool-display" }
 jcode-tui-usage-overlay = { path = "../jcode-tui-usage-overlay" }
 jcode-terminal-image = { path = "../jcode-terminal-image" }
 jcode-tui-workspace = { path = "../jcode-tui-workspace" }

@@ -5,7 +5,6 @@ mod bash;
 mod batch;
 mod bg;
 mod communicate;
-mod conversation_search;
 mod debug_socket;
 mod edit;
 mod goal;
@@ -274,11 +273,6 @@ impl Registry {
             &mut tools_map,
             "batch",
             batch::BatchTool::new(registry.clone()),
-        );
-        Self::insert_tool(
-            &mut tools_map,
-            "conversation_search",
-            conversation_search::ConversationSearchTool::new(compaction),
         );
         let session_tools_ms = session_tools_start.elapsed().as_millis();
 

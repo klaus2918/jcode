@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-pub use jcode_side_panel_types::{
+pub use jcode_protocol::{
     PersistedSidePanelPage, PersistedSidePanelState, SidePanelPage, SidePanelPageFormat,
     SidePanelPageSource, SidePanelSnapshot, snapshot_is_empty,
 };

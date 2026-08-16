@@ -663,13 +663,9 @@ jcode --resume fox
 # Run as a persistent background server, then attach more clients
 jcode serve
 jcode connect
-
-# Send voice input from your configured STT command
-jcode dictate
 ```
 
-jcode supports interactive TUI use, non-interactive runs, persistent server/client workflows,
-and hotkey-friendly dictation without requiring a bundled speech-to-text stack.
+jcode supports interactive TUI use, non-interactive runs, and persistent server/client workflows.
 
 <div align="center">
 

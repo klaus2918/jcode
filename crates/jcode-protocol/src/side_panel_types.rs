@@ -1,3 +1,8 @@
+//! Side-panel page types (merged from the removed jcode-side-panel-types
+//! crate, feature-simplification #31 / M-1, 2026-08-16). Hosted in jcode-protocol
+//! because jcode-base already depends on jcode-protocol; re-exported by
+//! jcode-base::side_panel for the TUI/tool layer.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

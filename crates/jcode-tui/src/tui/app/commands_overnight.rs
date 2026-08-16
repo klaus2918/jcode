@@ -13,6 +13,11 @@ const OVERNIGHT_ERROR_LIMIT: u8 = 2;
 const OVERNIGHT_MAX_POKES: u16 = 48;
 
 pub(super) fn handle_overnight_command(app: &mut App, trimmed: &str) -> bool {
+    // feature-simplification (S-7): overnight coordinator default-off, code
+    // retained. Enable with JCODE_OVERNIGHT_ENABLED=1.
+    if std::env::var_os("JCODE_OVERNIGHT_ENABLED").is_none() {
+        return false;
+    }
     let Some(command) = crate::overnight::parse_overnight_command(trimmed) else {
         return false;
     };

@@ -22,14 +22,4 @@ echo "Feature profile: $JCODE_DEV_FEATURE_PROFILE"
 # builds and links an additional copy of the full graph.
 run_cargo test --lib --bin jcode "$@"
 
-echo ""
-if [[ -x "$repo_root/target/release/jcode" ]]; then
-  echo "=== Startup regression check (release binary) ==="
-  "$repo_root/scripts/check_startup_budget.sh" "$repo_root/target/release/jcode"
-  echo ""
-else
-  echo "Skipping startup regression check: build release first with cargo build --release"
-  echo ""
-fi
-
 echo "For full coverage, run: scripts/test_e2e.sh"

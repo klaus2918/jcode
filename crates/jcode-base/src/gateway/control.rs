@@ -283,7 +283,7 @@ pub fn create_pairing_invite() -> Result<PairingInvite> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jcode_gateway_types::PairedDevice;
+    use crate::gateway::types::PairedDevice;
 
     fn device(id: &str, name: &str) -> PairedDevice {
         PairedDevice {

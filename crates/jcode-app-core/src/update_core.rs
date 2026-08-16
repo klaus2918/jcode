@@ -1,3 +1,6 @@
+//! Update-path helpers (merged from the removed jcode-update-core crate,
+//! feature-simplification #36 / M-6, 2026-08-16).
+
 /// Summary emitted when `git pull` cannot reconcile the local and upstream
 /// histories on its own (diverged branches, non-fast-forward, unrelated
 /// histories). Callers use this to recognize a divergence and offer a merge

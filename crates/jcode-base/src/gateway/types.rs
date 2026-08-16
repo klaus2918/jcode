@@ -1,3 +1,6 @@
+//! Device pairing types (merged from the removed `jcode-gateway-types` crate,
+//! feature-simplification #16 / S-1).
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

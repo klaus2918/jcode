@@ -1,5 +1,7 @@
 # jcode 上的 Terminal-Bench 2.0
 
+> **注（2026-08-16）**：辅助脚本 `run_terminal_bench_harbor.sh` 与 `run_terminal_bench_campaign.py` 已随 feature-simplification 精简移除；核心适配器 `scripts/jcode_harbor_agent.py` 与 `scripts/build_linux_compat.sh` 仍然存在，可用 Harbor CLI 直接驱动。
+
 本文档描述目前通过 Harbor 在 Terminal-Bench 2.0 上运行 jcode 的最干净可用路径。
 
 ## 仓库里有什么

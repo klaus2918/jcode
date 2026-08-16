@@ -49,7 +49,6 @@ proctitle = "0.1"
 
 # Embeddings (local inference) - behind feature flag (163 crates, slow to compile)
 jcode-embedding = { path = "../jcode-embedding", optional = true }
-jcode-gateway-types = { path = "../jcode-gateway-types" }
 jcode-import-core = { path = "../jcode-import-core" }
 jcode-logging = { path = "../jcode-logging" }
 
@@ -88,7 +87,6 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 
 # NOTE: PDF text extraction was removed (crates/jcode-pdf deleted).
 jcode-background-types = { path = "../jcode-background-types" }
-jcode-batch-types = { path = "../jcode-batch-types" }
 jcode-build-meta = { path = "../jcode-build-meta" }
 jcode-compaction-core = { path = "../jcode-compaction-core" }
 jcode-config-types = { path = "../jcode-config-types" }
@@ -102,7 +100,6 @@ jcode-storage = { path = "../jcode-storage" }
 jcode-task-types = { path = "../jcode-task-types" }
 jcode-tool-core = { path = "../jcode-tool-core" }
 jcode-tool-types = { path = "../jcode-tool-types" }
-jcode-side-panel-types = { path = "../jcode-side-panel-types" }
 
 # Gzip decoding (used by provider import/helpers)
 tempfile = "3"

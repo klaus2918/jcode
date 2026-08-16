@@ -138,7 +138,6 @@ const AUTO_ALLOWED: &[&str] = &[
     "todo",
     "todowrite",
     "todoread",
-    "conversation_search",
     "session_search",
     "codesearch",
 ];
@@ -556,7 +555,6 @@ mod tests {
             assert_eq!(sys.classify("todo"), ActionTier::AutoAllowed);
             assert_eq!(sys.classify("todowrite"), ActionTier::AutoAllowed);
             assert_eq!(sys.classify("todoread"), ActionTier::AutoAllowed);
-            assert_eq!(sys.classify("conversation_search"), ActionTier::AutoAllowed);
             assert_eq!(sys.classify("session_search"), ActionTier::AutoAllowed);
             assert_eq!(sys.classify("codesearch"), ActionTier::AutoAllowed);
         });

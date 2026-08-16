@@ -17,10 +17,11 @@ use crate::external_auth::{
     can_prompt_for_external_auth, external_auth_blocked_message, prompt_to_trust_external_auth,
 };
 
-/// 已废弃的 Claude Code CLI 子进程传输的 CLI id（兼容入口）。
+/// 已废弃的 Claude Code CLI 子进程传输的 CLI id（兼容别名）。
 ///
 /// 散落在 provider_init/login/auth_test/commands 的该魔法字符串统一引用
-/// 此常量，避免改名或删除时遗漏。
+/// 此常量，避免改名或删除时遗漏。M-15 收敛方向：保留为兼容别名（解析为
+/// Claude 凭据路径），不参与 `resolve_provider_input` 的注册表/配置解析链。
 pub const CLAUDE_SUBPROCESS_ID: &str = "claude-subprocess";
 
 /// 运行时解析的 provider 选择（resonix 思路：二进制不硬编码厂商名，
@@ -39,10 +40,12 @@ pub enum ResolvedProviderInput {
 ///
 /// 解析链（与 resonix 一致：核心只认识注册表与配置，不认识厂商名）：
 /// 1. `auto`/空 → 自动探测
-/// 2. `claude-subprocess` → 废弃兼容入口
-/// 3. 登录 provider 注册表（`LOGIN_PROVIDERS`，按 id/alias）→ 原生登录 provider
-/// 4. 用户配置 `[providers.<name>]` → 命名配置 profile
-/// 5. 未命中 → 报错并提示 `jcode provider add`
+/// 2. 登录 provider 注册表（`LOGIN_PROVIDERS`，按 id/alias）→ 原生登录 provider
+/// 3. 用户配置 `[providers.<name>]` → 命名配置 profile
+/// 4. 未命中 → 报错并提示 `jcode provider add`
+///
+/// `claude-subprocess` 为废弃传输的兼容别名，不在此链中解析（见
+/// `CLAUDE_SUBPROCESS_ID` 常量注，M-15 保留别名语义）。
 pub fn resolve_provider_input(input: &str) -> Result<ResolvedProviderInput> {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {

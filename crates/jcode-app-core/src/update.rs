@@ -1,10 +1,10 @@
 use crate::build;
-use anyhow::{Context, Result};
-use jcode_update_core::summarize_git_pull_failure;
-pub use jcode_update_core::{
+use crate::update_core::summarize_git_pull_failure;
+pub use crate::update_core::{
     DownloadProgress, GIT_PULL_DIVERGED_SUMMARY, format_download_progress_bar,
     summarize_update_error, summary_is_divergence,
 };
+use anyhow::{Context, Result};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -389,9 +389,9 @@ mod tests {
         let stderr = b"hint: You have divergent branches and need to specify how to reconcile them.\nfatal: Need to specify how to reconcile divergent branches.\n";
         assert_eq!(
             summarize_git_pull_failure(stderr),
-            jcode_update_core::GIT_PULL_DIVERGED_SUMMARY
+            crate::update_core::GIT_PULL_DIVERGED_SUMMARY
         );
-        assert!(jcode_update_core::summary_is_divergence(
+        assert!(crate::update_core::summary_is_divergence(
             &summarize_git_pull_failure(stderr)
         ));
     }

@@ -62,6 +62,8 @@
 
 ### 当前代码组织
 
+> **注（2026-08-16）**：下列独立类型 crate 已随 feature-simplification 精简合并：`jcode-ambient-types` → `jcode-usage-types`；`jcode-gateway-types` → `jcode-base/src/gateway/types.rs`；`jcode-batch-types`、`jcode-side-panel-types` → `jcode-protocol`；`jcode-tui-tool-display` → `jcode-tui/src/tui/tool_display.rs`；`jcode-update-core` → `jcode-app-core/src/update_core.rs`。下方成员清单为历史快照，其余分组与依赖边界规则保持不变。
+
 当前代码组织是混合的：
 
 - **根 crate `jcode`** 仍然包含大多数产品逻辑。

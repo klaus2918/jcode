@@ -314,6 +314,15 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             commands::run_ambient_command(map_ambient_subcommand(subcmd)).await?;
         }
         Some(Command::Pair { list, revoke }) => {
+            // feature-simplification (S-2): device-pairing surface default-off,
+            // code retained. Enable with JCODE_PAIR_ENABLED=1.
+            if std::env::var_os("JCODE_PAIR_ENABLED").is_none() {
+                println!(
+                    "jcode pair is disabled in this build (feature-simplification). \
+                     Set JCODE_PAIR_ENABLED=1 to enable device pairing."
+                );
+                return Ok(());
+            }
             commands::run_pair_command(list, revoke)?;
         }
         Some(Command::Permissions) => {
@@ -329,6 +338,15 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             centered,
             no_centered,
         }) => {
+            // feature-simplification (S-10): replay surface default-off, code
+            // retained. Enable with JCODE_REPLAY_ENABLED=1.
+            if std::env::var_os("JCODE_REPLAY_ENABLED").is_none() {
+                println!(
+                    "jcode replay is disabled in this build (feature-simplification). \
+                     Set JCODE_REPLAY_ENABLED=1 to enable replay."
+                );
+                return Ok(());
+            }
             let centered_override = if centered {
                 Some(true)
             } else if no_centered {

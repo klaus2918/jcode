@@ -13,14 +13,11 @@ members = [
     "crates/jcode-base",
     "crates/jcode-tui",
     "crates/jcode-build-meta",
-    "crates/jcode-ambient-types",
     "crates/jcode-auth-types",
     "crates/jcode-embedding",
-    "crates/jcode-gateway-types",
     "crates/jcode-import-core",
     "crates/jcode-logging",
     "crates/jcode-background-types",
-    "crates/jcode-batch-types",
     "crates/jcode-build-support",
     "crates/jcode-compaction-core",
     "crates/jcode-config-types",
@@ -36,7 +33,6 @@ members = [
     "crates/jcode-selfdev-types",
     "crates/jcode-session-types",
     "crates/jcode-storage",
-    "crates/jcode-side-panel-types",
     "crates/jcode-azure-auth",
     "crates/jcode-notify-email",
     "crates/jcode-provider-metadata",
@@ -63,9 +59,7 @@ members = [
     "crates/jcode-tui-session-picker",
     "crates/jcode-tui-style",
     "crates/jcode-tui-permissions",
-    "crates/jcode-tui-tool-display",
     "crates/jcode-tui-usage-overlay",
-    "crates/jcode-update-core",
     "crates/jcode-terminal-launch",
     "crates/jcode-terminal-image",
     "crates/jcode-tui-workspace",
@@ -83,6 +77,7 @@ path = "src/main.rs"
 [[bin]]
 name = "jcode-harness"
 path = "src/bin/harness.rs"
+required-features = ["dev-bins"]
 
 [[bin]]
 name = "session_memory_bench"

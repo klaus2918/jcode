@@ -2092,14 +2092,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jcode-ambient-types"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
-]
-
-[[package]]
 name = "jcode-app-core"
 version = "0.1.0"
 dependencies = [
@@ -2115,7 +2107,6 @@ dependencies = [
  "futures",
  "glob",
  "jcode-agent-runtime",
- "jcode-ambient-types",
  "jcode-base",
  "jcode-build-meta",
  "jcode-build-support",
@@ -2134,7 +2125,7 @@ dependencies = [
  "jcode-terminal-image",
  "jcode-tool-core",
  "jcode-tool-types",
- "jcode-update-core",
+ "jcode-usage-types",
  "libc",
  "open",
  "rand 0.9.3",
@@ -2197,13 +2188,11 @@ dependencies = [
  "jcode-auth-types",
  "jcode-azure-auth",
  "jcode-background-types",
- "jcode-batch-types",
  "jcode-build-meta",
  "jcode-compaction-core",
  "jcode-config-types",
  "jcode-core",
  "jcode-embedding",
- "jcode-gateway-types",
  "jcode-import-core",
  "jcode-logging",
  "jcode-memory-types",
@@ -2219,7 +2208,6 @@ dependencies = [
  "jcode-provider-openrouter-runtime",
  "jcode-render-core",
  "jcode-session-types",
- "jcode-side-panel-types",
  "jcode-storage",
  "jcode-task-types",
  "jcode-terminal-image",
@@ -2248,14 +2236,6 @@ dependencies = [
  "urlencoding",
  "uuid",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "jcode-batch-types"
-version = "0.1.0"
-dependencies = [
- "jcode-message-types",
- "serde",
 ]
 
 [[package]]
@@ -2325,13 +2305,6 @@ dependencies = [
 [[package]]
 name = "jcode-fuzzy"
 version = "0.1.0"
-
-[[package]]
-name = "jcode-gateway-types"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "jcode-import-core"
@@ -2411,14 +2384,12 @@ name = "jcode-protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "jcode-batch-types",
  "jcode-config-types",
  "jcode-message-types",
  "jcode-plan",
  "jcode-provider-core",
  "jcode-selfdev-types",
  "jcode-session-types",
- "jcode-side-panel-types",
  "rand 0.9.3",
  "serde",
  "serde_json",
@@ -2616,13 +2587,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jcode-side-panel-types"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "jcode-storage"
 version = "0.1.0"
 dependencies = [
@@ -2721,7 +2685,6 @@ dependencies = [
  "jcode-tui-render",
  "jcode-tui-session-picker",
  "jcode-tui-style",
- "jcode-tui-tool-display",
  "jcode-tui-usage-overlay",
  "jcode-tui-visual-debug",
  "jcode-tui-workspace",
@@ -2850,13 +2813,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jcode-tui-tool-display"
-version = "0.1.0"
-dependencies = [
- "unicode-width",
-]
-
-[[package]]
 name = "jcode-tui-usage-overlay"
 version = "0.1.0"
 dependencies = [
@@ -2889,13 +2845,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "jcode-update-core"
-version = "0.1.0"
-
-[[package]]
 name = "jcode-usage-types"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
 ]

@@ -254,7 +254,7 @@
 - [ ] 分解 `src/tool/grep.rs` 中 >100 LOC 的函数（1 个超大函数）
 - [ ] 分解 `src/tool/goal.rs` 中 >100 LOC 的函数（1 个超大函数）
 - [ ] 分解 `src/tool/gmail.rs` 中 >100 LOC 的函数（1 个超大函数）
-- [ ] 分解 `src/tool/conversation_search.rs` 中 >100 LOC 的函数（1 个超大函数）
+- [x] ~~分解 `src/tool/conversation_search.rs` 中 >100 LOC 的函数（1 个超大函数）~~（工具已随 feature-simplification 移除，2026-08-16）
 - [ ] 分解 `src/tool/bg.rs` 中 >100 LOC 的函数（1 个超大函数）
 - [ ] 分解 `src/tool/batch.rs` 中 >100 LOC 的函数（1 个超大函数）
 - [ ] 分解 `src/setup_hints/windows_setup.rs` 中 >100 LOC 的函数（1 个超大函数）
@@ -358,7 +358,7 @@
 - [ ] 加固 `src/provider/antigravity.rs`（`unwrap`: 0, `expect`: 6, `panic!`: 0, `todo!`: 0, `unimplemented!`: 0, 总计: 6）
 - [ ] 加固 `src/logging.rs`（`unwrap`: 0, `expect`: 6, `panic!`: 0, `todo!`: 0, `unimplemented!`: 0, 总计: 6）
 - [ ] 加固 `src/tool/mcp.rs`（`unwrap`: 4, `expect`: 1, `panic!`: 0, `todo!`: 0, `unimplemented!`: 0, 总计: 5）
-- [ ] 加固 `src/tool/conversation_search.rs`（`unwrap`: 5, `expect`: 0, `panic!`: 0, `todo!`: 0, `unimplemented!`: 0, 总计: 5）
+- [x] ~~加固 `src/tool/conversation_search.rs`（`unwrap`: 5, `expect`: 0, `panic!`: 0, `todo!`: 0, `unimplemented!`: 0, 总计: 5）~~（工具已随 feature-simplification 移除，2026-08-16）
 - [ ] 加固 `src/telegram.rs`（`unwrap`: 5, `expect`: 0, `panic!`: 0, `todo!`: 0, `unimplemented!`: 0, 总计: 5）
 - [ ] 加固 `src/server/debug_command_exec.rs`（`unwrap`: 0, `expect`: 4, `panic!`: 0, `todo!`: 0, `unimplemented!`: 1, 总计: 5）
 - [ ] 加固 `src/provider/pricing.rs`（`unwrap`: 0, `expect`: 5, `panic!`: 0, `todo!`: 0, `unimplemented!`: 0, 总计: 5）

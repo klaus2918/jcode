@@ -76,9 +76,11 @@ pub(crate) struct Args {
     #[arg(long, global = true)]
     pub(crate) no_selfdev: bool,
 
-    /// Start the onboarding simulator on launch (same as `/onboarding-sim`).
+    /// Start the onboarding simulator on launch (dev tool).
     /// Steps through every first-run onboarding screen with synthetic data;
-    /// never touches real auth state.
+    /// never touches real auth state. The `/onboarding-preview` and
+    /// `/onboarding-sim` slash commands were removed with feature-simplification
+    /// (2026-08-16); this flag remains for dev/regression use.
     #[arg(long = "onboarding-sim")]
     pub(crate) onboarding_sim: bool,
 

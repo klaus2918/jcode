@@ -82,6 +82,8 @@ pub(crate) mod prepare;
 mod smoothness;
 #[path = "ui_todo_changes.rs"]
 mod todo_changes;
+#[path = "tool_display.rs"]
+mod tool_display;
 #[path = "ui_tools.rs"]
 pub(crate) mod tools_ui;
 #[path = "ui_transitions.rs"]

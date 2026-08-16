@@ -4,8 +4,8 @@ use super::{dim_color, rgb, tool_color, truncate_line_preserving_suffix_to_width
 use ratatui::prelude::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub(super) use jcode_tui_tool_display::concise_tool_error_summary;
-pub(crate) use jcode_tui_tool_display::{
+pub(super) use super::tool_display::concise_tool_error_summary;
+pub(crate) use super::tool_display::{
     canonical_tool_name, is_edit_tool_name, resolve_display_tool_name, tool_output_looks_failed,
 };
 
@@ -1185,23 +1185,6 @@ pub(super) fn get_tool_summary_with_budget(
                 )
             })
             .unwrap_or_default(),
-        "conversation_search" => {
-            if let Some(q) = tool.input.get("query").and_then(|v| v.as_str()) {
-                format!(
-                    "'{}'",
-                    truncate_query_display(q, bounded(40).saturating_sub(2))
-                )
-            } else if tool
-                .input
-                .get("stats")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                "stats".to_string()
-            } else {
-                "history".to_string()
-            }
-        }
         "lsp" => {
             let op = tool
                 .input

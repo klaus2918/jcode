@@ -13,10 +13,10 @@ echo "Provider: ${provider}"
 echo ""
 echo "Test 1: Tool harness (network tools enabled)"
 if [[ "${JCODE_REMOTE_CARGO:-0}" == "1" ]]; then
-  (cd "$repo_root" && "$cargo_exec" build --bin jcode-harness)
+  (cd "$repo_root" && "$cargo_exec" build --features dev-bins --bin jcode-harness)
   (cd "$repo_root" && ./target/debug/jcode-harness -- --include-network)
 else
-  (cd "$repo_root" && cargo run --bin jcode-harness -- --include-network)
+  (cd "$repo_root" && cargo run --features dev-bins --bin jcode-harness -- --include-network)
 fi
 
 echo ""

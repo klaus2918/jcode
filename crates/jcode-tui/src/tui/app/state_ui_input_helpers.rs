@@ -135,7 +135,6 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public("/goals", "Legacy alias for /initiatives"),
     RegisteredCommand::public("/swarm", "Toggle swarm feature"),
-    RegisteredCommand::public("/overnight", "Run a supervised overnight coordinator"),
     RegisteredCommand::public("/context", "Show the full session context snapshot"),
     RegisteredCommand::public(
         "/skill",
@@ -169,14 +168,6 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "/diff",
         "Cycle or set diff display mode (off/inline/full/pinned/file)",
     ),
-    RegisteredCommand::public(
-        "/onboarding-preview",
-        "Preview the first-run onboarding screen",
-    ),
-    RegisteredCommand::public(
-        "/onboarding-sim",
-        "Walk through every first-run onboarding screen (Alt+5 reset, Cmd+5 toggle)",
-    ),
     RegisteredCommand::public("/reload", "Reload into newest available binary"),
     RegisteredCommand::public("/restart", "Restart with current binary"),
     RegisteredCommand::public("/rebuild", "Background rebuild and auto reload"),
@@ -197,9 +188,6 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/quit", "Exit jcode"),
     RegisteredCommand::public("/cache", "Show cache stats or set cache TTL"),
     RegisteredCommand::public("/debug-visual", "Toggle visual debug overlay"),
-    RegisteredCommand::public("/screenshot-mode", "Toggle screenshot capture mode"),
-    RegisteredCommand::public("/screenshot", "Capture a screenshot debug state"),
-    RegisteredCommand::public("/record", "Record a demo capture"),
     RegisteredCommand::remote("/client-reload", "Force reload client binary"),
     RegisteredCommand::remote("/server-reload", "Force reload server binary"),
     RegisteredCommand::remote(
@@ -976,25 +964,6 @@ impl App {
                     ("/swarm on".into(), "Enable swarm for this session"),
                     ("/swarm off".into(), "Disable swarm for this session"),
                     ("/swarm status".into(), "Show swarm feature status"),
-                ],
-            );
-        }
-
-        if prefix.starts_with("/overnight ") {
-            return self.rank_suggestions(
-                input,
-                vec![
-                    (
-                        "/overnight 7".into(),
-                        "Start a 7-hour supervised overnight run",
-                    ),
-                    (
-                        "/overnight status".into(),
-                        "Show latest overnight run status",
-                    ),
-                    ("/overnight log".into(), "Show recent overnight events"),
-                    ("/overnight review".into(), "Open the generated review page"),
-                    ("/overnight cancel".into(), "Request overnight cancellation"),
                 ],
             );
         }

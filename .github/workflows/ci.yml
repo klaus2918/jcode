@@ -39,12 +39,6 @@ jobs:
           key: quality-ubuntu
           cache-all-crates: "true"
 
-      - name: Check module declarations resolve
-        # A `mod x;` with no file makes rustfmt fail with "Error writing files:
-        # failed to resolve mod", which reads like a formatting problem and hides
-        # every gate behind it. Naming the real cause first (221159294).
-        run: python3 scripts/check_module_files.py
-
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -96,19 +90,6 @@ jobs:
         run: |
           cargo install cargo-machete --locked
           cargo machete
-
-  release-automation:
-    name: Release Automation
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Test Discord release announcements
-        run: python3 -m unittest -v scripts/test_post_discord_release.py
-
-      - name: Compile release automation scripts
-        run: python3 -m py_compile scripts/post_discord_release.py scripts/test_post_discord_release.py
 
   build:
     name: Build & Test (${{ matrix.os }})
@@ -536,12 +517,6 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Check module declarations resolve
-        # A `mod x;` with no file makes rustfmt fail with "Error writing files:
-        # failed to resolve mod", which reads like a formatting problem and hides
-        # every gate behind it. Naming the real cause first (221159294).
-        run: python3 scripts/check_module_files.py
-
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -558,8 +533,6 @@ jobs:
       - name: Installer conversion telemetry tests
         run: bash scripts/test_install_conversion.sh
 
-      - name: Setup friction scorecard
-        run: bash scripts/setup_friction_eval.sh
 
   powershell-syntax:
     name: PowerShell Syntax

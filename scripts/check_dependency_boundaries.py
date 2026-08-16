@@ -54,6 +54,7 @@ def cargo_metadata() -> dict:
         cwd=ROOT,
         check=True,
         text=True,
+        encoding="utf-8",
         stdout=subprocess.PIPE,
     )
     return json.loads(result.stdout)

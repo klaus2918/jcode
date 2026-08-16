@@ -963,6 +963,8 @@ pub struct App {
     /// every ~7s until manually interrupted).
     consecutive_guardrail_stops: u8,
     // When armed by /overnight, automatically continue guarded follow-up turns until wake/wrap.
+    // feature-simplification (S-7): /overnight is default-off (JCODE_OVERNIGHT_ENABLED=1),
+    // so this state can only be armed when the coordinator is explicitly enabled.
     overnight_auto_poke: Option<OvernightAutoPokeState>,
     // Pending cross-provider resend after a failover warning/countdown.
     pending_provider_failover: Option<PendingProviderFailover>,

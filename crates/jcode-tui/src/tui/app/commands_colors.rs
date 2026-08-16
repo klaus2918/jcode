@@ -1,11 +1,11 @@
-//! `/colors`: inspect, configure, and score the TUI color palette.
+﻿//! `/colors`: inspect and configure the TUI color palette.
 //!
 //! Every color the TUI renders is configurable through `[display.colors]` in
 //! `~/.jcode/config.toml`. This command is the interactive front end for that:
-//! it lists the roles with their current values, sets them, resets them, and
-//! (the part that makes tuning tractable) scores the resulting palette with
-//! [`jcode_tui_style::harmony`] so a user gets specific, actionable feedback
-//! instead of trial and error.
+//! it lists the roles with their current values, sets them, and resets them.
+//! The palette harmony/generate/export subcommands were removed with
+//! feature-simplification (S-3, 2026-08-16); the scoring/generation helpers
+//! remain available in `jcode_tui_style` for programmatic use.
 
 use super::{App, DisplayMessage};
 use jcode_tui_style::palette::{ALL_ROLES, Palette, Role, parse_hex, to_hex};
@@ -13,10 +13,7 @@ use jcode_tui_style::palette::{ALL_ROLES, Palette, Role, parse_hex, to_hex};
 const USAGE: &str = "Usage:\n  \
     /colors                       List every configurable color role\n  \
     /colors <role> <#rrggbb>      Set a role's color (saved to config)\n  \
-    /colors reset [role]          Reset one role, or all of them\n  \
-    /colors harmony               Score the palette and list what to fix\n  \
-    /colors generate <#rrggbb>    Build a whole harmonious palette from one seed color\n  \
-    /colors export                Print the palette as config TOML";
+    /colors reset [role]          Reset one role, or all of them";
 
 pub(super) fn handle_colors_command(app: &mut App, trimmed: &str) -> bool {
     let Some(rest) = trimmed
@@ -34,10 +31,7 @@ pub(super) fn handle_colors_command(app: &mut App, trimmed: &str) -> bool {
     let mut words = rest.split_whitespace();
     match words.next() {
         None | Some("list") => list_colors(app),
-        Some("harmony") | Some("score") => show_harmony(app),
-        Some("export") => export_colors(app),
         Some("reset") => reset_colors(app, words.next()),
-        Some("generate") | Some("gen") => generate_palette(app, words.next()),
         Some(role) => match words.next() {
             Some(value) => set_color(app, role, value),
             None => app.push_display_message(DisplayMessage::error(format!(
@@ -73,7 +67,7 @@ fn list_colors(app: &mut App) {
     lines.push(String::new());
     lines.push(
         "Ad hoc shades used by individual widgets follow the role they belong to, so setting a \
-         role recolors its whole family. Run /colors harmony to score the result."
+         role recolors its whole family."
             .to_string(),
     );
     app.push_display_message(DisplayMessage::system(lines.join("\n")));
@@ -88,99 +82,6 @@ fn active_background() -> (u8, u8, u8) {
         (255, 255, 255)
     } else {
         (18, 18, 18)
-    }
-}
-
-fn show_harmony(app: &mut App) {
-    let background = active_background();
-    let report = jcode_tui_style::analyze_harmony(&configured_palette(), background);
-
-    let mut lines = vec![
-        format!(
-            "Palette harmony: {}/100 ({}), hue structure: {}",
-            report.score,
-            report.grade(),
-            report.scheme
-        ),
-        String::new(),
-    ];
-    for criterion in &report.criteria {
-        lines.push(format!(
-            "  {:<20} {:>3}/100  (weight {:.1})",
-            criterion.name, criterion.score, criterion.weight
-        ));
-    }
-
-    let findings = report.top_findings(6);
-    if findings.is_empty() {
-        lines.push(String::new());
-        lines.push("No issues found.".to_string());
-    } else {
-        lines.push(String::new());
-        lines.push("Suggested fixes:".to_string());
-        for finding in findings {
-            lines.push(format!("  - {finding}"));
-        }
-    }
-    app.push_display_message(DisplayMessage::system(lines.join("\n")));
-}
-
-fn export_colors(app: &mut App) {
-    let palette = configured_palette();
-    let mut lines = vec!["[display.colors]".to_string()];
-    for role in ALL_ROLES.iter().copied() {
-        lines.push(format!(
-            "{} = \"{}\"",
-            role.key(),
-            to_hex(palette.rgb(role))
-        ));
-    }
-    app.push_display_message(DisplayMessage::system(lines.join("\n")));
-}
-
-/// Derive and save a full palette from one seed color.
-///
-/// Hand-tuning 22 roles is the thing that stops people from theming at all, so
-/// this does the tuning and reports the resulting harmony score. The generator
-/// targets the *active* background, since a palette that reads well on dark is
-/// usually wrong on light.
-fn generate_palette(app: &mut App, seed: Option<&str>) {
-    let Some(seed) = seed else {
-        app.push_display_message(DisplayMessage::error(format!(
-            "Usage: /colors generate <#rrggbb>\n\n{USAGE}"
-        )));
-        return;
-    };
-    let Some(seed_rgb) = parse_hex(seed) else {
-        app.push_display_message(DisplayMessage::error(format!(
-            "Invalid seed color '{seed}'. Expected a hex color like #8ab4f8."
-        )));
-        return;
-    };
-
-    let background = active_background();
-    let generated = jcode_tui_style::harmony::generate_from_seed(seed_rgb, background);
-    let report = jcode_tui_style::analyze_harmony(&generated, background);
-
-    let result = persist(|colors| {
-        colors.clear();
-        for role in ALL_ROLES.iter().copied() {
-            colors.insert(role.key().to_string(), to_hex(generated.rgb(role)));
-        }
-    });
-
-    match result {
-        Ok(()) => app.push_display_message(DisplayMessage::system(format!(
-            "Generated a {} palette from {} (harmony {}/100, {}). Applied immediately.\n\nRun \
-             /colors to see the roles, /colors harmony for details, or /colors reset to undo.",
-            report.scheme,
-            to_hex(seed_rgb),
-            report.score,
-            report.grade()
-        ))),
-        Err(error) => app.push_display_message(DisplayMessage::error(format!(
-            "Failed to save the generated palette: {error}"
-        ))),
     }
 }
 
@@ -260,7 +161,7 @@ fn harmony_delta_line() -> String {
     let background = active_background();
     let report = jcode_tui_style::analyze_harmony(&configured_palette(), background);
     format!(
-        "Palette harmony is now {}/100 ({}). Run /colors harmony for details.",
+        "Palette harmony is now {}/100 ({}).",
         report.score,
         report.grade()
     )
@@ -280,9 +181,9 @@ mod tests {
 
     #[test]
     fn usage_text_documents_every_subcommand() {
-        for subcommand in ["reset", "harmony", "export"] {
+        for subcommand in ["reset", "list"] {
             assert!(
-                USAGE.contains(subcommand),
+                USAGE.to_lowercase().contains(subcommand),
                 "usage should document {subcommand}"
             );
         }
