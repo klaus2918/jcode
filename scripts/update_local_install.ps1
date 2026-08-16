@@ -81,59 +81,15 @@ function Resolve-JcodeSourceExe {
     return (Resolve-Path -LiteralPath $candidate).Path
 }
 
-# --- PATH helpers (mirror scripts/install.ps1; kept self-contained) ---------
+# --- PATH helpers (shared with install.ps1 / uninstall.ps1) -----------------
+# The low-level PATH helpers (ConvertTo-JcodePathKey, Split/Join-JcodePathList,
+# Get-JcodeManagedPathKeys, Get-JcodeLocalAppDataDir and
+# Send-JcodeEnvironmentChangedBroadcast) live in scripts/lib/path_utils.ps1,
+# which all three scripts dot-source so they manage the same set of PATH keys.
 # PATH is treated as a list of independent entries: we read the persisted user
 # value, split it, drop stale jcode-managed entries, and prepend the launcher
 # dir. We never rebuild PATH from a hard-coded string.
-
-function ConvertTo-JcodePathKey([string]$PathValue) {
-    if (-not $PathValue) { return '' }
-    $clean = [Environment]::ExpandEnvironmentVariables($PathValue.Trim().Trim('"'))
-    if (-not $clean) { return '' }
-    try {
-        $clean = [System.IO.Path]::GetFullPath($clean)
-    } catch {
-    }
-    $clean = $clean.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-    return $clean.ToUpperInvariant()
-}
-
-function Split-JcodePathList([string]$PathValue) {
-    if (-not $PathValue) { return @() }
-    $entries = @()
-    foreach ($entry in ($PathValue -split ';')) {
-        $clean = $entry.Trim().Trim('"')
-        if ($clean) { $entries += $clean }
-    }
-    return $entries
-}
-
-function Join-JcodePathList([string[]]$Entries) {
-    if (-not $Entries -or $Entries.Count -eq 0) { return '' }
-    return ($Entries -join ';')
-}
-
-function Get-JcodeManagedPathKeys([string]$JcodeHome) {
-    $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    $candidates = @(
-        (Join-Path $JcodeHome 'bin'),
-        (Join-Path $JcodeHome 'builds\current-release-lto')
-    )
-    $localAppData = if ($env:LOCALAPPDATA) {
-        $env:LOCALAPPDATA
-    } else {
-        [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    }
-    if ($localAppData) {
-        $candidates += (Join-Path $localAppData 'jcode\bin')
-        $candidates += (Join-Path $localAppData 'jcode')
-    }
-    foreach ($candidate in $candidates) {
-        $key = ConvertTo-JcodePathKey $candidate
-        if ($key) { [void]$keys.Add($key) }
-    }
-    return $keys
-}
+. (Join-Path $PSScriptRoot 'lib\path_utils.ps1')
 
 function Resolve-JcodePathUpdate {
     param(
@@ -167,32 +123,6 @@ function Resolve-JcodePathUpdate {
         AddedLauncherEntry = $true
         LauncherDir = $LauncherDir
     }
-}
-
-function Send-JcodeEnvironmentChangedBroadcast {
-    if (-not ("Jcode.EnvironmentBroadcast" -as [type])) {
-        Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-namespace Jcode {
-    public static class EnvironmentBroadcast {
-        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern IntPtr SendMessageTimeout(
-            IntPtr hWnd,
-            UInt32 Msg,
-            UIntPtr wParam,
-            string lParam,
-            UInt32 fuFlags,
-            UInt32 uTimeout,
-            out UIntPtr lpdwResult);
-    }
-}
-"@
-    }
-
-    $result = [UIntPtr]::Zero
-    [Jcode.EnvironmentBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result) | Out-Null
-    return $true
 }
 
 # --- Main --------------------------------------------------------------------

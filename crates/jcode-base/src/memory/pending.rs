@@ -437,7 +437,7 @@ pub(super) fn finish_memory_check(session_id: &str) {
 
 #[cfg(test)]
 pub(super) fn insert_pending_memory_for_test(session_id: &str, pending: PendingMemory) {
-    let mut guard = PENDING_MEMORY.lock().expect("pending memory lock");
+    let mut guard = PENDING_MEMORY.lock().unwrap_or_else(|e| e.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
     map.insert(session_id.to_string(), pending);
 }

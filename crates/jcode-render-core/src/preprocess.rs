@@ -115,7 +115,11 @@ fn promote_standalone_inline_math(text: &str) -> String {
             .strip_suffix('\n')
             .unwrap_or(close)
             .trim_end_matches('\r');
-        let close_start = close_logical.rfind('$').expect("matched closing marker");
+        let Some(close_start) = close_logical.rfind('$') else {
+            out.push_str(close);
+            index = close_index + 1;
+            continue;
+        };
         out.push_str(&close[..close_start]);
         out.push_str("$$");
         out.push_str(&close[close_start + 1..]);
@@ -427,7 +431,7 @@ fn normalize_latex_delimiters_and_environments(text: &str) -> String {
 
     while index < text.len() {
         let rest = &text[index..];
-        let ch = rest.chars().next().expect("index stays on a char boundary");
+        let Some(ch) = rest.chars().next() else { break };
 
         if ch == '\n' {
             out.push(ch);

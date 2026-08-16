@@ -3290,7 +3290,7 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
             app.push_display_message(DisplayMessage {
                 role: "system".to_string(),
                 content: format!(
-                    "Opening config in editor...\n{} {}\n\n*Restart jcode after editing for changes to take effect.*",
+                    "Opening config in editor...\n{} {}\n\n保存后大部分设置即时生效（keybindings、主题、颜色、provider 端点等自动对账）；主题为 auto 时保持启动检测结果，个别启动期设置仍需重启。",
                     editor,
                     path.display()
                 ),
@@ -3308,15 +3308,27 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
             match parts.next() {
                 Some(bin) => {
                     let extra: Vec<&str> = parts.collect();
-                    if let Err(e) = std::process::Command::new(bin)
+                    match std::process::Command::new(bin)
                         .args(&extra)
                         .arg(&path)
                         .spawn()
                     {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Failed to launch editor '{}': {}",
-                            editor, e
-                        )));
+                        Ok(_) => {
+                            // The editor owns the file from here on (this process
+                            // cannot observe when the user saves). Invalidate the
+                            // config cache so the next config() call re-reads the
+                            // file unconditionally instead of waiting out the
+                            // 500ms fingerprint throttle, and let the reload
+                            // listeners fire immediately; keybindings/theme/colors
+                            // then hot-apply as soon as the save lands.
+                            Config::invalidate_cache();
+                        }
+                        Err(e) => {
+                            app.push_display_message(DisplayMessage::error(format!(
+                                "Failed to launch editor '{}': {}",
+                                editor, e
+                            )));
+                        }
                     }
                 }
                 None => {

@@ -30,18 +30,143 @@ function Write-Info($msg) { Write-Host $msg -ForegroundColor Blue }
 function Write-Err($msg) { throw "error: $msg" }
 function Write-Warn($msg) { Write-Host "warning: $msg" -ForegroundColor Yellow }
 
-function Get-JcodeLocalAppDataDir {
-    if ($env:LOCALAPPDATA) { return $env:LOCALAPPDATA }
+# --- PATH helpers (scripts/lib/path_utils.ps1) -------------------------------
+# Shared with install.ps1 and update_local_install.ps1 so every jcode script
+# manages the same set of PATH keys (Get-JcodeManagedPathKeys is the union of
+# all layouts). Dot-sourced from scripts/lib/path_utils.ps1 when the repository
+# is present; the inline fallback copies below are kept in sync with that
+# module and only run for the documented `irm <url> | iex` one-liner, which has
+# no local files.
+$pathUtilsPath = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'lib\path_utils.ps1' } else { $null }
+if ($pathUtilsPath -and (Test-Path -LiteralPath $pathUtilsPath)) {
+    . $pathUtilsPath
+} else {
+    function Get-JcodeLocalAppDataDir {
+        if ($env:LOCALAPPDATA) {
+            return $env:LOCALAPPDATA
+        }
 
-    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    if ($localAppData) { return $localAppData }
+        $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+        if ($localAppData) {
+            return $localAppData
+        }
 
-    if ($env:USERPROFILE) { return (Join-Path $env:USERPROFILE "AppData\Local") }
-    return (Join-Path ([Environment]::GetFolderPath("UserProfile")) "AppData\Local")
+        if ($env:USERPROFILE) {
+            return (Join-Path $env:USERPROFILE "AppData\Local")
+        }
+
+        return (Join-Path ([Environment]::GetFolderPath("UserProfile")) "AppData\Local")
+    }
+
+    function Get-DefaultJcodeInstallDir {
+        return (Join-Path (Get-JcodeLocalAppDataDir) "jcode\bin")
+    }
+
+    function ConvertTo-JcodePathKey([string]$PathValue) {
+        if (-not $PathValue) {
+            return ""
+        }
+
+        $clean = [Environment]::ExpandEnvironmentVariables($PathValue.Trim().Trim('"'))
+        if (-not $clean) {
+            return ""
+        }
+
+        try {
+            $clean = [System.IO.Path]::GetFullPath($clean)
+        } catch {
+        }
+
+        $clean = $clean.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        return $clean.ToUpperInvariant()
+    }
+
+    function Split-JcodePathList([string]$PathValue) {
+        if (-not $PathValue) {
+            return @()
+        }
+
+        $entries = @()
+        foreach ($entry in ($PathValue -split ';')) {
+            $clean = $entry.Trim().Trim('"')
+            if ($clean) {
+                $entries += $clean
+            }
+        }
+        return $entries
+    }
+
+    function Join-JcodePathList([string[]]$Entries) {
+        if (-not $Entries -or $Entries.Count -eq 0) {
+            return ""
+        }
+
+        return ($Entries -join ';')
+    }
+
+    function Get-JcodeManagedPathKeys {
+        param(
+            [string]$InstallDir,
+            [string]$JcodeHome
+        )
+
+        $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $candidates = @()
+
+        foreach ($candidate in @($InstallDir, (Get-DefaultJcodeInstallDir))) {
+            if ($candidate) { $candidates += $candidate }
+        }
+
+        $localAppData = Get-JcodeLocalAppDataDir
+        if ($localAppData) {
+            $candidates += (Join-Path $localAppData 'jcode')
+            $candidates += (Join-Path $localAppData 'jcode\bin')
+        }
+
+        foreach ($jcodeHomeCandidate in @($JcodeHome, $env:JCODE_HOME)) {
+            if (-not $jcodeHomeCandidate) { continue }
+            $candidates += (Join-Path $jcodeHomeCandidate 'bin')
+            $candidates += (Join-Path $jcodeHomeCandidate 'builds\current-release-lto')
+        }
+
+        foreach ($candidate in $candidates) {
+            $key = ConvertTo-JcodePathKey $candidate
+            if ($key) {
+                [void]$keys.Add($key)
+            }
+        }
+        return $keys
+    }
+
+    function Send-JcodeEnvironmentChangedBroadcast {
+        if ($env:JCODE_DISABLE_ENV_BROADCAST -eq "1") {
+            return $false
+        }
+
+        if (-not ("Jcode.EnvironmentBroadcast" -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace Jcode {
+    public static class EnvironmentBroadcast {
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd,
+            UInt32 Msg,
+            UIntPtr wParam,
+            string lParam,
+            UInt32 fuFlags,
+            UInt32 uTimeout,
+            out UIntPtr lpdwResult);
+    }
 }
+"@
+        }
 
-function Get-DefaultJcodeInstallDir {
-    return (Join-Path (Get-JcodeLocalAppDataDir) "jcode\bin")
+        $result = [UIntPtr]::Zero
+        [Jcode.EnvironmentBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 0x0002, 5000, [ref]$result) | Out-Null
+        return $true
+    }
 }
 
 function Get-JcodeRoamingAppDataDir {
@@ -87,15 +212,6 @@ function Clear-JcodeHotkeySetupState([string]$UserDataDir) {
     } catch {
         Write-Warn "Could not update hotkey setup state in $setupHintsPath"
     }
-}
-
-function ConvertTo-JcodePathKey([string]$PathValue) {
-    if (-not $PathValue) { return "" }
-    $clean = [Environment]::ExpandEnvironmentVariables($PathValue.Trim().Trim('"'))
-    if (-not $clean) { return "" }
-    try { $clean = [System.IO.Path]::GetFullPath($clean) } catch {}
-    $clean = $clean.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-    return $clean.ToUpperInvariant()
 }
 
 function Test-JcodeSafePurgePath([string]$PathValue) {
@@ -156,30 +272,6 @@ function Test-JcodeManagedExecutablePath([string]$ExecutablePath, [string]$Launc
     return [bool]($buildsKey -and $executableKey.StartsWith($buildsKey + $separator, [System.StringComparison]::OrdinalIgnoreCase))
 }
 
-function Split-JcodePathList([string]$PathValue) {
-    if (-not $PathValue) { return @() }
-    $entries = @()
-    foreach ($entry in ($PathValue -split ';')) {
-        $clean = $entry.Trim().Trim('"')
-        if ($clean) { $entries += $clean }
-    }
-    return $entries
-}
-
-function Join-JcodePathList([string[]]$Entries) {
-    if (-not $Entries -or $Entries.Count -eq 0) { return "" }
-    return ($Entries -join ';')
-}
-
-function Get-JcodeManagedPathKeys([string]$InstallDir) {
-    $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($candidate in @($InstallDir, (Get-DefaultJcodeInstallDir))) {
-        $key = ConvertTo-JcodePathKey $candidate
-        if ($key) { [void]$keys.Add($key) }
-    }
-    return $keys
-}
-
 function Resolve-JcodePathRemoval {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
@@ -207,32 +299,6 @@ function Resolve-JcodePathRemoval {
         RemovedManagedEntries = $removedManaged
         InstallDir = $InstallDir
     }
-}
-
-function Send-JcodeEnvironmentChangedBroadcast {
-    if ($env:JCODE_DISABLE_ENV_BROADCAST -eq "1") { return $false }
-    if (-not ("Jcode.EnvironmentBroadcast" -as [type])) {
-        Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-namespace Jcode {
-    public static class EnvironmentBroadcast {
-        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern IntPtr SendMessageTimeout(
-            IntPtr hWnd,
-            UInt32 Msg,
-            UIntPtr wParam,
-            string lParam,
-            UInt32 fuFlags,
-            UInt32 uTimeout,
-            out UIntPtr lpdwResult);
-    }
-}
-"@
-    }
-    $result = [UIntPtr]::Zero
-    [Jcode.EnvironmentBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 0x0002, 5000, [ref]$result) | Out-Null
-    return $true
 }
 
 function Remove-JcodeUserPath {
@@ -263,6 +329,41 @@ function Remove-JcodeUserPath {
         }
     }
     $update | Add-Member -NotePropertyName Broadcasted -NotePropertyValue $broadcasted
+    return $update
+}
+
+function Test-JcodeIsAdmin {
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+        return [bool]$principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+function Remove-JcodeMachinePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [AllowNull()][string]$CurrentPath
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('CurrentPath')) {
+        $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    }
+
+    $update = Resolve-JcodePathRemoval -InstallDir $InstallDir -CurrentPath $CurrentPath
+    if ($update.RemovedManagedEntries -gt 0) {
+        if (-not (Test-JcodeIsAdmin)) {
+            Write-Warn "Detected jcode entries in the system PATH; rerun as Administrator to remove them"
+            $update | Add-Member -NotePropertyName Skipped -NotePropertyValue $true
+            return $update
+        }
+
+        [Environment]::SetEnvironmentVariable("Path", $update.Path, "Machine")
+        Send-JcodeEnvironmentChangedBroadcast | Out-Null
+        $update | Add-Member -NotePropertyName Skipped -NotePropertyValue $false
+    }
     return $update
 }
 
@@ -312,6 +413,11 @@ if ($Purge -and (Test-Path -LiteralPath $userDataDir)) { $targets += "$userDataD
 $userPathPreview = Resolve-JcodePathRemoval -InstallDir $InstallDir -CurrentPath ([Environment]::GetEnvironmentVariable("Path", "User"))
 if ($userPathPreview.RemovedManagedEntries -gt 0) {
     $targets += "$InstallDir (user PATH entry)"
+}
+
+$machinePathPreview = Resolve-JcodePathRemoval -InstallDir $InstallDir -CurrentPath ([Environment]::GetEnvironmentVariable("Path", "Machine"))
+if ($machinePathPreview.RemovedManagedEntries -gt 0) {
+    $targets += "system PATH jcode entr$(if ($machinePathPreview.RemovedManagedEntries -eq 1) { 'y' } else { 'ies' }) (requires an admin console)"
 }
 
 if ($targets.Count -eq 0) {
@@ -401,6 +507,11 @@ if ($Purge) {
 $pathUpdate = Remove-JcodeUserPath -InstallDir $InstallDir
 if ($pathUpdate.Changed) {
     Write-Info "Removed $($pathUpdate.RemovedManagedEntries) jcode entr$(if ($pathUpdate.RemovedManagedEntries -eq 1) { 'y' } else { 'ies' }) from user PATH"
+}
+
+$machinePathUpdate = Remove-JcodeMachinePath -InstallDir $InstallDir
+if ($machinePathUpdate.RemovedManagedEntries -gt 0 -and -not $machinePathUpdate.Skipped) {
+    Write-Info "Removed $($machinePathUpdate.RemovedManagedEntries) jcode entr$(if ($machinePathUpdate.RemovedManagedEntries -eq 1) { 'y' } else { 'ies' }) from machine PATH"
 }
 
 Write-Info "jcode uninstalled."

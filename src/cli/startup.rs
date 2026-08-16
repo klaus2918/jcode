@@ -48,6 +48,14 @@ pub async fn run() -> Result<()> {
     crate::config::on_config_reloaded(sync_output_style_from_config);
     crate::config::on_config_reloaded(crate::auth::AuthStatus::invalidate_cache);
     crate::config::on_config_reloaded(|| crate::bus::Bus::global().publish_models_updated());
+    crate::config::on_config_reloaded(|| {
+        crate::bus::Bus::global().publish(crate::bus::BusEvent::ConfigReloaded)
+    });
+    // 配置热重载后重建 api_base 已变化的 provider runtimes（server 模板；
+    // 运行中会话的 fork 实例由 server 的 ConfigReloaded bus 消费点对账）。
+    crate::config::on_config_reloaded(
+        crate::provider::reconcile_active_provider_runtimes_with_config,
+    );
 
     // Invert the legacy provider_catalog -> auth dependency: provider_catalog
     // consults registered fallback resolvers, and auth (the higher layer)

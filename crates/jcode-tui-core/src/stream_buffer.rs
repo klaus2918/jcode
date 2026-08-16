@@ -322,11 +322,14 @@ impl StreamBuffer {
                     let available = text.chars().count();
                     let take = char_count.min(available);
                     let chunk = if take == available {
-                        let QueuedOp::Chunk { text, .. } = self.queue.pop_front().expect("front")
-                        else {
-                            unreachable!()
-                        };
-                        text
+                        match self.queue.pop_front() {
+                            Some(QueuedOp::Chunk { text, .. }) => text,
+                            Some(QueuedOp::CloseReasoning) => {
+                                self.queue.push_front(QueuedOp::CloseReasoning);
+                                break;
+                            }
+                            None => break,
+                        }
                     } else {
                         let end = text
                             .char_indices()
@@ -468,8 +471,11 @@ impl SeriesStats {
             stats.p95_gap_ms = percentile_f64(&gaps, 0.95);
             stats.max_gap_ms = gaps.iter().copied().fold(0.0_f64, f64::max);
 
-            let start = events.first().expect("non-empty").at;
-            let span = events.last().expect("non-empty").at.duration_since(start);
+            let (Some(first), Some(last)) = (events.first(), events.last()) else {
+                return stats;
+            };
+            let start = first.at;
+            let span = last.at.duration_since(start);
             stats.span_ms = span.as_secs_f64() * 1000.0;
             let bucket_count = (span.as_millis() as usize / 100).max(1) + 1;
             let mut buckets = vec![0.0_f64; bucket_count];

@@ -192,7 +192,8 @@ jobs:
             }
           }
 
-          & cargo build --locked --release --target aarch64-pc-windows-msvc --no-default-features --features pdf
+          # Embeddings disabled on ARM64: tract-linalg SIMD issue (8eb50ac15)
+          & cargo build --locked --release --target aarch64-pc-windows-msvc --no-default-features
 
       - name: Verify built binary launches
         shell: pwsh

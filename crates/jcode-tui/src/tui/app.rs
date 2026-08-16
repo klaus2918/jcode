@@ -323,6 +323,23 @@ struct PendingProviderFailover {
     deadline: Instant,
 }
 
+/// A local-mode model switch queued while the session was busy (a turn is
+/// running, a turn is pending, or follow-ups are queued). Applied once the
+/// current turn finishes (`finish_turn`), mirroring the server's deferred
+/// agent mutation when the agent lock is busy
+/// (provider_control::spawn_deferred_agent_mutation). Single slot: the
+/// latest request wins.
+#[derive(Debug, Clone)]
+pub(super) enum PendingLocalModelSwitch {
+    /// `/model <name>` request.
+    Named(String),
+    /// Model-picker confirm request (local mode).
+    Route {
+        spec: String,
+        selection: crate::provider::RouteSelection,
+    },
+}
+
 /// An interactive "switch to the next best model/method and resend" offer shown
 /// after a provider turn error (auth failure, broken API key, rate limit, etc.).
 ///
@@ -1354,6 +1371,12 @@ pub struct App {
     model_picker_load_request_id: u64,
     // Pending model switch from picker (for remote mode async processing)
     pending_model_switch: Option<String>,
+    // Pending local-mode model switch while busy (turn running / turn pending /
+    // follow-ups queued): applied by `finish_turn` once the session becomes
+    // idle, mirroring the server's deferred agent mutation. Single slot: the
+    // latest request wins. Local-only; remote switches go through
+    // `pending_model_switch` / `remote_model_switch_in_flight` instead.
+    pending_local_model_switch: Option<PendingLocalModelSwitch>,
     pending_route_selection: Option<crate::provider::RouteSelection>,
     // Reasoning-effort variant chosen together with a model in the picker
     // (e.g. "gpt-5.5 (high)"), staged for remote mode alongside the model

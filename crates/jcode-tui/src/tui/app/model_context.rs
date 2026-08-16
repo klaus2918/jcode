@@ -70,6 +70,117 @@ impl App {
         active_model
     }
 
+    /// Apply a model-picker route selection against the shared provider in
+    /// local mode, shared by the picker confirm path and the busy-deferred
+    /// path. Enforces the same no-op/snapshot/finalize contract as `/model
+    /// <name>`; returns the outcome so callers can drive picker/UI bookkeeping.
+    pub(super) fn apply_local_route_switch(
+        &mut self,
+        spec: &str,
+        selection: &crate::provider::RouteSelection,
+    ) -> LocalRouteSwitchOutcome {
+        let _ = self.session.save();
+        let before_model = self.provider.model();
+        let before_provider = self.provider.name();
+        let before_key = self.session.provider_key.clone();
+        match self.provider.set_route_selection(selection) {
+            Ok(()) => {
+                let active_model = self.provider.model();
+                let after_provider = self.provider.name();
+                let after_key =
+                    crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                        spec,
+                        after_provider,
+                        before_key.as_deref(),
+                    );
+                // Selecting the already-active route is a no-op: keep the warm
+                // provider session instead of resetting it (the same-model
+                // contract /model enforces).
+                if before_model == active_model
+                    && before_provider == after_provider
+                    && before_key == after_key
+                {
+                    self.push_display_message(DisplayMessage::system(format!(
+                        "Already using model: {}",
+                        active_model
+                    )));
+                    self.set_status_notice(format!("Already using model: {}", active_model));
+                    return LocalRouteSwitchOutcome::AlreadyUsing;
+                }
+                let active_model = self.finalize_model_switch(spec);
+                self.session.route_api_method = Some(selection.api_method.clone());
+                crate::logging::event_info(
+                    "model_picker_select_applied",
+                    vec![
+                        ("spec", spec.to_string()),
+                        ("active_model", active_model.clone()),
+                        ("provider", self.provider.name().to_string()),
+                        ("api_method", selection.api_method.clone()),
+                    ],
+                );
+                LocalRouteSwitchOutcome::Switched(active_model)
+            }
+            Err(error) => {
+                crate::logging::event_error(
+                    "model_picker_select_failed",
+                    vec![
+                        ("spec", spec.to_string()),
+                        ("provider", selection.provider_label.clone()),
+                        ("api_method", selection.api_method.clone()),
+                        ("error", error.to_string()),
+                    ],
+                );
+                self.push_display_message(DisplayMessage::error(model_switch_failure_message(
+                    &error.to_string(),
+                    self.is_remote,
+                )));
+                self.set_status_notice("Model switch failed");
+                LocalRouteSwitchOutcome::Failed
+            }
+        }
+    }
+
+    /// Apply a model switch that was queued while the session was busy, once
+    /// the current turn has finished. Mirrors the server's deferred agent
+    /// mutation (provider_control::spawn_deferred_agent_mutation): the queued
+    /// request is applied at the turn boundary regardless of whether the turn
+    /// succeeded. The single slot is consumed; a failed apply surfaces the
+    /// existing switch-failure error without retrying.
+    pub(super) fn consume_pending_local_model_switch(&mut self) {
+        let Some(pending) = self.pending_local_model_switch.take() else {
+            return;
+        };
+        match pending {
+            PendingLocalModelSwitch::Named(name) => {
+                apply_local_model_switch(self, &name);
+            }
+            PendingLocalModelSwitch::Route { spec, selection } => {
+                match self.apply_local_route_switch(&spec, &selection) {
+                    LocalRouteSwitchOutcome::Switched(active_model) => {
+                        let auth_suffix = self
+                            .provider
+                            .active_auth_method_label()
+                            .map(|method| format!(" (via {})", method))
+                            .unwrap_or_default();
+                        self.push_display_message(DisplayMessage {
+                            role: "system".to_string(),
+                            content: format!(
+                                "✓ Switched to model: {}{}",
+                                active_model, auth_suffix
+                            ),
+                            tool_calls: vec![],
+                            duration_secs: None,
+                            title: None,
+                            tool_data: None,
+                        });
+                        self.set_status_notice(format!("Model → {}", active_model));
+                    }
+                    LocalRouteSwitchOutcome::AlreadyUsing | LocalRouteSwitchOutcome::Failed => {}
+                }
+            }
+        }
+    }
+
     /// Derive the `route_api_method` string for a provider from its active
     /// credential, for the dual-auth (Anthropic/OpenAI) providers. Other
     /// providers return `None`; callers that know a concrete route api_method
@@ -1470,11 +1581,21 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
 
     // Only parameterized switches mutate the shared provider; browsing the
     // picker (bare `/model`) is read-only and stays available while busy. The
-    // picker's confirm path applies the same busy gate before mutating.
+    // picker's confirm path applies the same busy handling before mutating.
     // Command names are case-insensitive (`/MODEL gpt-5.5` is a switch).
+    //
+    // While a turn is running (or pending, or follow-ups are queued) the
+    // switch is *deferred* to the end of the turn instead of being rejected,
+    // mirroring the server's deferred agent mutation when the agent lock is
+    // busy. Only a pending provider auto-switch still rejects: it has its own
+    // countdown + Esc-cancel flow, and queuing a manual switch into it would
+    // race the auto-switch.
     let is_switch_request = slash_command_arg(trimmed, "/model").is_some()
         || slash_command_arg(trimmed, "/models").is_some();
-    if is_switch_request && let Some(reason) = runtime_switch_busy_reason(app) {
+    if is_switch_request
+        && app.pending_provider_failover.is_some()
+        && let Some(reason) = runtime_switch_busy_reason(app)
+    {
         app.push_display_message(DisplayMessage::error(model_switch_busy_message(reason)));
         app.set_status_notice("Model switch busy");
         return true;
@@ -1497,99 +1618,29 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
             return true;
         }
 
-        // OpenRouter `model@provider` pin spellings change the upstream route
-        // even when the model name is unchanged (`gpt-5.5@openai` while
-        // `openrouter:gpt-5.5` is active). The provider's `model()` does not
-        // carry the pin, so the before/after comparison below would wrongly
-        // classify a pin change as a no-op and keep the stale warm session.
-        let pin_spec = model_name
-            .rsplit_once('@')
-            .is_some_and(|(_, pin)| !pin.trim().is_empty());
-
-        // Same-model switch is a no-op: keep the provider session id (and the
-        // warm upstream conversation) instead of resetting it for nothing.
-        if !pin_spec && model_name == app.provider.model() {
-            let active_model = app.provider.model();
-            app.push_display_message(DisplayMessage::system(format!(
-                "Already using model: {}",
-                active_model
+        // Busy (non-failover) sessions defer the switch to the end of the
+        // current turn instead of rejecting it, mirroring the server's
+        // deferred agent mutation (provider_control::spawn_deferred_agent_mutation).
+        // The single pending slot holds the latest request (a new switch
+        // overwrites a previously queued one). The failover case was already
+        // rejected above. Remote sessions keep the rejection: they have no
+        // local `finish_turn` consumer (the server defers instead).
+        if let Some(reason) = runtime_switch_busy_reason(app) {
+            if app.is_remote {
+                app.push_display_message(DisplayMessage::error(model_switch_busy_message(reason)));
+                app.set_status_notice("Model switch busy");
+                return true;
+            }
+            app.pending_local_model_switch =
+                Some(PendingLocalModelSwitch::Named(model_name.to_string()));
+            app.push_display_message(DisplayMessage::system(model_switch_deferred_message(
+                reason,
             )));
-            app.set_status_notice(format!("Already using model: {}", active_model));
+            app.set_status_notice("Model switch queued");
             return true;
         }
 
-        // Snapshot the current session before the provider changes so the
-        // carried history is on disk even if the switch itself fails.
-        let _ = app.session.save();
-
-        let before_model = app.provider.model();
-        let before_provider = app.provider.name();
-        let before_key = app.session.provider_key.clone();
-        match app.provider.set_model(model_name) {
-            Ok(()) => {
-                let active_model = app.provider.model();
-                let after_provider = app.provider.name();
-                let after_key =
-                    crate::provider::MultiProvider::session_provider_key_after_model_switch(
-                        model_name,
-                        after_provider,
-                        before_key.as_deref(),
-                    );
-                // The request may use a provider-prefixed spelling that
-                // resolves back to the already-active model/route (e.g.
-                // `openai-api:gpt-5.5` while gpt-5.5 is active). Treat that as
-                // a no-op too instead of resetting the session. Pin spellings
-                // are excluded: the effective route changes even when the
-                // model name and provider key stay the same.
-                if !pin_spec
-                    && before_model == active_model
-                    && before_provider == after_provider
-                    && before_key == after_key
-                {
-                    app.push_display_message(DisplayMessage::system(format!(
-                        "Already using model: {}",
-                        active_model
-                    )));
-                    app.set_status_notice(format!("Already using model: {}", active_model));
-                    return true;
-                }
-
-                let active_model = app.finalize_model_switch(model_name);
-                // Best-effort persistence: /model switches also become the
-                // default for future sessions. A failed write must not block
-                // the in-memory switch.
-                if let Err(error) = crate::config::Config::set_default_model(
-                    Some(&active_model),
-                    after_key.as_deref(),
-                ) {
-                    app.push_display_message(DisplayMessage::system(format!(
-                        "Switched to {}; failed to save as default model: {}",
-                        active_model, error
-                    )));
-                }
-                let auth_suffix = app
-                    .provider
-                    .active_auth_method_label()
-                    .map(|method| format!(" (via {})", method))
-                    .unwrap_or_default();
-                app.push_display_message(DisplayMessage {
-                    role: "system".to_string(),
-                    content: format!("✓ Switched to model: {}{}", active_model, auth_suffix),
-                    tool_calls: vec![],
-                    duration_secs: None,
-                    title: None,
-                    tool_data: None,
-                });
-                app.set_status_notice(format!("Model → {}", active_model));
-            }
-            Err(e) => {
-                app.push_display_message(DisplayMessage::error(model_switch_failure_message(
-                    &e.to_string(),
-                    app.is_remote,
-                )));
-                app.set_status_notice("Model switch failed");
-            }
-        }
+        apply_local_model_switch(app, model_name);
         return true;
     }
 
@@ -1849,6 +1900,114 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
     false
 }
 
+/// Outcome of applying a model-picker route selection in local mode.
+pub(super) enum LocalRouteSwitchOutcome {
+    /// Switch applied; the new model is active.
+    Switched(String),
+    /// No-op: the selection is already the active route.
+    AlreadyUsing,
+    /// The provider rejected the selection (an error message was pushed).
+    Failed,
+}
+
+/// Apply a parameterized `/model <name>` switch against the shared provider,
+/// shared by the immediate path (`handle_model_command`) and the busy-deferred
+/// path (`finish_turn` consumes the pending slot). Enforces the same
+/// pin/no-op/snapshot/persist contract as the original inline path.
+pub(super) fn apply_local_model_switch(app: &mut App, model_name: &str) {
+    // OpenRouter `model@provider` pin spellings change the upstream route
+    // even when the model name is unchanged (`gpt-5.5@openai` while
+    // `openrouter:gpt-5.5` is active). The provider's `model()` does not
+    // carry the pin, so the before/after comparison below would wrongly
+    // classify a pin change as a no-op and keep the stale warm session.
+    let pin_spec = model_name
+        .rsplit_once('@')
+        .is_some_and(|(_, pin)| !pin.trim().is_empty());
+
+    // Same-model switch is a no-op: keep the provider session id (and the
+    // warm upstream conversation) instead of resetting it for nothing.
+    if !pin_spec && model_name == app.provider.model() {
+        let active_model = app.provider.model();
+        app.push_display_message(DisplayMessage::system(format!(
+            "Already using model: {}",
+            active_model
+        )));
+        app.set_status_notice(format!("Already using model: {}", active_model));
+        return;
+    }
+
+    // Snapshot the current session before the provider changes so the
+    // carried history is on disk even if the switch itself fails.
+    let _ = app.session.save();
+
+    let before_model = app.provider.model();
+    let before_provider = app.provider.name();
+    let before_key = app.session.provider_key.clone();
+    match app.provider.set_model(model_name) {
+        Ok(()) => {
+            let active_model = app.provider.model();
+            let after_provider = app.provider.name();
+            let after_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
+                model_name,
+                after_provider,
+                before_key.as_deref(),
+            );
+            // The request may use a provider-prefixed spelling that
+            // resolves back to the already-active model/route (e.g.
+            // `openai-api:gpt-5.5` while gpt-5.5 is active). Treat that as
+            // a no-op too instead of resetting the session. Pin spellings
+            // are excluded: the effective route changes even when the
+            // model name and provider key stay the same.
+            if !pin_spec
+                && before_model == active_model
+                && before_provider == after_provider
+                && before_key == after_key
+            {
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Already using model: {}",
+                    active_model
+                )));
+                app.set_status_notice(format!("Already using model: {}", active_model));
+                return;
+            }
+
+            let active_model = app.finalize_model_switch(model_name);
+            // Best-effort persistence: /model switches also become the
+            // default for future sessions. A failed write must not block
+            // the in-memory switch.
+            if let Err(error) =
+                crate::config::Config::set_default_model(Some(&active_model), after_key.as_deref())
+            {
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Switched to {}; failed to save as default model: {}",
+                    active_model, error
+                )));
+            }
+            let auth_suffix = app
+                .provider
+                .active_auth_method_label()
+                .map(|method| format!(" (via {})", method))
+                .unwrap_or_default();
+            app.push_display_message(DisplayMessage {
+                role: "system".to_string(),
+                content: format!("✓ Switched to model: {}{}", active_model, auth_suffix),
+                tool_calls: vec![],
+                duration_secs: None,
+                title: None,
+                tool_data: None,
+            });
+            app.set_status_notice(format!("Model → {}", active_model));
+        }
+        Err(e) => {
+            app.push_display_message(DisplayMessage::error(model_switch_failure_message(
+                &e.to_string(),
+                app.is_remote,
+            )));
+            app.set_status_notice("Model switch failed");
+        }
+    }
+}
+
 /// Short user-facing reason when a runtime model switch must be rejected.
 ///
 /// Mirrors the design invariant that model switches are refused while a turn
@@ -1883,6 +2042,16 @@ pub(super) fn model_switch_busy_message(reason: &str) -> String {
             reason
         )
     }
+}
+
+/// User-facing deferral notice for a model switch queued while the session was
+/// busy. The switch applies at the end of the current turn (the local
+/// equivalent of the server's deferred agent mutation).
+pub(super) fn model_switch_deferred_message(reason: &str) -> String {
+    format!(
+        "Model switch queued - will apply after the current reply finishes ({}).",
+        reason
+    )
 }
 
 async fn refresh_model_catalog_with_progress(

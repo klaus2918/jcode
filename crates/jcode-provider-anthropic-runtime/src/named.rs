@@ -1592,7 +1592,10 @@ CCH_KEY_MINIMAX=sk-minimax
         let messages = request["messages"].as_array().unwrap();
         let first = messages[1]["content"].as_array().unwrap();
         assert_eq!(first[0]["type"], "thinking");
-        assert_eq!(first[0]["thinking"], jcode_provider_anthropic::ELIDED_REASONING_PLACEHOLDER);
+        assert_eq!(
+            first[0]["thinking"],
+            jcode_provider_anthropic::ELIDED_REASONING_PLACEHOLDER
+        );
         assert_eq!(first[0]["signature"], "");
         assert_eq!(first.len(), 2, "placeholder prepended, text kept");
 

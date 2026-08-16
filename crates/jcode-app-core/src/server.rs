@@ -1824,21 +1824,38 @@ impl Server {
         let registry_identity = self.identity.display_name();
         tokio::spawn(async move {
             let hash_path = format!("{}.hash", registry_info.socket.display());
-            let _ = std::fs::write(&hash_path, jcode_build_meta::git_hash());
+            if let Err(err) = std::fs::write(&hash_path, jcode_build_meta::git_hash()) {
+                crate::logging::error(&format!(
+                    "Failed to write registry hash file {}: {}",
+                    hash_path, err
+                ));
+            }
 
             let mut registry = crate::registry::ServerRegistry::load()
                 .await
                 .unwrap_or_default();
             registry.register(registry_info);
-            let _ = registry.save().await;
+            if let Err(err) = registry.save().await {
+                crate::logging::error(&format!("Failed to save server registry: {}", err));
+            }
             crate::logging::info(&format!(
                 "Registered as {} in server registry",
                 registry_identity,
             ));
 
             if let Ok(mut registry) = crate::registry::ServerRegistry::load().await {
-                let _ = registry.cleanup_stale().await;
-                let _ = registry.save().await;
+                if let Err(err) = registry.cleanup_stale().await {
+                    crate::logging::error(&format!(
+                        "Failed to clean stale server registry entries: {}",
+                        err
+                    ));
+                }
+                if let Err(err) = registry.save().await {
+                    crate::logging::error(&format!(
+                        "Failed to save server registry after cleanup: {}",
+                        err
+                    ));
+                }
             }
         });
     }
@@ -2212,6 +2229,17 @@ impl Server {
                 Ok(BusEvent::SwarmOutputTail(tail)) => {
                     dispatch_swarm_output_tail(&tail, &swarm_members, &swarms_by_id).await;
                 }
+                Ok(BusEvent::ConfigReloaded) => {
+                    // 配置热重载后，运行中会话持有的 provider fork 仍指向旧
+                    // 端点（fork 不共享 compatible-profile 表）。逐 session
+                    // 驱动对账，重建 api_base 已变化的 OpenAI-compatible
+                    // runtimes，使 config.toml 的 base_url 修改即时生效。
+                    let agents: Vec<Arc<Mutex<Agent>>> =
+                        sessions.read().await.values().cloned().collect();
+                    for agent in agents {
+                        agent.lock().await.provider_handle().on_config_reloaded();
+                    }
+                }
                 Ok(_) => {
                     // Ignore other events
                 }
@@ -2321,14 +2349,18 @@ impl Server {
                     crate::logging::error(&format!("Main accept loop failed: {error}"));
                 }
                 runtime.shutdown().await;
-                let _ = debug_handle.await;
+                if let Err(error) = debug_handle.await {
+                    crate::logging::error(&format!("Debug accept loop task failed: {error}"));
+                }
             }
             result = &mut debug_handle => {
                 if let Err(error) = result {
                     crate::logging::error(&format!("Debug accept loop failed: {error}"));
                 }
                 runtime.shutdown().await;
-                let _ = main_handle.await;
+                if let Err(error) = main_handle.await {
+                    crate::logging::error(&format!("Main accept loop task failed: {error}"));
+                }
             }
         }
         Ok(())

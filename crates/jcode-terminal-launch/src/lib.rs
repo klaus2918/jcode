@@ -831,7 +831,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn snapshot_client_terminal_env_captures_set_vars_only() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("ZELLIJ_SESSION_NAME", "snapshot-test");
             std::env::remove_var("TMUX");
@@ -851,7 +851,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn detected_resume_terminal_recognizes_ghostty_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("HANDTERM_SESSION");
             std::env::remove_var("HANDTERM_PID");
@@ -929,7 +929,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn missing_tmux_binary_falls_back_to_detected_emulator() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let previous_terminal = std::env::var_os("JCODE_TERMINAL");
         unsafe {
             std::env::remove_var("JCODE_TERMINAL");

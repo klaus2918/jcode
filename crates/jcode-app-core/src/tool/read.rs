@@ -123,7 +123,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file. Supports text files, image files, and PDFs."
+        "Read a file. Supports text files and image files."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -174,7 +174,7 @@ impl Tool for ReadTool {
             return handle_image_file(&path, &params.file_path);
         }
 
-        // Check for PDF files and extract text
+        // Check for PDF files and report unsupported
         if is_pdf_file(&path) {
             return handle_pdf_file(&path, &params.file_path);
         }
@@ -473,7 +473,7 @@ fn is_pdf_file(path: &Path) -> bool {
     }
 }
 
-/// Handle reading a PDF file - report size; text extraction is not compiled in.
+/// Handle reading a PDF file - report size; text extraction is unsupported.
 fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len();
@@ -487,7 +487,7 @@ fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
     };
 
     Ok(ToolOutput::new(format!(
-        "PDF: {} ({})\nPDF text extraction is not available in this build. Rebuild with the `pdf` feature enabled to extract text.",
+        "PDF: {} ({})\nPDF 文件暂不支持读取。",
         file_path, size_str
     )))
 }

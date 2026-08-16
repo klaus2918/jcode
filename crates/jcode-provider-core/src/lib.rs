@@ -409,6 +409,14 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// Stable fingerprint of the credential this runtime resolves for its next
+    /// request, used by reuse checks after a config hot-reload. `None` when the
+    /// runtime carries no credential (no-auth endpoint) or cannot re-resolve
+    /// one; reuse checks compare `None` against the expected `None` as a match.
+    fn credential_fingerprint(&self) -> Option<String> {
+        None
+    }
+
     /// The explicit upstream-provider pin for the current model, when the
     /// user pinned one on an aggregator runtime.
     fn explicit_provider_pin_for_current_model(&self) -> Option<String> {
@@ -473,6 +481,15 @@ pub trait Provider: Send + Sync {
     fn fork_for_new_session(&self) -> Arc<dyn Provider> {
         self.fork()
     }
+
+    /// Configuration cache reloaded (e.g. a provider endpoint's `base_url`
+    /// changed in config.toml).
+    ///
+    /// Runtimes backed by reloadable configuration should rebuild any cached
+    /// state that depends on it so the change takes effect without a restart.
+    /// The default is a no-op; orchestrators like `MultiProvider` override it
+    /// to reconcile installed runtimes against the freshly loaded config.
+    fn on_config_reloaded(&self) {}
 
     /// Get a sender for native tool results (if the provider supports it).
     fn native_result_sender(&self) -> Option<NativeToolResultSender> {

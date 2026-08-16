@@ -702,7 +702,6 @@ specific browser or testing backend.
 - [集群架构](docs/集群架构.md)
 - [服务器架构](docs/服务器架构.md)
 - [安全系统](docs/安全系统.md)
-- [赞助发现与赞助方接入](docs/赞助发现与赞助方接入.md)
 - [Windows 说明](docs/Windows平台.md)
 - [包装脚本与 Shell 集成](docs/包装脚本指南.md)
 - [重构说明](docs/重构路线图.md)

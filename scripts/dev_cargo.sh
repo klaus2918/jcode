@@ -229,14 +229,11 @@ feature_args_from_profile() {
     minimal|none)
       printf '%s\0' --no-default-features
       ;;
-    pdf)
-      printf '%s\0' --no-default-features --features pdf
-      ;;
     embeddings)
       printf '%s\0' --no-default-features --features embeddings
       ;;
     full)
-      printf '%s\0' --features embeddings,pdf,bedrock
+      printf '%s\0' --features embeddings
       ;;
     *)
       return 1
@@ -247,10 +244,10 @@ feature_args_from_profile() {
 validate_feature_profile() {
   local profile="${JCODE_DEV_FEATURE_PROFILE:-default}"
   case "$profile" in
-    ""|default|minimal|none|pdf|embeddings|full)
+    ""|default|minimal|none|embeddings|full)
       ;;
     *)
-      printf 'error: unsupported JCODE_DEV_FEATURE_PROFILE=%s (expected default|minimal|pdf|embeddings|full)\n' "$profile" >&2
+      printf 'error: unsupported JCODE_DEV_FEATURE_PROFILE=%s (expected default|minimal|embeddings|full)\n' "$profile" >&2
       exit 1
       ;;
   esac

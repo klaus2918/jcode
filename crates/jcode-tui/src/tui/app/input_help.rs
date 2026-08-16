@@ -26,7 +26,7 @@ impl App {
                 "/cls\nClear the rendered view only. The model keeps its full context; nothing is sent or forgotten. Also on Ctrl+L."
             }
             "model" | "models" => {
-                "/model\nOpen model picker (also /models).\n\n/model <name>\nSwitch model (also /models <name>).\n\n/model <name>@<provider>\nPin OpenRouter routing (@auto clears pin).\n\nSwitches are rejected while a turn is running; selecting the already-active model is a no-op that keeps the warm provider session."
+                "/model\nOpen model picker (also /models).\n\n/model <name>\nSwitch model (also /models <name>).\n\n/model <name>@<provider>\nPin OpenRouter routing (@auto clears pin).\n\nWhile a turn is running the switch is queued and applied when the reply finishes; selecting the already-active model is a no-op that keeps the warm provider session."
             }
             "provider-test-coverage"
             | "provider test coverage"

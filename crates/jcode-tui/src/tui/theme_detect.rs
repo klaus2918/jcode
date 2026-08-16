@@ -1,6 +1,7 @@
 //! Terminal light/dark theme detection.
 //!
-//! Resolves the theme mode once per process, before the TUI enters raw mode:
+//! Resolves the theme mode before the TUI enters raw mode, and re-applies it on
+//! config hot reload:
 //!
 //! 1. `JCODE_THEME=dark|light` env override (also accepts `auto`).
 //! 2. `display.theme` config: "dark", "light", or "auto"/empty.
@@ -12,11 +13,19 @@
 //!
 //! The result is stored in `jcode_tui_style::theme_mode` where the renderer
 //! adapts colors for light backgrounds at frame time.
+//!
+//! Startup resolution is a one-shot snapshot: `auto` keeps the detected mode
+//! for the process lifetime, while an explicit `dark`/`light` value is
+//! re-applied on config hot reload by [`refresh_theme_from_config`].
 
 use jcode_tui_style::ThemeMode;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, RwLock};
 
-static DETECTED: OnceLock<ThemeMode> = OnceLock::new();
+/// Resolved theme mode, or `None` before startup resolution. Kept writable so
+/// config hot reload can re-apply an explicit `display.theme` value without
+/// losing the startup-snapshot semantics of `auto` (the terminal is never
+/// re-queried at runtime).
+static DETECTED: RwLock<Option<ThemeMode>> = RwLock::new(None);
 
 /// In-flight prewarm of the (blocking) terminal background query. See
 /// [`prewarm_theme_mode`].
@@ -30,7 +39,7 @@ static PREWARM: Mutex<Option<std::thread::JoinHandle<ThemeMode>>> = Mutex::new(N
 /// stdin, because the query writes an escape sequence and consumes the reply.
 /// Idempotent, and a no-op once the mode is already resolved.
 pub fn prewarm_theme_mode() {
-    if DETECTED.get().is_some() {
+    if DETECTED.read().unwrap_or_else(|e| e.into_inner()).is_some() {
         return;
     }
     let Ok(mut slot) = PREWARM.lock() else {
@@ -58,8 +67,14 @@ fn take_prewarmed_theme_mode() -> Option<ThemeMode> {
 /// free. Must be called before entering raw mode / the alternate screen.
 pub fn init_theme_mode() -> ThemeMode {
     let mode = match take_prewarmed_theme_mode() {
-        Some(prewarmed) => *DETECTED.get_or_init(|| prewarmed),
-        None => *DETECTED.get_or_init(resolve_theme_mode),
+        Some(prewarmed) => *DETECTED
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert(prewarmed),
+        None => *DETECTED
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(resolve_theme_mode),
     };
     jcode_tui_style::set_theme_mode(mode);
     init_palette();
@@ -82,11 +97,14 @@ pub fn init_theme_mode_for_resume(inherited_theme: Option<&str>) -> ThemeMode {
     // A prewarm may already have queried the terminal; prefer its answer over a
     // second query, but never start one on an inherited raw-mode terminal.
     let prewarmed = take_prewarmed_theme_mode();
-    let mode = *DETECTED.get_or_init(|| {
-        inherited_theme
-            .or(prewarmed)
-            .unwrap_or_else(resolve_theme_mode_without_terminal_query)
-    });
+    let mode = *DETECTED
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(|| {
+            inherited_theme
+                .or(prewarmed)
+                .unwrap_or_else(resolve_theme_mode_without_terminal_query)
+        });
     jcode_tui_style::set_theme_mode(mode);
     init_palette();
     mode
@@ -115,6 +133,37 @@ pub fn current_theme_label() -> &'static str {
         ThemeMode::Dark => "dark",
         ThemeMode::Light => "light",
     }
+}
+
+/// Re-apply an explicit theme from the hot-reloaded config.
+///
+/// Called on `ConfigReloaded` bus events. Only switches when the config (or
+/// `JCODE_THEME`, which still takes precedence) names an explicit
+/// `dark`/`light` value that differs from the current mode; `auto`/empty/
+/// invalid values keep the startup snapshot, so a runtime switch back to auto
+/// never re-queries the terminal. On any failure the current theme is
+/// preserved: this never panics and never leaves the TUI unstyled.
+pub fn refresh_theme_from_config() {
+    let configured = std::env::var("JCODE_THEME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| crate::config::config().display.theme.clone());
+    let mode = match configured.trim().to_ascii_lowercase().as_str() {
+        "dark" => ThemeMode::Dark,
+        "light" => ThemeMode::Light,
+        _ => return,
+    };
+    let mut slot = DETECTED.write().unwrap_or_else(|e| e.into_inner());
+    if *slot == Some(mode) {
+        return;
+    }
+    *slot = Some(mode);
+    jcode_tui_style::set_theme_mode(mode);
+    init_palette();
+    crate::logging::info(&format!(
+        "THEME: switched to {} after config change",
+        current_theme_label()
+    ));
 }
 
 fn resolve_theme_mode() -> ThemeMode {

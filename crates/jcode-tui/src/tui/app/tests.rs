@@ -40,6 +40,7 @@ include!("tests/todo_card.rs");
 include!("tests/issue_544_paste_enter.rs");
 include!("tests/terminal_setup_command.rs");
 include!("tests/issue_497_copy_ctrl_c.rs");
+include!("tests/issue_314_streaming_batch_no_duplicates.rs");
 include!("tests/spinner_slash_commands.rs");
 include!("tests/skill_invocation_multi_word.rs");
 include!("tests/at_file_references.rs");

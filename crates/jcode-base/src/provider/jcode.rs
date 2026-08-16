@@ -177,6 +177,10 @@ impl Provider for JcodeProvider {
         let _ = self.inner.set_model(&selected_model);
     }
 
+    fn on_config_reloaded(&self) {
+        self.inner.reconcile_runtimes_with_config();
+    }
+
     fn auth_model_refresh_pending(&self) -> bool {
         self.inner.auth_model_refresh_pending()
     }

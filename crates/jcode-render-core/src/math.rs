@@ -588,9 +588,12 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn collapse_sequence(mut items: Vec<Expr>) -> Expr {
+fn collapse_sequence(items: Vec<Expr>) -> Expr {
     if items.len() == 1 {
-        items.pop().unwrap()
+        items
+            .into_iter()
+            .next()
+            .unwrap_or(Expr::Sequence(Vec::new()))
     } else {
         Expr::Sequence(items)
     }
@@ -685,7 +688,9 @@ fn split_matrix(source: &str) -> Vec<Vec<&str>> {
             b'{' => depth += 1,
             b'}' => depth = depth.saturating_sub(1),
             b'&' if depth == 0 && environment_depth == 0 => {
-                rows.last_mut().unwrap().push(&source[start..pos]);
+                if let Some(row) = rows.last_mut() {
+                    row.push(&source[start..pos]);
+                }
                 start = pos + 1;
             }
             b'\\'
@@ -694,7 +699,9 @@ fn split_matrix(source: &str) -> Vec<Vec<&str>> {
                     && pos + 1 < bytes.len()
                     && bytes[pos + 1] == b'\\' =>
             {
-                rows.last_mut().unwrap().push(&source[start..pos]);
+                if let Some(row) = rows.last_mut() {
+                    row.push(&source[start..pos]);
+                }
                 rows.push(Vec::new());
                 pos += 1;
                 start = pos + 1;
@@ -709,7 +716,9 @@ fn split_matrix(source: &str) -> Vec<Vec<&str>> {
         }
         pos += 1;
     }
-    rows.last_mut().unwrap().push(&source[start..]);
+    if let Some(row) = rows.last_mut() {
+        row.push(&source[start..]);
+    }
     if rows.len() > 1
         && rows
             .last()

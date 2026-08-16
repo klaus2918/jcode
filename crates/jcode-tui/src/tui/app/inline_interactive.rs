@@ -3237,22 +3237,15 @@ impl App {
                         }
                     }
                     PickerAction::Model => {
-                        // The `/model` command entry point gates switches while
-                        // busy, but the picker confirm path is reachable from
-                        // the inline preview activation (`/model <name>` +
-                        // Enter) and from a picker left open while a
-                        // rate-limit timer starts a turn. Gate here too so the
-                        // shared provider is never mutated mid-turn.
-                        if let Some(reason) =
-                            crate::tui::app::model_context::runtime_switch_busy_reason(self)
-                        {
-                            self.inline_interactive_state = None;
-                            self.push_display_message(DisplayMessage::error(
-                                crate::tui::app::model_context::model_switch_busy_message(reason),
-                            ));
-                            self.set_status_notice("Model switch busy");
-                            return Ok(());
-                        }
+                        // The `/model` command entry point handles busy sessions
+                        // by deferring the switch, but the picker confirm path is
+                        // reachable from the inline preview activation
+                        // (`/model <name>` + Enter) and from a picker left open
+                        // while a rate-limit timer starts a turn. Handle busy
+                        // here too so the shared provider is never mutated
+                        // mid-turn: local sessions queue the switch in the
+                        // pending slot (applied by `finish_turn`), remote
+                        // sessions keep rejecting (the server defers instead).
                         if !route.available {
                             self.push_display_message(DisplayMessage::error(
                                 crate::tui::app::model_context::unavailable_model_route_message(
@@ -3278,6 +3271,49 @@ impl App {
                         let route_selection = picker_route_selection(&entry, route);
 
                         let effort = entry.effort.clone();
+                        if let Some(reason) =
+                            crate::tui::app::model_context::runtime_switch_busy_reason(self)
+                        {
+                            if self.pending_provider_failover.is_some() {
+                                // A provider auto-switch is pending: keep
+                                // rejecting (it has its own countdown + Esc-cancel
+                                // flow; queuing a manual switch would race it).
+                                self.inline_interactive_state = None;
+                                self.push_display_message(DisplayMessage::error(
+                                    crate::tui::app::model_context::model_switch_busy_message(
+                                        reason,
+                                    ),
+                                ));
+                                self.set_status_notice("Model switch busy");
+                                return Ok(());
+                            }
+                            if !self.is_remote {
+                                // Local busy (turn running / pending / follow-ups
+                                // queued): defer the switch to the end of the
+                                // turn, mirroring the server's deferred agent
+                                // mutation. The single pending slot holds the
+                                // latest selection.
+                                self.inline_interactive_state = None;
+                                self.pending_local_model_switch =
+                                    Some(PendingLocalModelSwitch::Route {
+                                        spec: spec.clone(),
+                                        selection: route_selection.clone(),
+                                    });
+                                self.push_display_message(DisplayMessage::system(
+                                    crate::tui::app::model_context::model_switch_deferred_message(
+                                        reason,
+                                    ),
+                                ));
+                                self.set_status_notice("Model switch queued");
+                                return Ok(());
+                            }
+                            self.inline_interactive_state = None;
+                            self.push_display_message(DisplayMessage::error(
+                                crate::tui::app::model_context::model_switch_busy_message(reason),
+                            ));
+                            self.set_status_notice("Model switch busy");
+                            return Ok(());
+                        }
                         record_model_picker_selection(&bare_name, route, effort.as_deref());
                         let method_label =
                             crate::provider::ModelRouteApiMethod::parse(&route.api_method)
@@ -3348,88 +3384,35 @@ impl App {
                             // "gpt-5.5 (high)" at low effort (issue #427).
                             self.pending_reasoning_effort = effort.clone();
                         } else {
-                            let before_model = self.provider.model();
-                            let before_provider = self.provider.name();
-                            let before_key = self.session.provider_key.clone();
-                            match self.provider.set_route_selection(&route_selection) {
-                                Ok(()) => {
-                                    let active_model = self.provider.model();
-                                    let after_provider = self.provider.name();
-                                    let after_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
-                                        &spec,
-                                        after_provider,
-                                        before_key.as_deref(),
-                                    );
-                                    // Selecting the already-active route is a
-                                    // no-op: keep the warm provider session
-                                    // instead of resetting it (the same-model
-                                    // contract /model enforces).
-                                    if before_model == active_model
-                                        && before_provider == after_provider
-                                        && before_key == after_key
-                                    {
-                                        self.inline_interactive_state = None;
-                                        self.push_display_message(DisplayMessage::system(format!(
-                                            "Already using model: {}",
-                                            active_model
-                                        )));
-                                        self.set_status_notice(format!(
-                                            "Already using model: {}",
-                                            active_model
-                                        ));
-                                        return Ok(());
-                                    }
-                                    self.inline_interactive_state = None;
-                                    let active_model = self.finalize_model_switch(&spec);
-                                    self.session.route_api_method =
-                                        Some(route_selection.api_method.clone());
-                                    crate::logging::event_info(
-                                        "model_picker_select_applied",
-                                        vec![
-                                            ("spec", spec.clone()),
-                                            ("active_model", active_model),
-                                            ("provider", self.provider.name().to_string()),
-                                            ("api_method", route_selection.api_method.clone()),
-                                        ],
-                                    );
+                            let outcome = self.apply_local_route_switch(&spec, &route_selection);
+                            if !matches!(
+                                outcome,
+                                crate::tui::app::model_context::LocalRouteSwitchOutcome::Failed
+                            ) {
+                                self.inline_interactive_state = None;
+                            }
+                            if let crate::tui::app::model_context::LocalRouteSwitchOutcome::Switched(
+                                _,
+                            ) = outcome
+                            {
+                                if let Some(effort) = effort {
+                                    let _ = self.provider.set_reasoning_effort(&effort);
                                 }
-                                Err(error) => {
-                                    crate::logging::event_error(
-                                        "model_picker_select_failed",
-                                        vec![
-                                            ("spec", spec.clone()),
-                                            ("provider", route.provider.clone()),
-                                            ("api_method", route_selection.api_method.clone()),
-                                            ("error", error.to_string()),
-                                        ],
-                                    );
-                                    self.push_display_message(DisplayMessage::error(
-                                        crate::tui::app::model_context::model_switch_failure_message(
-                                            &error.to_string(),
-                                            self.is_remote,
-                                        ),
-                                    ));
-                                    self.set_status_notice("Model switch failed");
-                                    return Ok(());
+                                if !route_detail.is_empty() {
+                                    self.push_display_message(DisplayMessage::system(format!(
+                                        "{}\n{}",
+                                        notice, route_detail
+                                    )));
                                 }
+                                self.set_status_notice(if route_detail.is_empty() {
+                                    notice
+                                } else {
+                                    format!("{} · {}", notice, route_detail)
+                                });
+                                // First-run onboarding: a model choice advances the flow.
+                                self.onboarding_after_model_select();
                             }
                         }
-                        if let Some(effort) = effort {
-                            let _ = self.provider.set_reasoning_effort(&effort);
-                        }
-                        if !route_detail.is_empty() {
-                            self.push_display_message(DisplayMessage::system(format!(
-                                "{}\n{}",
-                                notice, route_detail
-                            )));
-                        }
-                        self.set_status_notice(if route_detail.is_empty() {
-                            notice
-                        } else {
-                            format!("{} · {}", notice, route_detail)
-                        });
-                        // First-run onboarding: a model choice advances the flow.
-                        self.onboarding_after_model_select();
                     }
                 }
             }

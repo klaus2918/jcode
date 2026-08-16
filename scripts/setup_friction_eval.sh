@@ -128,6 +128,9 @@ EOF
 chmod +x "$work/bin/uname" "$work/bin/curl" "$work/bin/tar"
 
 # Run the real installer into an isolated HOME. $1 = home dir, $2 = version.
+# JCODE_HOME is pinned to empty so an ambient JCODE_HOME on the machine
+# running this eval cannot redirect the default layout; the JCODE_HOME
+# override layout is exercised separately in Section A below.
 run_install() {
   local home="$1" version="$2"
   mkdir -p "$home"
@@ -135,7 +138,7 @@ run_install() {
   PATH="$work/bin:/usr/bin:/bin" \
   HOME="$home" \
   XDG_CONFIG_HOME="$home/.config" \
-  JCODE_HOME="$home/.jcode" \
+  JCODE_HOME="" \
   JCODE_SKIP_SERVER_RELOAD=1 \
   JCODE_NO_TELEMETRY=1 \
   bash "$install_sh" 2>&1
@@ -169,6 +172,28 @@ check "installer completes on a fresh home" \
 launcher="$home_a/.local/bin/jcode"
 [ -x "$launcher" ]; check "launcher exists and is executable" \
   "executable at ~/.local/bin/jcode" "missing or not executable: $launcher" "$?"
+
+# JCODE_HOME must override the default layout (Rust launcher_dir()/builds_dir()
+# parity): launcher under $JCODE_HOME/bin, builds under $JCODE_HOME/builds, and
+# nothing written to the default ~/.local/bin launcher dir.
+home_jh="$work/home-jcode-home"
+mkdir -p "$home_jh"
+EVAL_VERSION="1.2.3" \
+PATH="$work/bin:/usr/bin:/bin" \
+HOME="$home_jh" \
+JCODE_HOME="$home_jh/custom-jcode" \
+JCODE_SKIP_SERVER_RELOAD=1 \
+JCODE_NO_TELEMETRY=1 \
+bash "$install_sh" >/dev/null 2>&1
+[ -x "$home_jh/custom-jcode/bin/jcode" ]
+check "JCODE_HOME layout puts the launcher under \$JCODE_HOME/bin" \
+  "$home_jh/custom-jcode/bin/jcode" "launcher missing" "$?"
+[ -x "$home_jh/custom-jcode/builds/stable/jcode" ]
+check "JCODE_HOME layout puts builds under \$JCODE_HOME/builds" \
+  "$home_jh/custom-jcode/builds/stable/jcode" "stable channel missing" "$?"
+[ ! -e "$home_jh/.local/bin/jcode" ]
+check "JCODE_HOME layout skips the default ~/.local/bin launcher dir" \
+  "no launcher under \$HOME/.local/bin" "default launcher dir written" "$?"
 
 ver=$("$launcher" --version 2>/dev/null || true)
 [ "$ver" = "jcode 1.2.3" ]; check "launcher runs and reports the installed version" \
@@ -357,7 +382,7 @@ EVAL_WIN_STATE="$win_state" \
 PATH="$work/bin:/usr/bin:/bin" \
 HOME="$home_w" \
 LOCALAPPDATA="$work/localappdata" \
-JCODE_HOME="$home_w/.jcode" \
+JCODE_HOME="" \
 JCODE_SKIP_SERVER_RELOAD=1 \
 JCODE_NO_TELEMETRY=1 \
 bash "$install_sh" >/dev/null 2>&1
@@ -390,6 +415,44 @@ check "install.ps1 broadcasts WM_SETTINGCHANGE to HWND_BROADCAST" \
 printf '%s' "$sh_text" | grep -q 'stable-version' && printf '%s' "$ps1_text" | grep -q 'stable-version'
 check "both installers maintain the stable/versions build channels" \
   "stable-version channel marker written by both" "channel marker missing from one installer" "$?"
+
+# ---------------------------------------------------------------------------
+# configure_path.sh parity: scripts/lib/configure_path.sh is the shared source
+# of truth for POSIX PATH setup; install.sh keeps a self-contained inline copy
+# of the same logic (it runs via `curl ... | bash` and cannot source lib
+# files). install_release.sh sources the lib file, so a silent drift would
+# make curl-installed and repo-installed jcode behave differently. These
+# greps compare the marker strings both copies share; they fail if either
+# copy drops or renames a shared feature.
+# ---------------------------------------------------------------------------
+cfg_path="$repo_dir/scripts/lib/configure_path.sh"
+cfg_text=$(cat "$cfg_path" 2>/dev/null || true)
+[ -n "$cfg_text" ]
+check "lib/configure_path.sh exists" "non-empty shared helper" "missing or empty" "$?"
+
+for marker in \
+  'Append the POSIX (bash/zsh/sh) PATH line to an rc file, idempotently.' \
+  'fish uses its own syntax and does not read POSIX rc files.' \
+  '# Added by jcode installer' \
+  'if not contains' \
+  'set -gx PATH' \
+  '.zshenv' \
+  '.bashrc' \
+  '.profile' \
+  'config.fish'; do
+  printf '%s' "$sh_text" | grep -qF "$marker" && printf '%s' "$cfg_text" | grep -qF "$marker"
+  check "PATH logic marker '$marker' present in both copies" \
+    "install.sh and configure_path.sh both contain '$marker'" "missing from one copy" "$?"
+done
+
+# The exact PATH export line must match modulo the install-dir variable name
+# ($INSTALL_DIR in install.sh, $_jcp_install_dir in the shared helper). The
+# file text keeps the bash-escaped form (\" and \$), so match it literally.
+sh_path_line=$(printf '%s' "$sh_text" | grep -oF 'export PATH=\"$INSTALL_DIR:\$PATH\"' | head -1)
+cfg_path_line=$(printf '%s' "$cfg_text" | grep -oF 'export PATH=\"$_jcp_install_dir:\$PATH\"' | head -1)
+[ -n "$sh_path_line" ] && [ -n "$cfg_path_line" ]
+check "PATH export line identical in both copies" \
+  "export PATH=<install-dir>:\$PATH in both" "line missing or diverged" "$?"
 
 # ---------------------------------------------------------------------------
 # Scorecard.

@@ -1,9 +1,9 @@
 {
-  "total": 2466,
+  "total": 2457,
   "totals_by_pattern": {
-    "dot_ok": 921,
-    "let_underscore": 927,
-    "unwrap_or_default": 618
+    "dot_ok": 925,
+    "let_underscore": 913,
+    "unwrap_or_default": 619
   },
   "tracked_files": {
     "crates/jcode-app-core/src/agent.rs": {
@@ -103,7 +103,7 @@
     },
     "crates/jcode-app-core/src/overnight.rs": {
       "dot_ok": 12,
-      "let_underscore": 10,
+      "let_underscore": 1,
       "unwrap_or_default": 8
     },
     "crates/jcode-app-core/src/perf.rs": {
@@ -123,7 +123,7 @@
     },
     "crates/jcode-app-core/src/server.rs": {
       "dot_ok": 4,
-      "let_underscore": 18,
+      "let_underscore": 12,
       "unwrap_or_default": 5
     },
     "crates/jcode-app-core/src/server/await_members_state.rs": {
@@ -587,7 +587,7 @@
       "unwrap_or_default": 1
     },
     "crates/jcode-base/src/config.rs": {
-      "dot_ok": 2,
+      "dot_ok": 4,
       "let_underscore": 0,
       "unwrap_or_default": 0
     },
@@ -1192,7 +1192,7 @@
       "unwrap_or_default": 6
     },
     "crates/jcode-provider-openrouter-runtime/src/lib.rs": {
-      "dot_ok": 22,
+      "dot_ok": 23,
       "let_underscore": 0,
       "unwrap_or_default": 9
     },
@@ -1508,8 +1508,8 @@
     },
     "crates/jcode-tui/src/tui/app/model_context.rs": {
       "dot_ok": 1,
-      "let_underscore": 3,
-      "unwrap_or_default": 6
+      "let_underscore": 4,
+      "unwrap_or_default": 7
     },
     "crates/jcode-tui/src/tui/app/navigation.rs": {
       "dot_ok": 0,
@@ -1727,7 +1727,7 @@
       "unwrap_or_default": 2
     },
     "crates/jcode-tui/src/tui/theme_detect.rs": {
-      "dot_ok": 7,
+      "dot_ok": 8,
       "let_underscore": 2,
       "unwrap_or_default": 2
     },

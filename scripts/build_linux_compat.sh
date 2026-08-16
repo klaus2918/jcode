@@ -18,7 +18,7 @@ if [[ "$out_dir" != /* ]]; then
 fi
 
 artifact="${JCODE_COMPAT_ARTIFACT:-jcode-linux-x86_64}"
-profile="${JCODE_COMPAT_PROFILE:-release}"
+profile="${JCODE_COMPAT_PROFILE:-release-lto}"
 image="${JCODE_COMPAT_IMAGE:-quay.io/pypa/manylinux2014_x86_64}"
 cache_root="${JCODE_COMPAT_CACHE_DIR:-$HOME/.cache/jcode-linux-compat}"
 target="x86_64-unknown-linux-gnu"

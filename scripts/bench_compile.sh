@@ -27,7 +27,7 @@ Examples:
   scripts/bench_compile.sh check
   scripts/bench_compile.sh check --runs 3 --touch src/server.rs
   scripts/bench_compile.sh check --runs 3 --edit src/server.rs
-  scripts/bench_compile.sh build -- --package jcode --bin test_api
+  scripts/bench_compile.sh build -- --package jcode --bin jcode
   scripts/bench_compile.sh release-jcode --json
   scripts/bench_compile.sh selfdev-jcode --json
 USAGE

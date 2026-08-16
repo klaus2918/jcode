@@ -430,6 +430,9 @@ pub enum BusEvent {
     MermaidRenderCompleted,
     /// Local `/mcp-reload` finished off the UI thread.
     McpReloadCompleted(McpReloadCompleted),
+    /// Config cache reloaded (published from the composition root's
+    /// `on_config_reloaded` listener; config itself stays bus-free).
+    ConfigReloaded,
 }
 
 pub struct Bus {

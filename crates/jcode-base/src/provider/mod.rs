@@ -94,6 +94,25 @@ pub fn set_active_provider(provider: Arc<dyn Provider>) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(provider);
 }
 
+/// Drive the registered active provider's runtime reconciliation after a
+/// config cache reload.
+///
+/// Wired up as an `on_config_reloaded` listener at startup. The active
+/// provider's `Provider::on_config_reloaded` rebuilds any installed
+/// OpenAI-compatible runtime whose `api_base` drifted from the freshly loaded
+/// config. A no-op when no provider is registered (e.g. client-only
+/// processes); running sessions are reconciled separately by the server's bus
+/// consumer.
+pub fn reconcile_active_provider_runtimes_with_config() {
+    let provider = ACTIVE_PROVIDER
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(provider) = provider {
+        provider.on_config_reloaded();
+    }
+}
+
 /// Fetch the registered active provider, if any. Returns a forked handle so the
 /// caller gets an independent provider instance (per the [`Provider::fork`]
 /// contract) that will not interfere with the main agent's model selection.
@@ -957,6 +976,187 @@ impl MultiProvider {
             || Self::named_provider_profile_model_prefix(model).is_some()
     }
 
+    /// 期望的凭据指纹：named profile（config `[providers.<name>]`）按当前
+    /// 配置解析 key（`api_key_env` -> 统一 `.env` / 进程 env，回退内联
+    /// `api_key`），与 OpenRouter runtime 的 `AuthSource::NamedProfile`
+    /// 请求时解析语义一致。`auth = "none"` 或无 key 时返回 `None`（无凭据）。
+    fn named_profile_credential_fingerprint(
+        config: &crate::config::NamedProviderConfig,
+    ) -> Option<String> {
+        if config.auth == crate::config::NamedProviderAuth::None {
+            return None;
+        }
+        let env_file = config
+            .env_file
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("named-provider.env");
+        let token = config
+            .api_key_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|name| {
+                crate::provider_catalog::load_api_key_from_env_or_config(name, env_file)
+            })
+            .or_else(|| config.api_key.clone());
+        token
+            .as_deref()
+            .map(crate::provider_catalog::credential_token_fingerprint)
+    }
+
+    /// 期望的凭据指纹，与 runtime 的 `AuthSource::ProfileKey` 一致。
+    /// 来源为内置 catalog OpenAI-compatible profile 的 `api_key_env` + `env_file` 解析。
+    /// 无 key（含 `requires_api_key = false` 的无凭据端点）返回 `None`。
+    fn compatible_profile_credential_fingerprint(
+        resolved: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
+    ) -> Option<String> {
+        crate::provider_catalog::load_api_key_from_env_or_config(
+            &resolved.api_key_env,
+            &resolved.env_file,
+        )
+        .as_deref()
+        .map(crate::provider_catalog::credential_token_fingerprint)
+    }
+
+    /// Find an already-installed compatible profile runtime whose route
+    /// identity (`api_method`), `api_base`, and resolved credential fingerprint
+    /// all match the expected values.
+    ///
+    /// 配置热重载后 base_url 或 API key（内联 `api_key` / `api_key_env` 指向
+    /// 的统一 `.env`）可能已变化（例如 cc-switch 本地网关端口调整、key
+    /// 轮换），复用已安装 runtime 前必须校验其 api_base 与当前凭据指纹均与
+    /// 当前配置一致，否则请求会继续发往旧端点或用旧 key。
+    fn compatible_profile_matching(
+        &self,
+        profile_id: &str,
+        expected_api_method: &str,
+        expected_api_base: Option<&str>,
+        expected_credential_fingerprint: Option<&str>,
+    ) -> Option<Arc<dyn Provider>> {
+        ProviderRegistry::new(self)
+            .compatible_profile(profile_id)
+            .filter(|provider| {
+                let route_matches = provider
+                    .direct_openai_compatible_route_parts()
+                    .map(|(_provider, api_method, api_base)| {
+                        api_method == expected_api_method
+                            && crate::provider_catalog::normalize_api_base(&api_base).as_deref()
+                                == expected_api_base
+                    })
+                    .unwrap_or(false);
+                route_matches
+                    && provider.credential_fingerprint().as_deref()
+                        == expected_credential_fingerprint
+            })
+    }
+
+    /// Reconcile installed OpenAI-compatible runtimes against the current
+    /// config after a config cache reload.
+    ///
+    /// Every installed profile runtime whose `api_base` **or** resolved
+    /// credential fingerprint no longer matches the freshly loaded
+    /// configuration (named profile `base_url`/`api_key` or the catalog
+    /// profile's resolved `api_base`/key) is rebuilt from the current config
+    /// and reinstalled, so requests stop going to the old endpoint and stop
+    /// using the old key. The active profile keeps its model after a rebuild.
+    /// Individual failures are logged and skipped rather than aborting the
+    /// whole pass.
+    pub fn reconcile_runtimes_with_config(&self) {
+        let installed: Vec<(String, Arc<dyn Provider>)> = self
+            .openai_compatible_profiles
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(id, runtime)| (id.clone(), Arc::clone(runtime)))
+            .collect();
+        if installed.is_empty() {
+            return;
+        }
+
+        let registry = ProviderRegistry::new(self);
+        for (profile_id, runtime) in installed {
+            let Some((_provider, api_method, api_base)) =
+                runtime.direct_openai_compatible_route_parts()
+            else {
+                continue;
+            };
+            if !api_method.starts_with("openai-compatible:") {
+                continue;
+            }
+
+            // 判定期望 api_base / 凭据指纹：用户 named profile（config
+            // `[providers.<name>]`）优先，其次内置 catalog profile。与
+            // set_model_on_* 的安装路径一一对应，保证同名冲突时按用户配置
+            // 重建。api_base 或 key 任一变化即重建 runtime。
+            let rebuild_spec = if let Some(config) =
+                crate::config::config().providers.get(&profile_id).cloned()
+            {
+                let expected = crate::provider_catalog::normalize_api_base(&config.base_url);
+                let expected_fingerprint = Self::named_profile_credential_fingerprint(&config);
+                let base_matches = expected.is_none()
+                    || crate::provider_catalog::normalize_api_base(&api_base).as_deref()
+                        == expected.as_deref();
+                if base_matches
+                    && runtime.credential_fingerprint().as_deref()
+                        == expected_fingerprint.as_deref()
+                {
+                    continue;
+                }
+                external::OpenRouterRuntimeSpec::NamedProfile {
+                    name: profile_id.clone(),
+                    config,
+                }
+            } else if let Some(profile) =
+                crate::provider_catalog::openai_compatible_profile_by_id(&profile_id)
+            {
+                let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+                let expected = crate::provider_catalog::normalize_api_base(&resolved.api_base);
+                let expected_fingerprint =
+                    Self::compatible_profile_credential_fingerprint(&resolved);
+                let base_matches = expected.is_none()
+                    || crate::provider_catalog::normalize_api_base(&api_base).as_deref()
+                        == expected.as_deref();
+                if base_matches
+                    && runtime.credential_fingerprint().as_deref()
+                        == expected_fingerprint.as_deref()
+                {
+                    continue;
+                }
+                external::OpenRouterRuntimeSpec::CompatibleProfile(profile)
+            } else {
+                continue;
+            };
+
+            // api_base 或 key 已变化：按当前配置重建并重新安装。
+            let previous_model = runtime.model();
+            let replacement = match external::instantiate_openrouter_runtime(rebuild_spec) {
+                Ok(provider) => provider,
+                Err(err) => {
+                    crate::logging::warn(&format!(
+                        "Config reload: failed to rebuild provider runtime for profile '{}': {err:#}",
+                        profile_id
+                    ));
+                    continue;
+                }
+            };
+            registry.install_compatible_profile(profile_id.clone(), Arc::clone(&replacement));
+            if registry.active_compatible_profile_id().as_deref() == Some(profile_id.as_str())
+                && let Err(err) = replacement.set_model(&previous_model)
+            {
+                crate::logging::warn(&format!(
+                    "Config reload: rebuilt runtime for profile '{}' but failed to restore model '{}': {err:#}",
+                    profile_id, previous_model
+                ));
+            }
+            crate::logging::info(&format!(
+                "Config reload: rebuilt provider runtime for profile '{}' (api_base or credential changed)",
+                profile_id
+            ));
+        }
+    }
+
     /// Bind (or reuse) the runtime for a named config provider profile and
     /// select `model` on it (issue #444).
     fn set_model_on_named_provider_profile(&self, profile_name: &str, model: &str) -> Result<()> {
@@ -971,24 +1171,16 @@ impl MultiProvider {
             .ok_or_else(|| anyhow::anyhow!("Unknown provider profile '{}'", profile_name))?;
 
         let expected_api_method = format!("openai-compatible:{}", profile_name);
-        // 配置热重载后 base_url 可能已变化（例如 cc-switch 本地网关端口调整）。
-        // 复用已安装 runtime 前必须校验其 api_base 与当前配置一致，否则请求
-        // 会继续发往旧端点，导致修改配置不生效。
         let expected_api_base = crate::provider_catalog::normalize_api_base(&config.base_url);
+        let expected_credential_fingerprint = Self::named_profile_credential_fingerprint(&config);
         let registry = ProviderRegistry::new(self);
         let provider = {
-            let existing = registry
-                .compatible_profile(profile_name)
-                .filter(|provider| {
-                    provider
-                        .direct_openai_compatible_route_parts()
-                        .map(|(_provider, api_method, api_base)| {
-                            api_method == expected_api_method
-                                && crate::provider_catalog::normalize_api_base(&api_base)
-                                    == expected_api_base
-                        })
-                        .unwrap_or(false)
-                });
+            let existing = self.compatible_profile_matching(
+                profile_name,
+                &expected_api_method,
+                expected_api_base.as_deref(),
+                expected_credential_fingerprint.as_deref(),
+            );
             if let Some(provider) = existing {
                 provider
             } else {
@@ -1148,25 +1340,21 @@ impl MultiProvider {
         }
 
         let profile_id = resolved.id.clone();
-        // 复用已安装 runtime 前校验 api_base 与当前解析结果一致（含 env
-        // 覆盖），否则配置热重载后请求会继续发往旧端点。
+        // 复用已安装 runtime 前校验 api_base 与凭据指纹均与当前解析结果
+        // 一致（含 env 覆盖），否则配置热重载后请求会继续发往旧端点或用
+        // 旧 key。
         let expected_api_base = crate::provider_catalog::normalize_api_base(&resolved.api_base);
+        let expected_credential_fingerprint =
+            Self::compatible_profile_credential_fingerprint(&resolved);
+        let expected_api_method = format!("openai-compatible:{}", profile_id);
         let registry = ProviderRegistry::new(self);
         let provider = {
-            let existing = registry.compatible_profile(&profile_id).filter(|provider| {
-                provider
-                    .direct_openai_compatible_route_parts()
-                    .map(|(_provider, api_method, api_base)| {
-                        api_method
-                            .strip_prefix("openai-compatible:")
-                            .map(|profile| profile.trim().to_string())
-                            .as_deref()
-                            == Some(profile_id.as_str())
-                            && crate::provider_catalog::normalize_api_base(&api_base)
-                                == expected_api_base
-                    })
-                    .unwrap_or(false)
-            });
+            let existing = self.compatible_profile_matching(
+                &profile_id,
+                &expected_api_method,
+                expected_api_base.as_deref(),
+                expected_credential_fingerprint.as_deref(),
+            );
             if let Some(provider) = existing {
                 provider
             } else {
@@ -2496,6 +2684,12 @@ impl Provider for MultiProvider {
         }
 
         Arc::new(provider)
+    }
+
+    fn on_config_reloaded(&self) {
+        // 配置热重载后主动对账已安装的 OpenAI-compatible runtimes：api_base
+        // 与当前配置不一致的 runtime 按新配置重建，保证改 base_url 即时生效。
+        self.reconcile_runtimes_with_config();
     }
 
     fn native_result_sender(&self) -> Option<NativeToolResultSender> {

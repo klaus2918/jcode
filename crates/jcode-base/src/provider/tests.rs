@@ -702,6 +702,340 @@ include!("tests/issue_534_profile_preservation.rs");
 include!("tests/fallback_failover.rs");
 include!("tests/catalog_subscription.rs");
 
+/// Config hot-reload reconciliation: after `base_url` changes in config.toml,
+/// `reconcile_runtimes_with_config()` rebuilds the installed named-profile
+/// runtime so requests stop going to the old endpoint, and the active profile
+/// keeps its model.
+#[test]
+fn config_reload_reconcile_rebuilds_named_profile_runtime_on_api_base_change() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            let write_config = |base_url: &str| {
+                std::fs::write(
+                    std::path::PathBuf::from(jcode_home.clone()).join("config.toml"),
+                    format!(
+                        r#"
+[provider]
+default_provider = "cc-switch"
+default_model = "deepseek-v4-flash"
+
+[[providers]]
+name        = "cc-switch"
+type        = "openai-compatible"
+base_url    = "{base_url}"
+auth        = "none"
+models      = ["deepseek-v4-flash"]
+default     = "deepseek-v4-flash"
+"#
+                    ),
+                )
+                .expect("write test config.toml");
+                crate::config::invalidate_config_cache();
+            };
+
+            write_config("http://127.0.0.1:15721");
+            crate::env::remove_var("DEEPSEEK_API_KEY");
+
+            let template = MultiProvider::new_fast();
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            let installed_base = || {
+                let runtime = ProviderRegistry::new(&template)
+                    .compatible_profile("cc-switch")
+                    .expect("cc-switch runtime installed");
+                runtime
+                    .direct_openai_compatible_route_parts()
+                    .map(|(_provider, _api_method, api_base)| api_base)
+            };
+            assert_eq!(
+                installed_base().as_deref(),
+                crate::provider_catalog::normalize_api_base("http://127.0.0.1:15721").as_deref(),
+                "runtime must point at the originally configured endpoint"
+            );
+
+            // 热重载：改 base_url 后主动对账。
+            write_config("http://127.0.0.1:15722");
+            template.reconcile_runtimes_with_config();
+
+            assert_eq!(
+                installed_base().as_deref(),
+                crate::provider_catalog::normalize_api_base("http://127.0.0.1:15722").as_deref(),
+                "runtime must point at the reloaded endpoint after reconcile"
+            );
+            assert_eq!(
+                template.model(),
+                "deepseek-v4-flash",
+                "active profile keeps its model across the rebuild"
+            );
+            assert_eq!(
+                ProviderRegistry::new(&template)
+                    .active_compatible_profile_id()
+                    .as_deref(),
+                Some("cc-switch"),
+                "active profile selection survives the rebuild"
+            );
+
+            // 幂等：配置未再变化时对账不重建、不报错。
+            template.reconcile_runtimes_with_config();
+            assert_eq!(
+                installed_base().as_deref(),
+                crate::provider_catalog::normalize_api_base("http://127.0.0.1:15722").as_deref()
+            );
+        });
+    });
+}
+
+/// Regression: the named-profile reuse check only compared `api_method` +
+/// `api_base`, so changing the configured credential left the installed
+/// runtime serving the old key. Changing the inline `api_key` in config.toml
+/// must rebuild the runtime on the next `set_model` (the runtime's auth
+/// source captured the old inline value at construction), and an unchanged
+/// credential must keep reusing it (reconcile/idempotence preserved).
+#[test]
+fn named_profile_runtime_rebuilt_when_api_key_changes() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            let write_config = |api_key: &str| {
+                std::fs::write(
+                    std::path::PathBuf::from(jcode_home.clone()).join("config.toml"),
+                    format!(
+                        r#"
+[provider]
+default_provider = "self-deepseek"
+default_model = "deepseek-v4-flash"
+
+[[providers]]
+name        = "self-deepseek"
+type        = "openai-compatible"
+base_url    = "https://api.deepseek.com"
+api_key     = "{api_key}"
+models      = ["deepseek-v4-flash"]
+default     = "deepseek-v4-flash"
+"#
+                    ),
+                )
+                .expect("write test config.toml");
+                crate::config::invalidate_config_cache();
+            };
+
+            write_config("sk-inline-v1");
+            let template = MultiProvider::new_fast();
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            let installed_runtime = || {
+                ProviderRegistry::new(&template)
+                    .compatible_profile("self-deepseek")
+                    .expect("self-deepseek runtime installed")
+            };
+            let installed_fingerprint = || installed_runtime().credential_fingerprint();
+            let first = installed_fingerprint().expect("initial credential fingerprint");
+            assert_eq!(
+                first,
+                crate::provider_catalog::credential_token_fingerprint("sk-inline-v1"),
+                "installed runtime must resolve the initially configured key"
+            );
+
+            // 轮换 config 内联 api_key（base_url 不变）：再次 set_model 必须重建。
+            write_config("sk-inline-v2");
+            let old_runtime = installed_runtime();
+            template
+                .set_model("self-deepseek:deepseek-v4-flash")
+                .expect("prefixed switch after key rotation should succeed");
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            let new_runtime = installed_runtime();
+            assert!(
+                !Arc::ptr_eq(&old_runtime, &new_runtime),
+                "runtime must be rebuilt after the configured key changed"
+            );
+            assert_eq!(
+                installed_fingerprint(),
+                Some(crate::provider_catalog::credential_token_fingerprint(
+                    "sk-inline-v2"
+                )),
+                "rebuilt runtime must resolve the rotated key"
+            );
+
+            // 幂等：key 未再变化时复用已重建的 runtime，不重复安装。
+            let stable_runtime = installed_runtime();
+            template
+                .set_model("self-deepseek:deepseek-v4-flash")
+                .expect("idempotent switch should succeed");
+            assert!(
+                Arc::ptr_eq(&stable_runtime, &installed_runtime()),
+                "unchanged key must keep reusing the installed runtime"
+            );
+        });
+    });
+}
+
+/// Reconcile path: rotating the API key without touching `base_url` must
+/// rebuild the named-profile runtime during `reconcile_runtimes_with_config()`
+/// (not only on the next `set_model`), preserving the active model.
+#[test]
+fn config_reload_reconcile_rebuilds_named_profile_runtime_on_api_key_change() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let jcode_home = std::env::var_os("JCODE_HOME").expect("test JCODE_HOME");
+            std::fs::write(
+                std::path::PathBuf::from(jcode_home.clone()).join("config.toml"),
+                r#"
+[provider]
+default_provider = "cc-switch"
+default_model = "deepseek-v4-flash"
+
+[[providers]]
+name        = "cc-switch"
+type        = "openai-compatible"
+base_url    = "http://127.0.0.1:15721"
+auth        = "none"
+models      = ["deepseek-v4-flash"]
+default     = "deepseek-v4-flash"
+"#,
+            )
+            .expect("write test config.toml");
+            crate::env::remove_var("DEEPSEEK_API_KEY");
+            crate::config::invalidate_config_cache();
+
+            let template = MultiProvider::new_fast();
+            assert_eq!(template.model(), "deepseek-v4-flash");
+            let installed = || {
+                ProviderRegistry::new(&template)
+                    .compatible_profile("cc-switch")
+                    .expect("cc-switch runtime installed")
+            };
+
+            // 改用 api_key_env 提供 key（base_url 不变）：先安装无 key 版本。
+            // auth=none 时指纹为 None，与无 key 的期望一致，不重建。
+            let no_auth_runtime = installed();
+            template.reconcile_runtimes_with_config();
+            assert!(
+                Arc::ptr_eq(&no_auth_runtime, &installed()),
+                "no-credential profiles must stay stable across reconcile"
+            );
+
+            // 配置改为 bearer + api_key_env，且 .env 里的 key 轮换后对账必须重建。
+            std::fs::write(
+                std::path::PathBuf::from(jcode_home.clone()).join("config.toml"),
+                r#"
+[provider]
+default_provider = "cc-switch"
+default_model = "deepseek-v4-flash"
+
+[[providers]]
+name        = "cc-switch"
+type        = "openai-compatible"
+base_url    = "http://127.0.0.1:15721"
+api_key_env = "DEEPSEEK_API_KEY"
+models      = ["deepseek-v4-flash"]
+default     = "deepseek-v4-flash"
+"#,
+            )
+            .expect("rewrite test config.toml");
+            crate::provider_catalog::save_env_value_to_env_file(
+                "DEEPSEEK_API_KEY",
+                "deepseek.env",
+                Some("sk-test-deepseek-v1"),
+            )
+            .expect("save key");
+            crate::config::invalidate_config_cache();
+
+            let old_runtime = installed();
+            template.reconcile_runtimes_with_config();
+            assert!(
+                !Arc::ptr_eq(&old_runtime, &installed()),
+                "reconcile must rebuild the runtime when the credential changed"
+            );
+            assert_eq!(
+                installed().credential_fingerprint().as_deref(),
+                Some(
+                    crate::provider_catalog::credential_token_fingerprint("sk-test-deepseek-v1")
+                        .as_str()
+                ),
+                "rebuilt runtime must resolve the configured key"
+            );
+            assert_eq!(
+                template.model(),
+                "deepseek-v4-flash",
+                "active profile keeps its model across the rebuild"
+            );
+
+            // 幂等：key 未再变化时对账不重建。
+            let stable = installed();
+            template.reconcile_runtimes_with_config();
+            assert!(
+                Arc::ptr_eq(&stable, &installed()),
+                "unchanged credential must not rebuild during reconcile"
+            );
+
+            // .env 内容变化会被请求时解析感知：指纹随之变化，但两侧一致，
+            // 对账不重建（旧 runtime 的下一次请求已用新 key）。
+            crate::provider_catalog::save_env_value_to_env_file(
+                "DEEPSEEK_API_KEY",
+                "deepseek.env",
+                Some("sk-test-deepseek-v2"),
+            )
+            .expect("rotate key in .env");
+            let before_rotate = installed();
+            template.reconcile_runtimes_with_config();
+            assert!(
+                Arc::ptr_eq(&before_rotate, &installed()),
+                "unified .env content is re-resolved per request; no rebuild needed"
+            );
+            assert_eq!(
+                installed().credential_fingerprint(),
+                Some(crate::provider_catalog::credential_token_fingerprint(
+                    "sk-test-deepseek-v2"
+                )),
+                "runtime credential fingerprint must track the unified .env"
+            );
+
+            // api_key_env 名字变化（config 字段变更，runtime 的 auth_source 快照
+            // 仍是旧名）：对账必须重建，否则请求继续解析旧 key。
+            std::fs::write(
+                std::path::PathBuf::from(jcode_home.clone()).join("config.toml"),
+                r#"
+[provider]
+default_provider = "cc-switch"
+default_model = "deepseek-v4-flash"
+
+[[providers]]
+name        = "cc-switch"
+type        = "openai-compatible"
+base_url    = "http://127.0.0.1:15721"
+api_key_env = "DEEPSEEK_API_KEY_RENAMED"
+models      = ["deepseek-v4-flash"]
+default     = "deepseek-v4-flash"
+"#,
+            )
+            .expect("rewrite test config.toml with renamed key env");
+            crate::provider_catalog::save_env_value_to_env_file(
+                "DEEPSEEK_API_KEY_RENAMED",
+                "deepseek.env",
+                Some("sk-test-deepseek-v3"),
+            )
+            .expect("save renamed key");
+            crate::config::invalidate_config_cache();
+
+            let stale_runtime = installed();
+            template.reconcile_runtimes_with_config();
+            assert!(
+                !Arc::ptr_eq(&stale_runtime, &installed()),
+                "reconcile must rebuild when api_key_env changed"
+            );
+            assert_eq!(
+                installed().credential_fingerprint(),
+                Some(crate::provider_catalog::credential_token_fingerprint(
+                    "sk-test-deepseek-v3"
+                )),
+                "rebuilt runtime must resolve the renamed key env"
+            );
+        });
+    });
+}
+
 /// Regression: a resonix-style `[[providers]]` array entry (the config style
 /// the user migrates to, mirroring Reasonix) must support in-session model
 /// switching. The named profile runtime is installed at startup from

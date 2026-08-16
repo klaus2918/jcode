@@ -3,14 +3,15 @@ set -euo pipefail
 
 # Release helper with three modes:
 # - --prepare-fast: refresh target/selfdev before the release metadata commit.
-# - --fast-local: package that prepared binary, publish Linux immediately, then
-#   let CI replace it with portable/signoff assets and add every other platform.
+# - --fast-local: package a local release-profile build, publish Linux
+#   immediately, then let CI replace it with portable/signoff assets and add
+#   every other platform.
 # - --remote: push the tag immediately and let CI gate publication.
 # - default: build Linux + macOS locally and stage them on the CI-owned draft.
 #
 # Usage:
 #   scripts/quick-release.sh --prepare-fast v0.5.5 # warm selfdev before bump
-#   scripts/quick-release.sh --fast-local v0.5.5  # package it, public now
+#   scripts/quick-release.sh --fast-local v0.5.5  # package a release build, public now
 #   scripts/quick-release.sh --remote v0.5.5      # tag now, CI-gated publication
 #   scripts/quick-release.sh v0.5.5               # local Linux + macOS draft
 #   scripts/quick-release.sh --dry-run v0.5.5     # standard local build only
@@ -68,7 +69,7 @@ case "$MODE" in
         required_commands+=(cargo sha256sum)
         ;;
     fast-local)
-        required_commands+=(file strip tar gzip sha256sum)
+        required_commands+=(file strip tar gzip sha256sum cargo)
         $DRY_RUN || required_commands+=(gh)
         ;;
     standard)
@@ -214,38 +215,53 @@ if [[ "$MODE" == "remote" ]]; then
 fi
 
 if [[ "$MODE" == "fast-local" ]]; then
-    echo "▸ Validating the prepared selfdev Linux build..."
+    echo "▸ Validating the release Linux build..."
     build_start=$(date +%s)
-    source_bin="target/selfdev/jcode"
-    [[ -x "$source_bin" ]] || { echo "Error: selfdev binary not found: $source_bin" >&2; exit 1; }
-    prepared_marker="target/selfdev/fast-release-prepared"
-    [[ -f "$prepared_marker" ]] || {
-        echo "Error: fast release was not prepared. Run scripts/quick-release.sh --prepare-fast $VERSION before the release metadata commit." >&2
-        exit 1
-    }
-    prepared_version="$(sed -n 's/^version=//p' "$prepared_marker")"
-    prepared_commit="$(sed -n 's/^commit=//p' "$prepared_marker")"
-    prepared_sha256="$(sed -n 's/^binary_sha256=//p' "$prepared_marker")"
-    [[ "$prepared_version" == "$VERSION_NUM" ]] || {
-        echo "Error: prepared version $prepared_version does not match $VERSION_NUM." >&2
-        exit 1
-    }
-    release_parent="$(git rev-parse HEAD^)"
-    [[ "$prepared_commit" == "$release_parent" ]] || {
-        echo "Error: prepared binary commit $prepared_commit is not the parent of release commit $(git rev-parse HEAD)." >&2
-        exit 1
-    }
-    actual_sha256="$(sha256sum "$source_bin" | cut -d' ' -f1)"
-    [[ "$prepared_sha256" == "$actual_sha256" ]] || {
-        echo "Error: target/selfdev/jcode changed after fast-release preparation." >&2
-        exit 1
-    }
+
     unexpected_release_files="$(git diff-tree --no-commit-id --name-only -r HEAD | grep -Ev '^(Cargo\.toml|Cargo\.lock|changelog/)' || true)"
     [[ -z "$unexpected_release_files" ]] || {
         echo "Error: the release metadata commit contains code or unsupported files:" >&2
         printf '%s\n' "$unexpected_release_files" >&2
         exit 1
     }
+
+    # A genuine release build embeds the JCODE_RELEASE_BUILD marker: the
+    # version string is "vX.Y.Z (<hash>)" without the "-dev" suffix
+    # (jcode-build-meta/build.rs only drops the suffix when JCODE_RELEASE_BUILD
+    # was set at compile time), and the hash matches the release commit being
+    # published. Anything else (missing binary, dev/selfdev build, stale hash)
+    # is rejected and rebuilt.
+    fast_release_binary_ok() {
+        local bin="$1" version_output head_hash
+        version_output="$("$bin" --version 2>/dev/null || true)"
+        [[ -n "$version_output" && "$version_output" != *"-dev"* ]] || return 1
+        head_hash="$(git rev-parse --short HEAD)"
+        [[ "$version_output" == *"($head_hash)"* ]] || return 1
+        return 0
+    }
+
+    # Prefer the release-lto artifact (the stable distribution profile:
+    # opt-level=1 + thin LTO), then the plain release profile (opt-level=1).
+    # Rebuild with the release marker when neither is a valid release build.
+    source_bin=""
+    for candidate in target/release-lto/jcode target/release/jcode; do
+        if [[ -x "$candidate" ]] && fast_release_binary_ok "$candidate"; then
+            source_bin="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$source_bin" ]]; then
+        echo "▸ Building the release binary (JCODE_RELEASE_BUILD=1, --profile release)..."
+        JCODE_RELEASE_BUILD=1 JCODE_BUILD_SEMVER="$VERSION_NUM" JCODE_REMOTE_CARGO=0 \
+            scripts/dev_cargo.sh build --profile release -p jcode --bin jcode
+        source_bin="target/release/jcode"
+        fast_release_binary_ok "$source_bin" || {
+            echo "Error: rebuilt binary failed release validation." >&2
+            "$source_bin" --version >&2 || true
+            exit 1
+        }
+    fi
+    echo "  ✅ Release binary: $source_bin"
 
     cp "$source_bin" "$DIST/jcode-linux-x86_64.bin"
     strip --strip-unneeded "$DIST/jcode-linux-x86_64.bin"
@@ -268,10 +284,10 @@ WRAPPER
         exit 1
     }
     (cd "$DIST" && tar -cf - jcode-linux-x86_64 jcode-linux-x86_64.bin | gzip -1 > jcode-linux-x86_64.tar.gz)
-    (cd "$DIST" && sha256sum jcode-linux-x86_64.tar.gz > SHA256SUMS)
     echo "  ✅ Linux artifact ready ($(( $(date +%s) - build_start ))s validation/package, $(du -h "$DIST/jcode-linux-x86_64.tar.gz" | cut -f1))"
 
     if $DRY_RUN; then
+        scripts/generate_checksums.sh "$DIST"
         echo ""
         echo "Fast dry run complete in $(elapsed)s. Artifacts in: $DIST"
         trap - EXIT
@@ -283,13 +299,31 @@ WRAPPER
     ensure_release_draft
     gh release upload "$VERSION" \
         "$DIST/jcode-linux-x86_64.tar.gz" \
+        --clobber
+
+    # SHA256SUMS must describe exactly the assets published in that release
+    # (RELEASING.md), so pull every asset currently on the release back down --
+    # including the archive just uploaded and any asset CI already attached to
+    # the draft -- and checksum that full set. gh CLI behavior is not
+    # verifiable on this (Windows) host; if the download fails, fall back to
+    # checksumming the local packaging directory.
+    echo "▸ Generating SHA256SUMS covering all release assets..."
+    assets_dir="$DIST/release-assets"
+    mkdir -p "$assets_dir"
+    if (cd "$assets_dir" && gh release download "$VERSION") 2>/dev/null; then
+        scripts/generate_checksums.sh "$assets_dir" "$DIST/SHA256SUMS"
+    else
+        echo "  Warning: could not download release assets; SHA256SUMS covers local artifacts only" >&2
+        scripts/generate_checksums.sh "$DIST"
+    fi
+    gh release upload "$VERSION" \
         "$DIST/SHA256SUMS" \
         --clobber
     gh release edit "$VERSION" --draft=false --latest
 
     echo ""
     echo "=== Fast release published in $(elapsed)s ==="
-    echo "  ✅ Linux x86_64: public now from the warm selfdev cache"
+    echo "  ✅ Linux x86_64: public now from the local release build"
     echo "  ⏳ CI: replacing Linux with the portable build and adding macOS, Windows, FreeBSD, signatures, and final checksums"
     echo ""
     echo "The immediate Linux asset targets this build host's runtime baseline until CI replaces it."

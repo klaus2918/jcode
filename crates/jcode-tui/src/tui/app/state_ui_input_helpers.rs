@@ -208,10 +208,6 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::remote("/resumeall", "Alias for /continue"),
     RegisteredCommand::hidden("/resume-all", "Alias for /continue"),
-    RegisteredCommand::hidden("/z", "Secret premium-mode command"),
-    RegisteredCommand::hidden("/zz", "Secret premium-mode command"),
-    RegisteredCommand::hidden("/zzz", "Secret premium-mode command"),
-    RegisteredCommand::hidden("/zstatus", "Secret premium-mode status command"),
 ];
 
 /// Every non-hidden slash command with its one-line description, in

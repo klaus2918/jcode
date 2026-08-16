@@ -756,6 +756,8 @@ struct ConfigCacheFingerprint {
     path: Option<PathBuf>,
     modified: Option<SystemTime>,
     len: Option<u64>,
+    env_file_modified: Option<SystemTime>,
+    env_file_len: Option<u64>,
     env: Vec<(String, String)>,
 }
 
@@ -763,12 +765,24 @@ impl ConfigCacheFingerprint {
     fn current() -> Self {
         let path = Config::path();
         let metadata = path.as_ref().and_then(|path| std::fs::metadata(path).ok());
+        // 统一 `<jcode home>/.env`（jcode-provider-env 的权威密钥文件）纳入
+        // 指纹：key 变更（用户直接编辑 .env）必须触发 reload，否则已安装的
+        // provider runtime 复用校验拿不到新 key。路径语义与 Config::path()
+        // 一致（JCODE_HOME 优先的 jcode_dir()）。
+        let env_file = jcode_provider_env::unified_env_file_path();
+        let env_file_metadata = env_file
+            .as_ref()
+            .and_then(|path| std::fs::metadata(path).ok());
         Self {
             path,
             modified: metadata
                 .as_ref()
                 .and_then(|metadata| metadata.modified().ok()),
             len: metadata.as_ref().map(std::fs::Metadata::len),
+            env_file_modified: env_file_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.modified().ok()),
+            env_file_len: env_file_metadata.as_ref().map(std::fs::Metadata::len),
             env: config_env_fingerprint(),
         }
     }
@@ -900,6 +914,14 @@ fn describe_config_reload(
     }
     if previous.len != next.len {
         parts.push(format!("len={:?}->{:?}", previous.len, next.len));
+    }
+    if previous.env_file_modified != next.env_file_modified
+        || previous.env_file_len != next.env_file_len
+    {
+        parts.push(format!(
+            "env_file={:?}->{:?}",
+            previous.env_file_len, next.env_file_len
+        ));
     }
     let env_changes = describe_env_changes(&previous.env, &next.env);
     if !env_changes.is_empty() {

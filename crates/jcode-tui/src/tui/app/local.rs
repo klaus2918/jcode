@@ -206,6 +206,10 @@ pub(super) fn handle_bus_event(
             app.invalidate_model_picker_cache();
             true
         }
+        Ok(BusEvent::ConfigReloaded) => {
+            crate::tui::theme_detect::refresh_theme_from_config();
+            true
+        }
         Ok(BusEvent::AuthCatalogRefreshReady) => {
             app.finish_auth_catalog_refresh();
             true
@@ -516,6 +520,11 @@ pub(super) fn finish_turn(app: &mut App) {
     app.thinking_prefix_emitted = false;
     app.thinking_buffer.clear();
     app.note_runtime_memory_event_force("turn_completed", "local_turn_finished");
+    // Apply a model switch queued while the session was busy (see
+    // `PendingLocalModelSwitch`): the turn boundary is the local equivalent of
+    // the server's deferred agent mutation, so the queued request applies here
+    // regardless of whether the turn itself succeeded or was interrupted.
+    app.consume_pending_local_model_switch();
     let followup_scheduled = app.schedule_turn_end_followups();
     if !followup_scheduled {
         app.clear_visible_turn_started();

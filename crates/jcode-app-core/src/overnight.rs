@@ -91,8 +91,12 @@ pub fn start_overnight_run(options: OvernightStartOptions) -> Result<OvernightLa
 
     if !options.use_current_session
         && let Ok(todos) = crate::todo::load_todos(&options.parent_session.id)
+        && let Err(err) = crate::todo::save_todos(&coordinator_session_id, &todos)
     {
-        let _ = crate::todo::save_todos(&coordinator_session_id, &todos);
+        crate::logging::error(&format!(
+            "overnight: failed to copy todos to coordinator session {}: {}",
+            coordinator_session_id, err
+        ));
     }
 
     let manifest = OvernightManifest {
@@ -203,15 +207,30 @@ fn spawn_supervisor(
             let mut updated = load_manifest(&manifest.run_id).unwrap_or(manifest.clone());
             updated.status = OvernightRunStatus::Failed;
             updated.completed_at = Some(Utc::now());
-            let _ = save_manifest(&updated);
-            let _ = record_event(
+            if let Err(save_err) = save_manifest(&updated) {
+                crate::logging::error(&format!(
+                    "overnight: failed to persist failed run status for {}: {}",
+                    manifest.run_id, save_err
+                ));
+            }
+            if let Err(event_err) = record_event(
                 &updated,
                 "run_failed",
                 format!("Overnight supervisor failed: {}", err),
                 json!({ "error": crate::util::format_error_chain(&err) }),
                 true,
-            );
-            let _ = render_review_html(&updated);
+            ) {
+                crate::logging::error(&format!(
+                    "overnight: failed to record run_failed event for {}: {}",
+                    manifest.run_id, event_err
+                ));
+            }
+            if let Err(render_err) = render_review_html(&updated) {
+                crate::logging::error(&format!(
+                    "overnight: failed to render review html after run failure for {}: {}",
+                    manifest.run_id, render_err
+                ));
+            }
         }
     };
 
@@ -406,25 +425,45 @@ async fn run_turn_monitored(
             result = &mut run_future => return result,
             _ = sample_interval.tick() => {
                 let snapshot = gather_resource_snapshot(manifest.working_dir.as_deref().map(Path::new));
-                let _ = record_event(
+                if let Err(sample_err) = record_event(
                     manifest,
                     "resource_sample",
                     resource_summary(&snapshot),
                     serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({})),
                     false,
-                );
-                let _ = render_review_html(manifest);
+                ) {
+                    crate::logging::error(&format!(
+                        "overnight: failed to record resource_sample for {}: {}",
+                        manifest.run_id, sample_err
+                    ));
+                }
+                if let Err(render_err) = render_review_html(manifest) {
+                    crate::logging::error(&format!(
+                        "overnight: failed to render review html after resource sample for {}: {}",
+                        manifest.run_id, render_err
+                    ));
+                }
             }
             _ = long_notice_interval.tick() => {
                 let elapsed = Utc::now().signed_duration_since(started).num_minutes().max(0);
-                let _ = record_event(
+                if let Err(event_err) = record_event(
                     manifest,
                     "coordinator_turn_still_running",
                     format!("Coordinator turn still running after {}m", elapsed),
                     json!({ "elapsed_minutes": elapsed }),
                     true,
-                );
-                let _ = render_review_html(manifest);
+                ) {
+                    crate::logging::error(&format!(
+                        "overnight: failed to record turn-still-running notice for {}: {}",
+                        manifest.run_id, event_err
+                    ));
+                }
+                if let Err(render_err) = render_review_html(manifest) {
+                    crate::logging::error(&format!(
+                        "overnight: failed to render review html after turn notice for {}: {}",
+                        manifest.run_id, render_err
+                    ));
+                }
             }
         }
     }
@@ -919,7 +958,12 @@ pub fn record_event(
     if meaningful {
         let mut updated = load_manifest(&manifest.run_id).unwrap_or_else(|_| manifest.clone());
         updated.last_activity_at = event.timestamp;
-        let _ = save_manifest(&updated);
+        if let Err(save_err) = save_manifest(&updated) {
+            crate::logging::error(&format!(
+                "overnight: failed to update last_activity_at for {}: {}",
+                manifest.run_id, save_err
+            ));
+        }
     }
 
     Ok(())

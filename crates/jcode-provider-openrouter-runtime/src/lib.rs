@@ -486,6 +486,38 @@ impl ProviderAuth {
     }
 }
 
+/// How request-time auth is re-resolved instead of using the construction-time
+/// snapshot. The provider still snapshots `ProviderAuth` at construction (as a
+/// fallback and to preserve install-time error behavior), but when `auth_source`
+/// is set every request re-resolves from config/env, so edits to config.toml or
+/// `~/.jcode/.env` take effect without restarting the session (mirrors the
+/// Anthropic runtime, which reads the key per request).
+#[derive(Debug, Clone)]
+enum AuthSource {
+    /// Standard OpenRouter env/config resolution (`resolve_auth`).
+    Global,
+    /// Named `[providers.<name>]` profile: key env var with inline fallback,
+    /// auth mode, optional custom auth header name, env file fallback.
+    NamedProfile {
+        key_env: Option<String>,
+        inline_api_key: Option<String>,
+        auth: jcode_base::config::NamedProviderAuth,
+        auth_header: Option<String>,
+        env_file: Option<String>,
+    },
+    /// Fixed key name + env file pair resolved per request (api-key runtime).
+    EnvKey { key_name: String, env_file: String },
+    /// Built-in OpenAI-compatible profile: key env var + env file, with
+    /// no-auth allowed when the profile does not require a key.
+    ProfileKey {
+        api_key_env: String,
+        env_file: String,
+        requires_api_key: bool,
+        profile_id: String,
+        display_name: String,
+    },
+}
+
 fn add_cache_breakpoint(messages: &mut [Message]) -> bool {
     let mut cache_index = None;
     for (idx, msg) in messages.iter().enumerate().rev() {
@@ -999,6 +1031,11 @@ pub struct OpenRouterProvider {
     reasoning_effort: Arc<RwLock<Option<String>>>,
     api_base: String,
     auth: ProviderAuth,
+    /// Request-time auth source. When set, auth is re-resolved from
+    /// config/env on every request instead of using the construction-time
+    /// snapshot (`auth`), so edits to config.toml or `~/.jcode/.env` take
+    /// effect without restarting the session. `None` keeps the snapshot.
+    auth_source: Option<AuthSource>,
     supports_provider_features: bool,
     supports_model_catalog: bool,
     profile_id: Option<String>,
@@ -1368,6 +1405,22 @@ impl OpenRouterProvider {
         Some((provider_label, api_method, self.api_base.clone()))
     }
 
+    /// 请求时凭据指纹：基于构造时捕获的 `auth_source` 重新解析当前 key 后
+    /// 取单向指纹（与 jcode-base 侧按当前配置计算的期望值用同一 hash），供
+    /// 配置热重载后的 runtime 复用校验使用。无凭据（auth=none / key 缺失）
+    /// 或解析失败时返回 `None`，两侧一致即视为匹配。
+    pub fn credential_fingerprint(&self) -> Option<String> {
+        let auth = self.current_auth().ok()?;
+        let token = match &auth {
+            ProviderAuth::AuthorizationBearer { token, .. } => token.as_str(),
+            ProviderAuth::HeaderValue { value, .. } => value.as_str(),
+            _ => return None,
+        };
+        Some(jcode_base::provider_catalog::credential_token_fingerprint(
+            token,
+        ))
+    }
+
     /// The account/device flow exchanges its one-time browser approval for a
     /// scoped `JCODE_API_KEY`, then routes through the OpenAI-compatible
     /// transport slot. Keep that implementation detail out of model-picker
@@ -1484,6 +1537,13 @@ impl OpenRouterProvider {
             ))),
             api_base,
             auth,
+            auth_source: Some(AuthSource::NamedProfile {
+                key_env: key_env.map(ToString::to_string),
+                inline_api_key: profile.api_key.clone(),
+                auth: profile.auth,
+                auth_header: profile.auth_header.clone(),
+                env_file: profile.env_file.clone(),
+            }),
             supports_provider_features: matches!(
                 profile.provider_type,
                 jcode_base::config::NamedProviderType::OpenRouter
@@ -1693,6 +1753,7 @@ impl OpenRouterProvider {
             ))),
             api_base,
             auth,
+            auth_source: Some(AuthSource::Global),
             supports_provider_features,
             supports_model_catalog,
             profile_id,
@@ -1734,6 +1795,10 @@ impl OpenRouterProvider {
                 token: api_key,
                 label: DEFAULT_API_KEY_NAME.to_string(),
             },
+            auth_source: Some(AuthSource::EnvKey {
+                key_name: DEFAULT_API_KEY_NAME.to_string(),
+                env_file: DEFAULT_ENV_FILE.to_string(),
+            }),
             supports_provider_features: true,
             supports_model_catalog: true,
             profile_id: None,
@@ -1803,6 +1868,13 @@ impl OpenRouterProvider {
             ))),
             api_base,
             auth,
+            auth_source: Some(AuthSource::ProfileKey {
+                api_key_env: resolved.api_key_env.clone(),
+                env_file: resolved.env_file.clone(),
+                requires_api_key: resolved.requires_api_key,
+                profile_id: resolved.id.clone(),
+                display_name: resolved.display_name.clone(),
+            }),
             supports_provider_features: false,
             supports_model_catalog: true,
             profile_id: Some(resolved.id.clone()),
@@ -1993,7 +2065,9 @@ impl OpenRouterProvider {
 
         let client = self.client.clone();
         let api_base = self.api_base.clone();
-        let auth = self.auth.clone();
+        let Ok(auth) = self.current_auth() else {
+            return false;
+        };
         let model_name = model.to_string();
         let refresh_state = Arc::clone(&self.endpoint_refresh);
         let endpoints_cache = Arc::clone(&self.endpoints_cache);
@@ -2006,6 +2080,7 @@ impl OpenRouterProvider {
                 reasoning_effort: Arc::new(RwLock::new(None)),
                 api_base,
                 auth,
+                auth_source: None,
                 supports_provider_features: true,
                 supports_model_catalog: true,
                 profile_id: None,
@@ -2075,7 +2150,9 @@ impl OpenRouterProvider {
 
         let client = self.client.clone();
         let api_base = self.api_base.clone();
-        let auth = self.auth.clone();
+        let Ok(auth) = self.current_auth() else {
+            return;
+        };
         let models_cache = Arc::clone(&self.models_cache);
         let refresh_state = Arc::clone(&self.model_catalog_refresh);
         let previous_fingerprint = self.cached_model_catalog_fingerprint();
@@ -2451,6 +2528,107 @@ impl OpenRouterProvider {
         Self::get_api_key().is_some()
     }
 
+    /// Re-resolve auth from an `AuthSource` captured at construction. Called
+    /// per request so config/env edits take effect without restarting.
+    fn resolve_auth_source(source: &AuthSource) -> Result<ProviderAuth> {
+        match source {
+            AuthSource::Global => Self::resolve_auth(),
+            AuthSource::NamedProfile {
+                key_env,
+                inline_api_key,
+                auth,
+                auth_header,
+                env_file,
+            } => {
+                let key_label = key_env
+                    .clone()
+                    .unwrap_or_else(|| "inline api_key".to_string());
+                let env_file = env_file
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("named-provider.env");
+                let key = key_env
+                    .as_deref()
+                    .and_then(|name| load_api_key_from_env_or_config(name, env_file))
+                    .or_else(|| inline_api_key.clone());
+                match auth {
+                    jcode_base::config::NamedProviderAuth::None => Ok(ProviderAuth::None {
+                        label: "local endpoint (no auth)".to_string(),
+                    }),
+                    jcode_base::config::NamedProviderAuth::Bearer => match key {
+                        Some(token) => Ok(ProviderAuth::AuthorizationBearer {
+                            token,
+                            label: key_label,
+                        }),
+                        None => Ok(ProviderAuth::Missing { label: key_label }),
+                    },
+                    jcode_base::config::NamedProviderAuth::Header => match key {
+                        Some(value) => Ok(ProviderAuth::HeaderValue {
+                            header_name: HeaderName::from_bytes(
+                                auth_header.as_deref().unwrap_or("api-key").as_bytes(),
+                            )?,
+                            value,
+                            label: key_label,
+                        }),
+                        None => Ok(ProviderAuth::Missing { label: key_label }),
+                    },
+                }
+            }
+            AuthSource::EnvKey { key_name, env_file } => {
+                let token =
+                    load_api_key_from_env_or_config(key_name, env_file).ok_or_else(|| {
+                        let path = jcode_base::storage::app_config_dir()
+                            .map(|dir| dir.join(env_file).display().to_string())
+                            .unwrap_or_else(|_| env_file.clone());
+                        anyhow::anyhow!("{} not found in environment or {}", key_name, path)
+                    })?;
+                Ok(ProviderAuth::AuthorizationBearer {
+                    token,
+                    label: key_name.clone(),
+                })
+            }
+            AuthSource::ProfileKey {
+                api_key_env,
+                env_file,
+                requires_api_key,
+                profile_id,
+                display_name,
+            } => match load_api_key_from_env_or_config(api_key_env, env_file) {
+                Some(token) => Ok(ProviderAuth::AuthorizationBearer {
+                    token,
+                    label: api_key_env.clone(),
+                }),
+                None if !requires_api_key => Ok(ProviderAuth::None {
+                    label: "local endpoint (no auth)".to_string(),
+                }),
+                None => {
+                    let path = jcode_base::storage::app_config_dir()
+                        .map(|dir| dir.join(env_file).display().to_string())
+                        .unwrap_or_else(|_| env_file.clone());
+                    anyhow::bail!(
+                        "{} credentials not available. {} not found in environment or {}. Run `jcode login --provider {}` first.",
+                        display_name,
+                        api_key_env,
+                        path,
+                        profile_id,
+                    );
+                }
+            },
+        }
+    }
+
+    /// Auth to use for this request. Re-resolves from config/env when the
+    /// provider was built with a lazy `auth_source`; otherwise falls back to
+    /// the construction-time snapshot. Never cached: config.toml /
+    /// `~/.jcode/.env` edits take effect on the next request.
+    fn current_auth(&self) -> Result<ProviderAuth> {
+        match &self.auth_source {
+            Some(source) => Self::resolve_auth_source(source),
+            None => Ok(self.auth.clone()),
+        }
+    }
+
     fn resolve_auth() -> Result<ProviderAuth> {
         if let Some(provider) = configured_dynamic_bearer_provider() {
             return match provider.as_str() {
@@ -2558,7 +2736,7 @@ impl OpenRouterProvider {
         fetch_models_from_api(
             self.client.clone(),
             self.api_base.clone(),
-            self.auth.clone(),
+            self.current_auth()?,
             Arc::clone(&self.models_cache),
             self.foreground_cache_namespace(),
         )
@@ -2570,7 +2748,7 @@ impl OpenRouterProvider {
         fetch_models_from_api(
             self.client.clone(),
             self.api_base.clone(),
-            self.auth.clone(),
+            self.current_auth()?,
             Arc::clone(&self.models_cache),
             self.foreground_cache_namespace(),
         )
@@ -2609,7 +2787,7 @@ impl OpenRouterProvider {
         // Fetch from API
         let url = format!("{}/models/{}/endpoints", self.api_base, model);
         let response = self
-            .auth
+            .current_auth()?
             .apply(self.client.get(&url))
             .await?
             .send()

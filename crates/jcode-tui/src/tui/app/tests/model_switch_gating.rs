@@ -1,6 +1,9 @@
 // Runtime `/model` switch invariants (design: model switch handling logic):
-// - busy sessions reject the switch instead of mutating the shared provider
-//   mid-turn;
+// - busy sessions (turn running / turn pending / follow-ups queued) defer the
+//   switch into the pending slot instead of mutating the shared provider
+//   mid-turn; the switch applies at the end of the turn, mirroring the
+//   server's deferred agent mutation. A pending provider auto-switch still
+//   rejects (it has its own countdown + Esc-cancel flow);
 // - same-model requests are no-ops that keep the provider session id;
 // - a real switch snapshots/saves the session and best-effort persists the
 //   new default model.
@@ -65,9 +68,104 @@ fn create_model_switch_probe_app() -> ModelSwitchProbe {
 }
 
 #[test]
-fn model_switch_rejects_while_turn_is_running() {
+fn model_switch_defers_while_turn_is_running() {
     let (mut app, _, set_model_calls) = create_model_switch_probe_app();
     app.is_processing = true;
+
+    assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
+
+    let last = app.display_messages.last().expect("deferral notice");
+    assert!(
+        last.content.contains("queued"),
+        "expected queued deferral notice, got: {}",
+        last.content
+    );
+    assert_eq!(app.status_notice(), Some("Model switch queued".to_string()));
+    assert!(
+        app.pending_local_model_switch.is_some(),
+        "a busy switch must be queued in the pending slot"
+    );
+    assert!(
+        set_model_calls.lock().unwrap().is_empty(),
+        "no set_model call may be issued while a turn is running"
+    );
+    assert_eq!(app.session.model.as_deref(), Some("gpt-5.5"));
+}
+
+#[test]
+fn model_switch_defers_while_followups_are_queued() {
+    let (mut app, _, set_model_calls) = create_model_switch_probe_app();
+    app.queued_messages.push("follow-up".to_string());
+
+    assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
+
+    let last = app.display_messages.last().expect("deferral notice");
+    assert!(
+        last.content.contains("queued"),
+        "expected queued deferral notice, got: {}",
+        last.content
+    );
+    assert_eq!(app.status_notice(), Some("Model switch queued".to_string()));
+    assert!(
+        app.pending_local_model_switch.is_some(),
+        "a busy switch must be queued in the pending slot"
+    );
+    assert!(set_model_calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn model_switch_pending_applies_on_turn_end() {
+    let (mut app, model, set_model_calls) = create_model_switch_probe_app();
+    app.provider_session_id = Some("busy-session".to_string());
+    app.is_processing = true;
+
+    assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
+    assert!(app.pending_local_model_switch.is_some());
+    assert!(set_model_calls.lock().unwrap().is_empty());
+    assert_eq!(app.session.model.as_deref(), Some("gpt-5.5"));
+
+    // The turn ends: the queued switch applies exactly like the server's
+    // deferred agent mutation once the agent lock is released.
+    app.is_processing = false;
+    app.consume_pending_local_model_switch();
+
+    assert_eq!(*model.lock().unwrap(), "gpt-5.6");
+    assert_eq!(
+        set_model_calls.lock().unwrap().as_slice(),
+        &["gpt-5.6".to_string()]
+    );
+    assert_eq!(app.session.model.as_deref(), Some("gpt-5.6"));
+    assert_eq!(
+        app.provider_session_id, None,
+        "a queued switch must reset the provider session id on apply"
+    );
+    assert!(
+        app.pending_local_model_switch.is_none(),
+        "the pending slot must be consumed"
+    );
+    let last = app.display_messages.last().expect("switch confirmation");
+    assert!(
+        last.content.contains("Switched to model"),
+        "expected switch confirmation, got: {}",
+        last.content
+    );
+}
+
+#[test]
+fn model_switch_rejects_while_failover_is_pending() {
+    let (mut app, _, set_model_calls) = create_model_switch_probe_app();
+    app.pending_provider_failover = Some(super::PendingProviderFailover {
+        prompt: crate::provider::ProviderFailoverPrompt {
+            from_provider: "probe".to_string(),
+            from_label: "probe-a".to_string(),
+            to_provider: "probe-b".to_string(),
+            to_label: "probe-b".to_string(),
+            reason: "probe".to_string(),
+            estimated_input_chars: 0,
+            estimated_input_tokens: 0,
+        },
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(3),
+    });
 
     assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
 
@@ -79,24 +177,8 @@ fn model_switch_rejects_while_turn_is_running() {
     );
     assert_eq!(app.status_notice(), Some("Model switch busy".to_string()));
     assert!(
-        set_model_calls.lock().unwrap().is_empty(),
-        "no set_model call may be issued while a turn is running"
-    );
-    assert_eq!(app.session.model.as_deref(), Some("gpt-5.5"));
-}
-
-#[test]
-fn model_switch_rejects_while_followups_are_queued() {
-    let (mut app, _, set_model_calls) = create_model_switch_probe_app();
-    app.queued_messages.push("follow-up".to_string());
-
-    assert!(super::model_context::handle_model_command(&mut app, "/model gpt-5.6"));
-
-    let last = app.display_messages.last().expect("error message");
-    assert!(
-        last.content.contains("Cannot switch models"),
-        "expected busy rejection, got: {}",
-        last.content
+        app.pending_local_model_switch.is_none(),
+        "a pending provider auto-switch must not be queued over"
     );
     assert!(set_model_calls.lock().unwrap().is_empty());
 }

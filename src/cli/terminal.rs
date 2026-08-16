@@ -171,17 +171,6 @@ pub fn get_current_session() -> Option<String> {
     crate::get_current_session()
 }
 
-/// Whether a panic in this process should relabel the on-disk session as crashed.
-///
-/// Only an `Active` session can legitimately make that transition. A dying
-/// client (closed terminal window, dropped SSH) must not relabel a session that
-/// the shared server still owns, nor write its stale snapshot over the server's
-/// newer one. See #599; `mark_current_session_crashed` already had this guard.
-#[allow(dead_code)] // called from tests; lib panic hook no longer references it
-fn should_record_panic_as_crash(status: &session::SessionStatus) -> bool {
-    matches!(status, session::SessionStatus::Active)
-}
-
 pub fn install_panic_hook() {
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
@@ -567,7 +556,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    static TEST_SESSION_LOCK: Mutex<()> = Mutex::new(());
+    pub(super) static TEST_SESSION_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_guard() -> TuiRuntimeGuard {
         // All terminal-mode flags disabled so teardown only performs the minimal
@@ -736,44 +725,113 @@ mod panic_crash_labeling_tests {
     //! Regression coverage for #599.
     //!
     //! Closing a terminal (or dropping SSH) makes `ratatui::restore()`'s
-    //! internal `eprintln!` panic with EIO. The panic hook then relabeled the
-    //! session as `Crashed` and saved the dying client's stale snapshot over the
-    //! server's newer one. Only an `Active` session may be relabeled.
+    //! internal `eprintln!` panic with EIO. The dying client must not relabel a
+    //! session that the shared server still owns, nor write its stale snapshot
+    //! over the server's newer one. The guard lives in
+    //! `mark_current_session_crashed`: only an `Active` session is relabeled.
+    //! These tests drive the real function against real session files in a
+    //! throwaway `JCODE_HOME` (the standalone `should_record_panic_as_crash`
+    //! predicate was removed with the panic-hook refactor).
     use super::*;
+
+    /// Create a session file with the given status under a throwaway
+    /// `JCODE_HOME` and return its id.
+    fn seed_session_with_status(status: session::SessionStatus) -> String {
+        let session_id = format!(
+            "session_599_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        );
+        let mut session = session::Session::create_with_id(session_id.clone(), None, None);
+        session.set_status(status);
+        session.save().expect("seed session on disk");
+        session_id
+    }
+
+    /// Run the crash-relabeling entry point the panic/signal path uses, then
+    /// restore `JCODE_HOME` even if the closure panics.
+    fn with_test_home(f: impl FnOnce()) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(dir.path().join("sessions")).expect("sessions dir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", dir.path());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        match prev_home {
+            Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    fn run_mark_crashed(session_id: &str) {
+        set_current_session(session_id);
+        mark_current_session_crashed("panic with EIO".to_string());
+    }
 
     #[test]
     fn active_session_is_still_labeled_crashed_on_panic() {
-        assert!(should_record_panic_as_crash(
-            &session::SessionStatus::Active
-        ));
+        let _env_lock = crate::storage::lock_test_env();
+        let _session_lock = super::tests::TEST_SESSION_LOCK.lock().unwrap();
+        with_test_home(|| {
+            let session_id = seed_session_with_status(session::SessionStatus::Active);
+            run_mark_crashed(&session_id);
+
+            let reloaded = session::Session::load(&session_id).expect("reload seeded session");
+            assert!(
+                matches!(reloaded.status, session::SessionStatus::Crashed { .. }),
+                "an Active session must be relabeled Crashed by a panicking client"
+            );
+        });
     }
 
     #[test]
-    fn already_crashed_session_is_not_relabeled() {
-        assert!(!should_record_panic_as_crash(
-            &session::SessionStatus::Crashed {
-                message: Some("earlier crash".to_string())
-            }
-        ));
-    }
-
-    #[test]
-    fn completed_session_is_not_relabeled_by_a_dying_client() {
+    fn non_active_session_is_not_relabeled_by_a_dying_client() {
         // The exact #599 shape: the session lives on in the shared server and is
         // no longer Active locally, so a dead-terminal panic must leave it alone.
-        for status in [
-            session::SessionStatus::Closed,
-            session::SessionStatus::Reloaded,
-            session::SessionStatus::Compacted,
-            session::SessionStatus::RateLimited,
-            session::SessionStatus::Error {
-                message: "unrelated".to_string(),
-            },
-        ] {
+        let _env_lock = crate::storage::lock_test_env();
+        let _session_lock = super::tests::TEST_SESSION_LOCK.lock().unwrap();
+        with_test_home(|| {
+            for status in [
+                session::SessionStatus::Closed,
+                session::SessionStatus::Reloaded,
+                session::SessionStatus::Compacted,
+                session::SessionStatus::RateLimited,
+                session::SessionStatus::Error {
+                    message: "unrelated".to_string(),
+                },
+            ] {
+                let session_id = seed_session_with_status(status.clone());
+                run_mark_crashed(&session_id);
+
+                let reloaded = session::Session::load(&session_id).expect("reload seeded session");
+                assert_eq!(
+                    reloaded.status, status,
+                    "non-active status must not be relabeled as crashed"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn already_crashed_session_keeps_its_crash_record() {
+        let _env_lock = crate::storage::lock_test_env();
+        let _session_lock = super::tests::TEST_SESSION_LOCK.lock().unwrap();
+        with_test_home(|| {
+            let session_id = seed_session_with_status(session::SessionStatus::Crashed {
+                message: Some("earlier crash".to_string()),
+            });
+            run_mark_crashed(&session_id);
+
+            let reloaded = session::Session::load(&session_id).expect("reload seeded session");
             assert!(
-                !should_record_panic_as_crash(&status),
-                "non-active status {status:?} must not be relabeled as crashed"
+                matches!(reloaded.status, session::SessionStatus::Crashed { .. }),
+                "an already-crashed session stays crashed"
             );
-        }
+        });
     }
 }

@@ -53,8 +53,19 @@ Jcode 也可以在启动后交互式提供这些选项。
   ```
 
   `.tar.gz` 会解压提取顶层文件，裸 `.exe` 直接安装；版本号从包内二进制自动探测，
-  安装到 `%LOCALAPPDATA%\jcode\builds\versions\<version>\`，并切换 stable/current
-  通道与启动器。全程离线：不做发布查询、不下载、不取校验和。
+  安装到 `%LOCALAPPDATA%\jcode\builds\versions\<version>\`，更新 stable 与 current
+  两个通道（启动器切到 current 通道），并写 stable/current 版本标记。
+  全程离线：不做发布查询、不下载、不取校验和。
+
+  **通道语义**（Windows 三种安装路径各不相同，不要混为一谈）：
+
+  - `install.ps1`（全新安装）：只维护 stable 通道，启动器 `%LOCALAPPDATA%\jcode\bin\jcode.exe`
+    指向 stable 副本，不创建 current 通道。
+  - `jcode update --local`（更新已装好的 jcode）：额外维护 current 通道，并把启动器
+    切到 current（active）通道。
+  - `scripts\update_local_install.ps1`（本地自研构建，单 exe 布局）：部署到
+    `%JCODE_HOME%\bin\jcode.exe`（启动器）+ `%JCODE_HOME%\builds\current-release-lto\jcode.exe`
+    （build slot，同一文件的副本），并持久化 `JCODE_HOME` 用户环境变量。
 
 - **全新安装**：
 
@@ -79,6 +90,7 @@ $script = [scriptblock]::Create((irm https://jcode.sh/install.ps1))
 
 - 启动器：`%LOCALAPPDATA%\jcode\bin\jcode.exe`
 - 稳定二进制：`%LOCALAPPDATA%\jcode\builds\stable\jcode.exe`
+- 当前通道（active，`jcode update --local` 维护，启动器指向它）：`%LOCALAPPDATA%\jcode\builds\current\jcode.exe`
 - 版本化二进制：`%LOCALAPPDATA%\jcode\builds\versions\<version>\jcode.exe`
 - 用户数据与配置：`%USERPROFILE%\.jcode`
 
@@ -97,6 +109,53 @@ Get-FileHash (Get-Command jcode).Source -Algorithm SHA256
 ```powershell
 Get-AuthenticodeSignature (Get-Command jcode).Source | Format-List Status,StatusMessage,SignerCertificate
 ```
+
+## 安装后验证清单
+
+安装/更新完成后，**重启终端**（必要时注销重登），然后逐项验证。全部通过即安装就绪：
+
+1. **`which jcode` 只解析到唯一落点**
+
+   ```powershell
+   Get-Command jcode | Select-Object -ExpandProperty Source
+   ```
+
+   只能输出一个路径（PowerShell 5.1 没有 `which`，用上面的命令；cmd 里用 `where jcode`）。
+   官方安装应为 `%LOCALAPPDATA%\jcode\bin\jcode.exe`；本地自研构建更新
+   （`update_local_install.ps1`）应为 `%JCODE_HOME%\bin\jcode.exe`。若输出多个落点，
+   说明 PATH 里有残留 jcode 条目，用 `jcode update` 或卸载重装收敛到单一条目。
+
+2. **版本号正确**
+
+   ```powershell
+   jcode --version
+   ```
+
+   输出应为刚安装/更新的版本号。
+
+3. **cc-switch 冒烟（ping 实测 pong）**
+
+   配置了 cc-switch 本地代理时，实测往返链路：
+
+   ```powershell
+   jcode --provider-profile cc-switch run "Reply with exactly: pong"
+   ```
+
+   应收到模型回复 `pong`（或含 `pong`）；代理不可达时该命令直接报连接失败。
+   也可以在 cc-switch 代理面板确认请求已记录。此验证无需真实 API key
+   （`auth = "none"`，key 由 cc-switch 代理注入）。
+
+4. **JCODE_HOME 持久化检查（如设置了 JCODE_HOME）**
+
+   通过 `update_local_install.ps1` 安装过的话，该脚本会把 JCODE_HOME 持久化为
+   用户环境变量：
+
+   ```powershell
+   [Environment]::GetEnvironmentVariable('JCODE_HOME', 'User')
+   ```
+
+   应输出你的 JCODE_HOME 目录；重启后的新终端里 `$env:JCODE_HOME` 应与此一致，
+   且第 1 步的 `jcode` 落点就在该目录的 `bin\` 下。
 
 ## Microsoft Defender 与 SmartScreen
 

@@ -142,10 +142,16 @@ esac
 
 report_install_funnel "installer_start" "success" ""
 
-if [ "$IS_WINDOWS" = true ]; then
-  INSTALL_DIR="${JCODE_INSTALL_DIR:-$LOCALAPPDATA/jcode/bin}"
+# Mirrors launcher_dir() in crates/jcode-build-support/src/paths.rs:
+# JCODE_INSTALL_DIR > JCODE_HOME/bin > platform default.
+if [ -n "${JCODE_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR="$JCODE_INSTALL_DIR"
+elif [ -n "${JCODE_HOME:-}" ]; then
+  INSTALL_DIR="$JCODE_HOME/bin"
+elif [ "$IS_WINDOWS" = true ]; then
+  INSTALL_DIR="$LOCALAPPDATA/jcode/bin"
 else
-  INSTALL_DIR="${JCODE_INSTALL_DIR:-$HOME/.local/bin}"
+  INSTALL_DIR="$HOME/.local/bin"
 fi
 
 # Prefer GitHub's stable redirect when it is reachable so publication changes
@@ -182,11 +188,18 @@ INSTALL_VERSION="${VERSION#v}"
 
 GITHUB_RELEASE_BASE="https://github.com/$REPO/releases/download/$VERSION"
 
+# Mirrors resolve_builds_dir() in crates/jcode-build-support/src/storage_helpers.rs:
+# JCODE_HOME/builds > (Windows) %LOCALAPPDATA%\jcode\builds > ~/.jcode/builds.
 if [ "$IS_WINDOWS" = true ]; then
   EXE=".exe"
-  builds_dir="$LOCALAPPDATA/jcode/builds"
 else
   EXE=""
+fi
+if [ -n "${JCODE_HOME:-}" ]; then
+  builds_dir="$JCODE_HOME/builds"
+elif [ "$IS_WINDOWS" = true ]; then
+  builds_dir="$LOCALAPPDATA/jcode/builds"
+else
   builds_dir="$HOME/.jcode/builds"
 fi
 stable_dir="$builds_dir/stable"

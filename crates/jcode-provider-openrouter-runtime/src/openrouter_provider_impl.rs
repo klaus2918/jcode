@@ -16,6 +16,10 @@ impl Provider for OpenRouterProvider {
         OpenRouterProvider::direct_openai_compatible_route_parts(self)
     }
 
+    fn credential_fingerprint(&self) -> Option<String> {
+        OpenRouterProvider::credential_fingerprint(self)
+    }
+
     fn explicit_provider_pin_for_current_model(&self) -> Option<String> {
         OpenRouterProvider::explicit_provider_pin_for_current_model(self)
     }
@@ -289,7 +293,7 @@ impl Provider for OpenRouterProvider {
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
         let client = self.client.clone();
         let api_base = self.api_base.clone();
-        let auth = self.auth.clone();
+        let auth = self.current_auth()?;
         let send_openrouter_headers = self.send_openrouter_headers;
         let request_for_retries = request;
         let model_for_stream = model.clone();
@@ -753,6 +757,7 @@ impl Provider for OpenRouterProvider {
             reasoning_effort: Arc::new(RwLock::new(self.reasoning_effort())),
             api_base: self.api_base.clone(),
             auth: self.auth.clone(),
+            auth_source: self.auth_source.clone(),
             supports_provider_features: self.supports_provider_features,
             supports_model_catalog: self.supports_model_catalog,
             profile_id: self.profile_id.clone(),

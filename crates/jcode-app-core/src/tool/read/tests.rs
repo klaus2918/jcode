@@ -179,7 +179,7 @@ fn read_tool_description_advertises_supported_file_types() {
     let description = tool.description().to_lowercase();
     assert!(description.contains("text"), "description={description}");
     assert!(description.contains("image"), "description={description}");
-    assert!(description.contains("pdf"), "description={description}");
+    assert!(!description.contains("pdf"), "description={description}");
 
     let schema = tool.parameters_schema();
     let file_path_description = schema["properties"]["file_path"]["description"]

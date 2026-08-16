@@ -149,9 +149,9 @@ jobs:
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             # Rebuild std with emulated TLS too; see the nightly install step
             # above for why Termux needs this.
-            cargo +nightly build -Z build-std=std,panic_abort --release --target ${{ matrix.target }}
+            cargo +nightly build -Z build-std=std,panic_abort --profile release-lto --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --profile release-lto --target ${{ matrix.target }}
           fi
         env:
           JCODE_RELEASE_BUILD: "1"
@@ -170,7 +170,7 @@ jobs:
         if: matrix.compat_container != true
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/jcode dist/${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release-lto/jcode dist/${{ matrix.artifact }}
           chmod +x dist/${{ matrix.artifact }}
           cd dist && tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
@@ -212,7 +212,8 @@ jobs:
             target: aarch64-pc-windows-msvc
             artifact: jcode-windows-aarch64
             unsigned_artifact: windows-unsigned-aarch64
-            cargo_args: "--no-default-features --features pdf"
+            # Embeddings stay disabled on ARM64 Windows: tract-linalg SIMD issue (8eb50ac15)
+            cargo_args: "--no-default-features"
 
     steps:
       - uses: actions/checkout@v4
@@ -255,7 +256,7 @@ jobs:
             }
           }
 
-          $cargoArgs = @("build", "--release", "--target", "${{ matrix.target }}")
+          $cargoArgs = @("build", "--profile", "release-lto", "--target", "${{ matrix.target }}")
           $extraArgs = "${{ matrix.cargo_args }}"
           if (-not [string]::IsNullOrWhiteSpace($extraArgs)) {
             $cargoArgs += $extraArgs -split ' '
@@ -269,7 +270,7 @@ jobs:
       - name: Verify built Windows binary launches
         shell: pwsh
         run: |
-          & "target/${{ matrix.target }}/release/jcode.exe" --version
+          & "target/${{ matrix.target }}/release-lto/jcode.exe" --version
           if ($LASTEXITCODE -ne 0) {
             throw "Built Windows binary failed to run --version"
           }
@@ -278,14 +279,14 @@ jobs:
         shell: pwsh
         run: |
           & ./.github/scripts/verify_windows_install.ps1 `
-            -ArtifactExePath "target/${{ matrix.target }}/release/jcode.exe" `
+            -ArtifactExePath "target/${{ matrix.target }}/release-lto/jcode.exe" `
             -Version "${{ github.ref_name }}"
 
       - name: Stage unsigned binary for signing
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/jcode.exe" "dist/${{ matrix.artifact }}.exe"
+          Copy-Item "target/${{ matrix.target }}/release-lto/jcode.exe" "dist/${{ matrix.artifact }}.exe"
 
       - name: Upload unsigned binary for signing
         uses: actions/upload-artifact@v4
@@ -476,15 +477,15 @@ jobs:
             export JCODE_BUILD_SEMVER="${{ github.ref_name }}"
 
             echo "::group::cargo build (jcode binary)"
-            cargo build --locked --release -p jcode --bin jcode
+            cargo build --locked --profile release-lto -p jcode --bin jcode
             echo "::endgroup::"
 
             echo "::group::Verify binary launches"
-            ./target/release/jcode --version
+            ./target/release-lto/jcode --version
             echo "::endgroup::"
 
             mkdir -p dist
-            cp target/release/jcode dist/jcode-freebsd-x86_64
+            cp target/release-lto/jcode dist/jcode-freebsd-x86_64
             chmod +x dist/jcode-freebsd-x86_64
             cd dist && tar czf jcode-freebsd-x86_64.tar.gz jcode-freebsd-x86_64
 
@@ -620,22 +621,7 @@ jobs:
       - name: Generate checksums
         shell: bash
         run: |
-          python3 - << 'PY'
-          import hashlib
-          from pathlib import Path
-
-          files = sorted(
-              p for p in Path("artifacts").rglob("*")
-              if p.is_file() and (p.name.endswith(".tar.gz") or p.name.endswith(".exe"))
-          )
-          if not files:
-              raise SystemExit("No release assets found for checksum generation")
-
-          with Path("SHA256SUMS").open("w", encoding="utf-8") as out:
-              for path in files:
-                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                  out.write(f"{digest}  {path.name}\n")
-          PY
+          bash scripts/generate_checksums.sh artifacts SHA256SUMS --recursive
           cat SHA256SUMS
 
       # Per-platform assets were already attached to the draft by their build
@@ -717,184 +703,22 @@ jobs:
           HOMEBREW_DEPLOY_KEY: ${{ secrets.HOMEBREW_DEPLOY_KEY }}
         if: env.HOMEBREW_DEPLOY_KEY != '' && env.HOMEBREW_READY == 'true'
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          VERSION_NUM="${VERSION#v}"
-
-          LINUX_SHA=$(sha256sum artifacts/jcode-linux-x86_64/jcode-linux-x86_64.tar.gz | cut -d' ' -f1)
-          LINUX_ARM_SHA=$(sha256sum artifacts/jcode-linux-aarch64/jcode-linux-aarch64.tar.gz | cut -d' ' -f1)
-          MACOS_ARM_SHA=$(sha256sum artifacts/jcode-macos-aarch64/jcode-macos-aarch64.tar.gz | cut -d' ' -f1)
-          MACOS_INTEL_SHA=$(sha256sum artifacts/jcode-macos-x86_64/jcode-macos-x86_64.tar.gz | cut -d' ' -f1)
-
-          mkdir -p ~/.ssh
-          echo "$HOMEBREW_DEPLOY_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no"
-
-          git clone git@github.com:1jehuang/homebrew-jcode.git /tmp/homebrew-jcode
-
-          cat > /tmp/homebrew-jcode/Formula/jcode.rb << FORMULA
-          class Jcode < Formula
-            desc "AI coding agent powered by Claude and ChatGPT"
-            homepage "https://github.com/1jehuang/jcode"
-            version "${VERSION_NUM}"
-            license "MIT"
-
-            on_macos do
-              on_arm do
-                url "https://github.com/1jehuang/jcode/releases/download/${VERSION}/jcode-macos-aarch64.tar.gz"
-                sha256 "${MACOS_ARM_SHA}"
-
-                def install
-                  bin.install "jcode-macos-aarch64" => "jcode"
-                end
-              end
-
-              on_intel do
-                url "https://github.com/1jehuang/jcode/releases/download/${VERSION}/jcode-macos-x86_64.tar.gz"
-                sha256 "${MACOS_INTEL_SHA}"
-
-                def install
-                  bin.install "jcode-macos-x86_64" => "jcode"
-                end
-              end
-            end
-
-            on_linux do
-              on_intel do
-                url "https://github.com/1jehuang/jcode/releases/download/${VERSION}/jcode-linux-x86_64.tar.gz"
-                sha256 "${LINUX_SHA}"
-
-                def install
-                  libexec.install "jcode-linux-x86_64", "jcode-linux-x86_64.bin"
-                  libexec.install Dir["libssl.so*"], Dir["libcrypto.so*"] unless Dir["libssl.so*", "libcrypto.so*"].empty?
-                  (bin/"jcode").write <<~SH
-                    #!/bin/sh
-                    exec "#{libexec}/jcode-linux-x86_64" "$@"
-                  SH
-                end
-              end
-
-              on_arm do
-                url "https://github.com/1jehuang/jcode/releases/download/${VERSION}/jcode-linux-aarch64.tar.gz"
-                sha256 "${LINUX_ARM_SHA}"
-
-                def install
-                  bin.install "jcode-linux-aarch64" => "jcode"
-                end
-              end
-            end
-
-            test do
-              assert_match "jcode", shell_output("#{bin}/jcode --version")
-            end
-          end
-          FORMULA
-
-          sed -i 's/^          //' /tmp/homebrew-jcode/Formula/jcode.rb
-
-          cd /tmp/homebrew-jcode
-          git config user.name "jcode-release-bot"
-          git config user.email "release@jcode.dev"
-          git add Formula/jcode.rb
-          git commit -m "Update to ${VERSION}" || echo "No changes"
-          git push
+          bash scripts/update_packages.sh \
+            --version "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --assets-dir artifacts \
+            --homebrew
 
       - name: Update AUR package
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         if: env.AUR_SSH_KEY != '' && env.AUR_READY == 'true'
         run: |
-          set -euo pipefail
-
-          retry() {
-            local attempts="$1"
-            local delay="$2"
-            shift 2
-            local try=1
-
-            until "$@"; do
-              local exit_code=$?
-              if [ "$try" -ge "$attempts" ]; then
-                return "$exit_code"
-              fi
-              echo "Attempt ${try}/${attempts} failed; retrying in ${delay}s..."
-              sleep "$delay"
-              try=$((try + 1))
-            done
-          }
-
-          VERSION="${GITHUB_REF_NAME}"
-          VERSION_NUM="${VERSION#v}"
-
-          LINUX_SHA=$(sha256sum artifacts/jcode-linux-x86_64/jcode-linux-x86_64.tar.gz | cut -d' ' -f1)
-          LINUX_URL="https://github.com/1jehuang/jcode/releases/download/${VERSION}/jcode-linux-x86_64.tar.gz"
-
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur_key
-          chmod 600 ~/.ssh/aur_key
-          touch ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
-          retry 3 5 bash -lc 'ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts'
-
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ConnectTimeout=10 -o ConnectionAttempts=3"
-
-          retry 3 5 bash -lc 'rm -rf /tmp/jcode-aur && git clone --depth 1 ssh://aur@aur.archlinux.org/jcode-bin.git /tmp/jcode-aur'
-          cd /tmp/jcode-aur
-          git remote set-url origin ssh://aur@aur.archlinux.org/jcode-bin.git
-
-          cat > PKGBUILD << 'PKGBUILD_END'
-          # Maintainer: Jeremy Huang <jeremyhuang55555@gmail.com>
-          pkgname=jcode-bin
-          pkgver=VERSION_PLACEHOLDER
-          pkgrel=1
-          pkgdesc="AI coding agent powered by Claude and ChatGPT"
-          arch=('x86_64')
-          url="https://github.com/1jehuang/jcode"
-          license=('MIT')
-          provides=('jcode')
-          conflicts=('jcode')
-          source=("URL_PLACEHOLDER")
-          sha256sums=('SHA_PLACEHOLDER')
-
-          package() {
-              install -Dm755 "${srcdir}/jcode-linux-x86_64" "${pkgdir}/usr/lib/jcode/jcode-linux-x86_64"
-              install -Dm755 "${srcdir}/jcode-linux-x86_64.bin" "${pkgdir}/usr/lib/jcode/jcode-linux-x86_64.bin"
-              if compgen -G "${srcdir}/libssl.so*" >/dev/null; then
-                  install -Dm644 "${srcdir}"/libssl.so* "${pkgdir}/usr/lib/jcode/"
-              fi
-              if compgen -G "${srcdir}/libcrypto.so*" >/dev/null; then
-                  install -Dm644 "${srcdir}"/libcrypto.so* "${pkgdir}/usr/lib/jcode/"
-              fi
-              mkdir -p "${pkgdir}/usr/bin"
-              ln -s /usr/lib/jcode/jcode-linux-x86_64 "${pkgdir}/usr/bin/jcode"
-          }
-          PKGBUILD_END
-
-          sed -i "s|VERSION_PLACEHOLDER|${VERSION_NUM}|" PKGBUILD
-          sed -i "s|URL_PLACEHOLDER|${LINUX_URL}|" PKGBUILD
-          sed -i "s|SHA_PLACEHOLDER|${LINUX_SHA}|" PKGBUILD
-          sed -i 's/^          //' PKGBUILD
-
-          # Generate .SRCINFO without makepkg (AUR uses tab indentation)
-          printf 'pkgbase = jcode-bin\n' > .SRCINFO
-          printf '\tpkgdesc = AI coding agent powered by Claude and ChatGPT\n' >> .SRCINFO
-          printf '\tpkgver = %s\n' "${VERSION_NUM}" >> .SRCINFO
-          printf '\tpkgrel = 1\n' >> .SRCINFO
-          printf '\turl = https://github.com/1jehuang/jcode\n' >> .SRCINFO
-          printf '\tarch = x86_64\n' >> .SRCINFO
-          printf '\tlicense = MIT\n' >> .SRCINFO
-          printf '\tprovides = jcode\n' >> .SRCINFO
-          printf '\tconflicts = jcode\n' >> .SRCINFO
-          printf '\tsource = %s\n' "${LINUX_URL}" >> .SRCINFO
-          printf '\tsha256sums = %s\n' "${LINUX_SHA}" >> .SRCINFO
-          printf '\npkgname = jcode-bin\n' >> .SRCINFO
-
-          git config user.name "Jeremy Huang"
-          git config user.email "jeremyhuang55555@gmail.com"
-          git add PKGBUILD .SRCINFO
-          git commit -m "Update to ${VERSION}" || echo "No changes"
-          retry 3 5 git push origin master
+          bash scripts/update_packages.sh \
+            --version "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --assets-dir artifacts \
+            --aur
 
       - name: Close issues included in the published release
         env:

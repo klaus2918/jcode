@@ -1,7 +1,7 @@
 use super::{
-    AmbientConfig, Config, DiffDisplayMode, DisplayConfig, LatexRenderingMode, ProviderConfig,
-    SessionPickerResumeAction, SwarmSpawnMode, ToolConfig, config_env_fingerprint,
-    populate_context_limits_from_config_ref,
+    AmbientConfig, Config, ConfigCacheFingerprint, DiffDisplayMode, DisplayConfig,
+    LatexRenderingMode, ProviderConfig, SessionPickerResumeAction, SwarmSpawnMode, ToolConfig,
+    config_env_fingerprint, populate_context_limits_from_config_ref,
 };
 use std::ffi::OsString;
 use std::path::Path;
@@ -1097,6 +1097,77 @@ fn config_env_fingerprint_tracks_every_apply_env_override_var() {
         missing.is_empty(),
         "CONFIG_ENV_KEYS must include every env var read by Config::apply_env_overrides; missing: {missing:?}"
     );
+}
+
+#[test]
+fn config_fingerprint_tracks_unified_env_file_changes() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    Config::invalidate_cache();
+
+    let baseline = ConfigCacheFingerprint::current();
+    assert!(baseline.env_file_modified.is_none());
+    assert!(baseline.env_file_len.is_none());
+
+    let env_file = dir.path().join(".env");
+    std::fs::write(&env_file, "DEEPSEEK_API_KEY=sk-one\n").expect("write .env");
+    let after_write = ConfigCacheFingerprint::current();
+    assert_ne!(
+        baseline, after_write,
+        "creating the unified .env must change the config fingerprint"
+    );
+    assert!(after_write.env_file_modified.is_some());
+    assert_eq!(after_write.env_file_len, Some(24));
+
+    std::fs::write(&env_file, "DEEPSEEK_API_KEY=sk-two-much-longer\n").expect("rewrite .env");
+    let after_rewrite = ConfigCacheFingerprint::current();
+    assert_ne!(
+        after_write, after_rewrite,
+        "editing the unified .env must change the config fingerprint"
+    );
+
+    std::fs::remove_file(&env_file).expect("remove .env");
+    let after_remove = ConfigCacheFingerprint::current();
+    assert_eq!(
+        after_remove, baseline,
+        "removing the unified .env must restore the baseline fingerprint"
+    );
+
+    restore_env_var("JCODE_HOME", prev_home);
+    Config::invalidate_cache();
+}
+
+#[test]
+fn config_reloads_when_unified_env_file_changes() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[provider]\ndefault_provider = \"openai\"\n",
+    )
+    .expect("write config.toml");
+    Config::invalidate_cache();
+
+    // 基线：完成一次检查，无变化时不应 reload。
+    crate::config::config();
+    let before = crate::config::config_reload_generation();
+    crate::config::config();
+    assert_eq!(before, crate::config::config_reload_generation());
+
+    // 写入统一 .env：指纹变化必须触发一次 reload。
+    std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=sk-test\n").expect("write .env");
+    crate::config::config();
+    assert!(
+        crate::config::config_reload_generation() > before,
+        "unified .env change must trigger a config cache reload"
+    );
+
+    restore_env_var("JCODE_HOME", prev_home);
+    Config::invalidate_cache();
 }
 
 #[test]

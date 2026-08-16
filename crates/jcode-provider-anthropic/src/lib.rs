@@ -1300,13 +1300,12 @@ mod fill_missing_reasoning_tests {
 
     #[test]
     fn leaves_empty_messages_and_user_messages_untouched() {
-        let mut messages = vec![
-            user("intro"),
-            assistant(vec![]),
-            user("next"),
-        ];
+        let mut messages = vec![user("intro"), assistant(vec![]), user("next")];
         fill_missing_reasoning_blocks(&mut messages);
-        assert!(messages[1].content.is_empty(), "empty assistant stays empty");
+        assert!(
+            messages[1].content.is_empty(),
+            "empty assistant stays empty"
+        );
         assert!(matches!(
             messages[2].content.first(),
             Some(ApiContentBlock::Text { .. })

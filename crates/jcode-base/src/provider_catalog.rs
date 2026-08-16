@@ -5,8 +5,20 @@ pub use jcode_provider_env::{
 };
 pub use jcode_provider_metadata::*;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 pub const OPENAI_COMPAT_LOCAL_ENABLED_ENV: &str = "JCODE_OPENAI_COMPAT_LOCAL_ENABLED";
+
+/// One-way fingerprint of a resolved credential token for provider-runtime
+/// reuse checks. Computed identically on both sides of the comparison (the
+/// installed runtime and the freshly resolved config), so a changed API key
+/// (inline `api_key` or `api_key_env` pointing at the unified `.env`) makes the
+/// fingerprints diverge without leaking the key value into logs or comparisons.
+pub fn credential_token_fingerprint(token: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    format!("len:{} hash:{:016x}", token.len(), hasher.finish())
+}
 
 pub fn api_base_uses_localhost(raw: &str) -> bool {
     let Ok(parsed) = url::Url::parse(raw) else {

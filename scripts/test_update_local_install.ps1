@@ -83,6 +83,41 @@ try {
     $expandableUpdate = Resolve-JcodePathUpdate -LauncherDir $launcherDir -CurrentPath $expandable -JcodeHome $jcHome
     Assert-Equal "$launcherDir;%USERPROFILE%\AppData\Roaming\npm;C:\Python 3.12" $expandableUpdate.Path 'expandable and quoted unrelated entries must be preserved (quotes normalized like install.ps1)'
 
+    Write-Host 'test_all_scripts_share_one_path_utils_module'
+    $pathUtils = Join-Path $repoRoot 'scripts\lib\path_utils.ps1'
+    Assert-True (Test-Path -LiteralPath $pathUtils) 'scripts/lib/path_utils.ps1 must exist'
+    foreach ($script in @(
+        $updateScript,
+        (Join-Path $repoRoot 'scripts\install.ps1'),
+        (Join-Path $repoRoot 'scripts\uninstall.ps1')
+    )) {
+        $text = Get-Content -LiteralPath $script -Raw
+        Assert-True ($text -match 'path_utils\.ps1') "$script must reference the shared path_utils module instead of a private copy"
+    }
+
+    Write-Host 'test_unified_managed_keys_converge_across_call_styles'
+    # The union of every managed key must be reachable from both call styles:
+    # install/uninstall pass -InstallDir, update_local_install passes -JcodeHome,
+    # and the JCODE_HOME env var is honored when the single-exe layout is active.
+    $installManaged = Get-JcodeManagedPathKeys -InstallDir $oldLocalAppDataBin
+    foreach ($expected in @(
+        $oldLocalAppDataBin,
+        (Join-Path $env:LOCALAPPDATA 'jcode')
+    )) {
+        Assert-True ($installManaged.Contains((ConvertTo-JcodePathKey $expected))) "InstallDir call style must manage $expected"
+    }
+    Assert-True (-not $installManaged.Contains((ConvertTo-JcodePathKey $npmDir))) 'unrelated npm dir must never be managed via the InstallDir call style'
+    $env:JCODE_HOME = $jcHome
+    try {
+        $envHomeManaged = Get-JcodeManagedPathKeys -InstallDir $oldLocalAppDataBin
+        Assert-True ($envHomeManaged.Contains((ConvertTo-JcodePathKey $launcherDir))) 'JCODE_HOME env var must be managed via the InstallDir call style too'
+        Assert-True ($envHomeManaged.Contains((ConvertTo-JcodePathKey (Join-Path $jcHome 'builds\current-release-lto')))) 'JCODE_HOME build slot must be managed via the InstallDir call style too'
+    } finally {
+        $env:JCODE_HOME = $null
+    }
+    $jcodeHomeManaged = Get-JcodeManagedPathKeys -JcodeHome $jcHome
+    Assert-True ($jcodeHomeManaged.Contains((ConvertTo-JcodePathKey $oldLocalAppDataBin))) 'JcodeHome call style must also manage the legacy LOCALAPPDATA bin dir'
+
     Write-Host 'All update_local_install PATH tests passed.'
 } finally {
     $env:LOCALAPPDATA = $originalLocalAppData
