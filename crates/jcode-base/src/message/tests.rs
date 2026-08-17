@@ -318,14 +318,20 @@ fn redact_secrets_leaves_normal_output_unchanged() {
 }
 
 #[test]
-fn format_timestamp_is_stable_utc_rfc3339() -> Result<()> {
+fn format_timestamp_is_stable_rfc3339_with_local_offset() -> Result<()> {
+    // The injected timestamps follow the machine's local timezone (UTC in CI,
+    // a positive/negative offset elsewhere) so they match the clock shown in
+    // `Session Context` rather than always being UTC.
     let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:13.250Z")?.with_timezone(&Utc);
-    assert_eq!(Message::format_timestamp(&ts), "2025-03-15T02:24:13.250Z");
+    let expected = ts
+        .with_timezone(&chrono::Local)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    assert_eq!(Message::format_timestamp(&ts), expected);
     Ok(())
 }
 
 #[test]
-fn with_timestamps_prepends_utc_prefix_to_user_text() -> Result<()> {
+fn with_timestamps_prepends_local_time_prefix_to_user_text() -> Result<()> {
     let ts = chrono::DateTime::parse_from_rfc3339("2025-03-15T02:24:03Z")?.with_timezone(&Utc);
     let stamped = Message::with_timestamps(&[Message {
         role: Role::User,
@@ -342,7 +348,12 @@ fn with_timestamps_prepends_utc_prefix_to_user_text() -> Result<()> {
             stamped[0].content[0]
         ));
     };
-    assert_eq!(text, "[2025-03-15T02:24:03.000Z] hello");
+    let expected = format!(
+        "[{}] hello",
+        ts.with_timezone(&chrono::Local)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    );
+    assert_eq!(text, &expected);
     Ok(())
 }
 
@@ -365,9 +376,15 @@ fn with_timestamps_adds_tool_timing_header_with_duration() -> Result<()> {
             stamped[0].content[0]
         ));
     };
+    let start = (ts - chrono::Duration::milliseconds(3_200))
+        .with_timezone(&chrono::Local)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let finish = ts
+        .with_timezone(&chrono::Local)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     assert_eq!(
         content,
-        "[tool timing: start=2025-03-15T02:24:09.800Z finish=2025-03-15T02:24:13.000Z duration=3.2s] ok"
+        format!("[tool timing: start={start} finish={finish} duration=3.2s] ok")
     );
     Ok(())
 }

@@ -271,9 +271,14 @@ impl Message {
         }
     }
 
-    /// Format a timestamp deterministically in UTC for injection into model-visible content.
+    /// Format a timestamp with the machine's local timezone (including the UTC
+    /// offset, e.g. `+08:00`) for injection into model-visible content.
+    ///
+    /// Keeping the offset in sync with the local clock reported in `Session Context`
+    /// lets the agent reason with the user's real wall-clock time instead of UTC.
     pub fn format_timestamp(ts: &chrono::DateTime<chrono::Utc>) -> String {
-        ts.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        ts.with_timezone(&chrono::Local)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     }
 
     pub fn format_duration(duration_ms: u64) -> String {
@@ -327,8 +332,9 @@ impl Message {
     }
 
     /// Return a copy of messages with timestamps injected into user-role text content.
-    /// Tool results get a stable UTC timing header prepended to content.
-    /// User text messages get a stable UTC timestamp prepended to the first text block.
+    /// Tool results get a stable timing header prepended to content, and user text
+    /// messages get a stable local-time timestamp prepended to the first text block.
+    /// Both use the machine's local timezone so the agent sees the user's wall-clock time.
     pub fn with_timestamps(messages: &[Message]) -> Vec<Message> {
         messages
             .iter()
