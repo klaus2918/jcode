@@ -58,7 +58,6 @@ rand = "0.9.3"
 url = "2"
 open = "5"               # Open URLs in browser
 jcode-agent-runtime = { path = "../jcode-agent-runtime" }
-jcode-notify-email = { path = "../jcode-notify-email" }
 jcode-provider-core = { path = "../jcode-provider-core" }
 # NOTE: jcode-app-core does NOT depend on any jcode-tui-* crate. They were
 # unused dead dependency edges here (the TUI declares them itself). Removing
@@ -86,7 +85,6 @@ jcode-base = { path = "../jcode-base", default-features = false }
 jcode-command-risk = { path = "../jcode-command-risk" }
 jcode-core = { path = "../jcode-core" }
 jcode-message-types = { path = "../jcode-message-types" }
-jcode-overnight-core = { path = "../jcode-overnight-core" }
 jcode-plan = { path = "../jcode-plan" }
 jcode-swarm-core = { path = "../jcode-swarm-core" }
 jcode-selfdev-types = { path = "../jcode-selfdev-types" }
@@ -110,7 +108,6 @@ jemalloc-prof = ["jcode-base/jemalloc-prof"]
 # local embeddings live in jcode-base (embedding); forward there.
 embeddings = ["jcode-base/embeddings"]
 # Used only by the CentOS 7 portable Linux release build.
-linux-compat-vendored-openssl = ["jcode-notify-email/linux-compat-vendored-openssl"]
 # PDF text extraction removed (crates/jcode-pdf deleted).
 test-support = ["jcode-base/test-support"]
 

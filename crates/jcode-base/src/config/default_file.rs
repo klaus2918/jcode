@@ -71,7 +71,6 @@ workspace_right = "alt+l"
 # Pane / mode toggles
 side_panel_toggle = "alt+m"
 copy_selection_toggle = "alt+y"
-diagram_pane_toggle = "alt+t"
 typing_scroll_lock_toggle = "alt+s"
 diff_mode_cycle = "alt+g"
 info_widget_toggle = "alt+i"
@@ -101,9 +100,6 @@ diff_mode = "inline"
 
 # Center all content by default (default: false)
 centered = false
-
-# Pin read images to a side pane (default: true)
-pin_images = true
 
 # Pin the full session todo list to the top of the chat transcript while it
 # scrolls, like the sticky previous-prompt preview (default: false)
@@ -235,8 +231,7 @@ prompt_entry_animation = true
 memory = true
 # Swarm: multi-session coordination features
 swarm = true
-# Mermaid: render Mermaid code blocks and tell the model that diagrams are supported
-mermaid = true
+
 # Auto-poke: automatically nudge the model to continue when it stops with
 # incomplete todos. /poke on and /poke off still override this per session.
 auto_poke = true
@@ -462,7 +457,7 @@ swarm_max_concurrent_agents = 32
 [notifications]
 # Desktop notifications for interactive sessions (macOS Notification Center /
 # Linux notify-send). Separate from [safety], which covers ambient-mode
-# ntfy/email/channel notifications.
+# ntfy/channel notifications.
 #
 # Notify when an agent turn finishes. Fires only for long turns and, by
 # default, only while the terminal window is unfocused. The notification is a
@@ -579,20 +574,6 @@ prevent_sleep_while_streaming = true
 
 # Desktop notifications via notify-send (default: true)
 desktop_notifications = true
-
-# Email notifications via SMTP
-# email_enabled = false
-# email_to = "you@example.com"
-# email_from = "jcode@example.com"
-# email_smtp_host = "smtp.gmail.com"
-# email_smtp_port = 587
-# Password via env: JCODE_SMTP_PASSWORD (preferred) or config below
-# email_password = ""
-
-# IMAP for email replies (reply to ambient emails to send directives)
-# email_reply_enabled = false
-# email_imap_host = "imap.gmail.com"
-# email_imap_port = 993
 
 # Telegram notifications via Bot API (free, https://telegram.org)
 # telegram_enabled = false

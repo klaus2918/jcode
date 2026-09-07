@@ -579,7 +579,6 @@ fn configured_auth_count(auth: &AuthStatus) -> usize {
         auth.jcode,
         auth.anthropic.state,
         auth.openrouter,
-        auth.azure,
         auth.openai,
     ]
     .into_iter()
@@ -1390,11 +1389,10 @@ mod tests {
                 oauth_state: AuthState::Expired,
                 has_api_key: false,
             },
-            azure: AuthState::Available,
             ..AuthStatus::default()
         };
 
-        assert_eq!(configured_auth_count(&auth), 3);
+        assert_eq!(configured_auth_count(&auth), 2);
     }
 
     #[test]
@@ -1661,7 +1659,6 @@ mod tests {
             "claude",
             "gemini",
             "bedrock",
-            "azure",
             "copilot",
         ] {
             assert!(

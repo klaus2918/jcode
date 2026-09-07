@@ -93,9 +93,7 @@ impl MultiProvider {
             LoginProviderTarget::OpenAi | LoginProviderTarget::OpenAiApiKey => Some("openai"),
             LoginProviderTarget::OpenRouter => Some("openrouter"),
             LoginProviderTarget::OpenAiCompatible(profile) => Some(profile.id),
-            LoginProviderTarget::AutoImport
-            | LoginProviderTarget::Jcode
-            | LoginProviderTarget::Azure => None,
+            LoginProviderTarget::AutoImport | LoginProviderTarget::Jcode => None,
         }
     }
 

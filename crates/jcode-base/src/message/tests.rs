@@ -382,10 +382,8 @@ fn with_timestamps_adds_tool_timing_header_with_duration() -> Result<()> {
     let finish = ts
         .with_timezone(&chrono::Local)
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    assert_eq!(
-        content,
-        format!("[tool timing: start={start} finish={finish} duration=3.2s] ok")
-    );
+    let expected = format!("[tool timing: start={start} finish={finish} duration=3.2s] ok");
+    assert_eq!(content, &expected);
     Ok(())
 }
 

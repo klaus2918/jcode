@@ -13,7 +13,6 @@ impl App {
     fn memory_profile_value(&self, include_history: bool) -> serde_json::Value {
         let process = crate::process_memory::snapshot_with_source("client:memory");
         let markdown = crate::tui::markdown::debug_memory_profile();
-        let mermaid = crate::tui::mermaid::debug_memory_profile();
         let visual_debug = crate::tui::visual_debug::debug_memory_profile();
         let ui_render = crate::tui::ui::debug_memory_profile();
         let side_panel_render = crate::tui::ui::debug_side_panel_memory_profile();
@@ -80,7 +79,6 @@ impl App {
             "process": process,
             "session": self.session.debug_memory_profile(),
             "markdown": markdown,
-            "mermaid": mermaid,
             "visual_debug": visual_debug,
             "ui_render": ui_render,
             "side_panel_render": side_panel_render,
@@ -593,17 +591,6 @@ fn build_debug_summary(payload: &serde_json::Value) -> serde_json::Value {
         (
             "markdown_cache_estimate_bytes".to_string(),
             nested_usize(payload, &["markdown", "highlight_cache_estimate_bytes"]),
-        ),
-        (
-            "mermaid_working_set_estimate_bytes".to_string(),
-            nested_usize(payload, &["mermaid", "mermaid_working_set_estimate_bytes"]),
-        ),
-        (
-            "mermaid_render_cache_metadata_estimate_bytes".to_string(),
-            nested_usize(
-                payload,
-                &["mermaid", "render_cache_metadata_estimate_bytes"],
-            ),
         ),
         (
             "visual_debug_frame_estimate_bytes".to_string(),

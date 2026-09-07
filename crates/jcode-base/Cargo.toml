@@ -60,7 +60,6 @@ hex = "0.4"
 url = "2"
 open = "5"               # Open URLs in browser
 jcode-auth-types = { path = "../jcode-auth-types" }
-jcode-azure-auth = { path = "../jcode-azure-auth" }
 jcode-agent-runtime = { path = "../jcode-agent-runtime" }
 jcode-provider-metadata = { path = "../jcode-provider-metadata" }
 jcode-provider-env = { path = "../jcode-provider-env" }
@@ -103,7 +102,6 @@ jcode-tool-types = { path = "../jcode-tool-types" }
 
 # Gzip decoding (used by provider import/helpers)
 tempfile = "3"
-qrcode = { version = "0.14.1", default-features = false }
 
 [features]
 default = ["embeddings"]

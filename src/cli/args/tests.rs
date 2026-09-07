@@ -374,11 +374,6 @@ fn restart_save_auto_restore_flag_parses() {
 /// command, so this guards the agent-facing CLI contract.
 #[test]
 fn onboarding_repair_brief_commands_are_valid_cli() {
-    // Diagnose.
-    Args::try_parse_from(["jcode", "auth-test", "--provider", "openai", "--json"])
-        .expect("auth-test --provider --json must parse");
-    Args::try_parse_from(["jcode", "auth-test", "--all-configured", "--json"])
-        .expect("auth-test --all-configured --json must parse");
     Args::try_parse_from(["jcode", "auth", "doctor"]).expect("auth doctor must parse");
 
     // Fix: configured provider via jcode provider add (login command removed).

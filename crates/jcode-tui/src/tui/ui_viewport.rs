@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(test)]
 use std::fmt::Write as _;
 use unicode_width::UnicodeWidthStr;
 
@@ -15,6 +16,10 @@ pub(crate) fn copy_badge_alt_label() -> String {
 /// Build one Ratatui cell symbol that starts at the bottom-right of a reserved
 /// math region, moves to its top-left, invokes Handterm's native LaTeX APC, and
 /// restores the cursor where Ratatui expects it after printing one cell.
+///
+/// feature-simplification 移除 LaTeX/图像内联符号渲染路径后生产代码不再调用，
+/// 仅本文件 cfg(test) 测试直接验证；标 cfg(test) 使其只在测试目标中编译。
+#[cfg(test)]
 fn handterm_native_latex_cell_symbol(source: &str, rows: u16, cols: u16) -> Option<String> {
     let apc = crate::tui::markdown::encode_handterm_latex_apc(source)?;
     let mut symbol = String::with_capacity(apc.len() + 32);
@@ -895,219 +900,6 @@ pub(super) fn draw_messages(
     }
 
     frame.render_widget(Paragraph::new(visible_lines), content_area);
-
-    let centered = app.centered_mode();
-    let diagram_mode = app.diagram_mode();
-    let pinned_diagrams = diagram_mode == crate::config::DiagramDisplayMode::Pinned;
-    {
-        let visible_image_start = prepared
-            .image_regions
-            .partition_point(|region| region.end_line <= scroll);
-        let visible_image_end = prepared
-            .image_regions
-            .partition_point(|region| region.abs_line_idx < visible_end);
-
-        for region in &prepared.image_regions[visible_image_start..visible_image_end] {
-            let abs_idx = region.abs_line_idx;
-            let hash = region.hash;
-            let total_height = region.height;
-            let image_end = region.end_line;
-            let is_fit = region.render == jcode_tui_messages::ImageRegionRender::Fit;
-
-            if let Some(native_latex) = crate::tui::markdown::handterm_native_latex_for_hash(hash) {
-                // Native math writes real terminal cells rather than an overlay,
-                // so draw it only when the complete reserved region is visible.
-                // The ordinary paragraph pass has already cleared every cell in
-                // the region; placing the APC in the bottom-right cell guarantees
-                // it executes after those clears in Ratatui's row-major diff.
-                if abs_idx >= scroll
-                    && image_end <= visible_end
-                    && region.height == native_latex.rows
-                    && region.width == native_latex.cols
-                    && native_latex.cols <= content_area.width
-                {
-                    let top = content_area.y + (abs_idx - scroll) as u16;
-                    let x = content_area.x + native_latex.cols.saturating_sub(1);
-                    let y = top + native_latex.rows.saturating_sub(1);
-                    if let Some(symbol) = handterm_native_latex_cell_symbol(
-                        &native_latex.source,
-                        native_latex.rows,
-                        native_latex.cols,
-                    ) && let Some(cell) = frame.buffer_mut().cell_mut((x, y))
-                    {
-                        cell.set_symbol(&symbol)
-                            .set_fg(ratatui::style::Color::Rgb(100, 160, 255));
-                    }
-                }
-                continue;
-            }
-            // Pinned mode only redirects mermaid diagrams (Crop) to the side
-            // pane; inline raster images (Fit) always render in the flow.
-            if pinned_diagrams && !is_fit {
-                continue;
-            }
-
-            // Inline raster images are prepared lazily and off-thread: only
-            // the ones actually on screen get decoded/scaled, and a cold image
-            // schedules background prep instead of stalling this frame.
-            let fit_ready = if is_fit && image_end > scroll && abs_idx < visible_end {
-                super::inline_image_ui::ensure_drawable(hash, content_area.width, total_height)
-            } else {
-                true
-            };
-
-            if image_end > scroll && abs_idx < visible_end {
-                if is_fit && !fit_ready {
-                    // Background prep in flight; leave the blank placeholder
-                    // rows this frame. A repaint is nudged on completion.
-                    continue;
-                }
-                let marker_visible = abs_idx >= scroll && abs_idx < visible_end;
-
-                if marker_visible {
-                    let screen_y = (abs_idx - scroll) as u16;
-                    let available_height = content_area.height.saturating_sub(screen_y);
-                    let render_height = total_height.min(available_height);
-
-                    if render_height > 0 {
-                        let image_area = Rect {
-                            x: content_area.x,
-                            y: content_area.y + screen_y,
-                            width: content_area.width,
-                            height: render_height,
-                        };
-                        let rows = if is_fit {
-                            // Stable fit: scale once to the placeholder box and
-                            // reuse the transmitted pixels for every frame.
-                            // Kitty re-addresses terminal-retained pixels;
-                            // other protocols crop a pre-scaled source so the
-                            // visible slice never changes the image's scale.
-                            if crate::tui::mermaid::render_image_widget_fit_stable(
-                                hash,
-                                image_area,
-                                frame.buffer_mut(),
-                                content_area.width,
-                                total_height,
-                                0,
-                                centered,
-                                true,
-                            ) {
-                                image_area.height
-                            } else {
-                                crate::tui::mermaid::render_image_widget_fit(
-                                    hash,
-                                    image_area,
-                                    frame.buffer_mut(),
-                                    centered,
-                                    true,
-                                )
-                            }
-                        } else {
-                            crate::tui::mermaid::render_image_widget(
-                                hash,
-                                image_area,
-                                frame.buffer_mut(),
-                                centered,
-                                false,
-                            )
-                        };
-                        if rows == 0 && !is_fit {
-                            frame.render_widget(
-                                Paragraph::new(Line::from(Span::styled(
-                                    "↗ mermaid diagram unavailable",
-                                    Style::default().fg(dim_color()),
-                                ))),
-                                image_area,
-                            );
-                        }
-                    }
-                } else {
-                    let visible_start = scroll.max(abs_idx);
-                    let visible_end_img = visible_end.min(image_end);
-                    let screen_y = (visible_start - scroll) as u16;
-                    let render_height = (visible_end_img - visible_start) as u16;
-
-                    if render_height > 0 {
-                        let image_area = Rect {
-                            x: content_area.x,
-                            y: content_area.y + screen_y,
-                            width: content_area.width,
-                            height: render_height,
-                        };
-                        if is_fit {
-                            // Top scrolled off: keep the same scaled pixels and
-                            // skip the hidden rows instead of rescaling into the
-                            // smaller visible portion on every protocol.
-                            let skip_rows = (visible_start - abs_idx) as u16;
-                            if !crate::tui::mermaid::render_image_widget_fit_stable(
-                                hash,
-                                image_area,
-                                frame.buffer_mut(),
-                                content_area.width,
-                                total_height,
-                                skip_rows,
-                                centered,
-                                true,
-                            ) {
-                                crate::tui::mermaid::render_image_widget_fit(
-                                    hash,
-                                    image_area,
-                                    frame.buffer_mut(),
-                                    centered,
-                                    true,
-                                );
-                            }
-                        } else {
-                            crate::tui::mermaid::render_image_widget(
-                                hash,
-                                image_area,
-                                frame.buffer_mut(),
-                                centered,
-                                true,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Look-ahead prefetch: warm inline raster images within a margin band
-        // above/below the viewport so they are already decoded+scaled by the
-        // time they scroll into view, killing the first-scroll "blank then
-        // pop" hitch. Cheap and non-blocking: prefetch dedups against in-flight
-        // and already-warm state, and only the background worker does real
-        // work. Margin scales with viewport height so faster scrolls (which
-        // cover more rows per frame) get a deeper warm band.
-        if content_area.height > 0 {
-            const PREFETCH_VIEWPORTS: usize = 2;
-            let margin_lines = (content_area.height as usize)
-                .saturating_mul(PREFETCH_VIEWPORTS)
-                .max(1);
-            let prefetch_start = scroll.saturating_sub(margin_lines);
-            let prefetch_end = visible_end.saturating_add(margin_lines);
-            let band_start = prepared
-                .image_regions
-                .partition_point(|region| region.end_line <= prefetch_start);
-            let band_end = prepared
-                .image_regions
-                .partition_point(|region| region.abs_line_idx < prefetch_end);
-            for region in &prepared.image_regions[band_start..band_end] {
-                // Only inline raster images use the prewarm pipeline; mermaid
-                // crops build their own state at draw time. In pinned mode the
-                // raster images still render in the flow, so always prefetch.
-                if region.render != jcode_tui_messages::ImageRegionRender::Fit {
-                    continue;
-                }
-                // Skip the ones already on screen; the draw pass above warmed
-                // them via ensure_drawable.
-                let on_screen = region.end_line > scroll && region.abs_line_idx < visible_end;
-                if on_screen {
-                    continue;
-                }
-                super::inline_image_ui::prefetch(region.hash, content_area.width, region.height);
-            }
-        }
-    }
 
     let right_x = render_area.x + render_area.width.saturating_sub(1);
     for &line_idx in &wrapped_user_indices[visible_user_start..visible_user_end] {

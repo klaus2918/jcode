@@ -335,71 +335,6 @@ impl App {
         }
     }
 
-    fn login_provider_is_azure(provider: &str) -> bool {
-        let provider = provider.trim();
-        provider.eq_ignore_ascii_case("azure")
-            || provider.eq_ignore_ascii_case("azure-openai")
-            || provider.eq_ignore_ascii_case("azure openai")
-    }
-
-    fn activate_azure_runtime_model_after_login(&mut self) {
-        let activated_model = match crate::provider::activation::apply_azure_openai_runtime() {
-            Ok(model) => model,
-            Err(error) => {
-                let message = error.to_string();
-                crate::logging::auth_event(
-                    "auth_changed_runtime_activation_failed",
-                    "azure-openai",
-                    &[("surface", "tui"), ("reason", message.as_str())],
-                );
-                self.trigger_provider_auth_changed(Some("azure-openai"), false, true);
-                return;
-            }
-        };
-
-        // Rebuild the OpenAI-compatible transport under the Azure runtime before
-        // selecting the configured deployment. This is local-only state; it does
-        // not send a prompt or resume an upstream conversation.
-        self.provider.on_auth_changed();
-
-        let Some(model) = activated_model
-            .as_deref()
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-        else {
-            crate::bus::Bus::global().publish_models_updated();
-            return;
-        };
-
-        let model_request = if self.provider.name().eq_ignore_ascii_case("openrouter") {
-            model.to_string()
-        } else {
-            format!("openrouter:{}", model)
-        };
-
-        match self.provider.set_model(&model_request) {
-            Ok(()) => {
-                let active_model = self.finalize_model_switch(&model_request);
-                crate::bus::Bus::global().publish_models_updated();
-                crate::logging::auth_event(
-                    "auth_changed_runtime_model_applied",
-                    "azure-openai",
-                    &[("surface", "tui"), ("provider_session", "reset")],
-                );
-                self.set_status_notice(format!("Login: Azure OpenAI ready ({})", active_model));
-            }
-            Err(error) => {
-                let message = error.to_string();
-                crate::logging::auth_event(
-                    "auth_changed_runtime_model_failed",
-                    "azure-openai",
-                    &[("surface", "tui"), ("reason", message.as_str())],
-                );
-                crate::bus::Bus::global().publish_models_updated();
-            }
-        }
-    }
-
     #[allow(dead_code)] // 仅被测试引用（登录流程已删，保留供测试使用）
     pub(super) fn start_openai_compatible_post_login_activation(
         &mut self,
@@ -647,9 +582,7 @@ impl App {
                 self.push_display_message(DisplayMessage::system(login.message));
             }
             self.set_status_notice(format!("Login: {} ready", login.provider));
-            if Self::login_provider_is_azure(&login.provider) {
-                self.activate_azure_runtime_model_after_login();
-            } else {
+            {
                 let prefer_strongest = self.onboarding_should_prefer_strongest_model();
                 if prefer_strongest {
                     self.onboarding_auto_model_selection_active

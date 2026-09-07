@@ -60,7 +60,6 @@ pub fn runtime_id_for_login_provider(
         LoginProviderTarget::OpenAi => Some(RuntimeProviderId::OpenAi),
         LoginProviderTarget::OpenAiApiKey => Some(RuntimeProviderId::OpenAiApiKey),
         LoginProviderTarget::OpenRouter => Some(RuntimeProviderId::OpenRouter),
-        LoginProviderTarget::Azure => Some(RuntimeProviderId::AzureOpenAi),
         LoginProviderTarget::OpenAiCompatible(_) => Some(RuntimeProviderId::OpenAiCompatible),
     }
 }

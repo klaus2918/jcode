@@ -16,10 +16,7 @@ where
         width,
         diff_mode,
         jcode_tui_messages::MessageCacheContext {
-            diagram_mode: crate::config::config().display.diagram_mode,
             centered: markdown::center_code_blocks(),
-            mermaid_epoch: crate::tui::mermaid::deferred_render_epoch(),
-            mermaid_aspect_bucket: crate::tui::mermaid::current_preferred_aspect_ratio_bucket(),
             show_agentgrep_output: crate::config::config().display.show_agentgrep_output,
             tool_call_details: crate::config::config().display.tool_call_details,
         },

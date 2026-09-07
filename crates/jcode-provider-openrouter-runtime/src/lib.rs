@@ -305,7 +305,7 @@ pub enum OpenRouterTransportState {
     /// Jcode subscription access currently reuses the OpenRouter HTTP slot, but is
     /// not user BYOK/OpenRouter billing.
     JcodeSubscription,
-    /// A direct OpenAI-compatible endpoint that needs a user key, Azure credential,
+    /// A direct OpenAI-compatible endpoint that needs a user key,
     /// or provider-profile secret while reusing the OpenRouter-compatible transport.
     DirectApiKey,
     /// A direct local/no-auth OpenAI-compatible endpoint, for example Ollama or LM Studio.
@@ -375,7 +375,7 @@ impl OpenRouterTransportState {
     }
 
     fn runtime_provider_is_direct_compatible(runtime_provider: Option<&str>) -> bool {
-        matches!(runtime_provider, Some("openai-compatible" | "azure-openai"))
+        matches!(runtime_provider, Some("openai-compatible"))
             || runtime_provider
                 .and_then(jcode_base::provider_catalog::openai_compatible_profile_by_id)
                 .is_some()
@@ -442,9 +442,6 @@ enum ProviderAuth {
         value: String,
         label: String,
     },
-    AzureEntra {
-        label: String,
-    },
     None {
         label: String,
     },
@@ -464,10 +461,6 @@ impl ProviderAuth {
             Self::HeaderValue {
                 header_name, value, ..
             } => Ok(req.header(header_name, value)),
-            Self::AzureEntra { .. } => {
-                let token = jcode_base::auth::azure::get_bearer_token().await?;
-                Ok(req.bearer_auth(token))
-            }
             Self::None { .. } => Ok(req),
             Self::Missing { label } => {
                 anyhow::bail!("{} not found in environment", label)
@@ -479,7 +472,6 @@ impl ProviderAuth {
         match self {
             Self::AuthorizationBearer { label, .. } => label,
             Self::HeaderValue { label, .. } => label,
-            Self::AzureEntra { label } => label,
             Self::None { label } => label,
             Self::Missing { label } => label,
         }
@@ -1359,12 +1351,6 @@ impl OpenRouterProvider {
                 && let Some(profile) = openai_compatible_profile_by_id(profile_id)
             {
                 return profile.display_name.to_string();
-            }
-            if std::env::var("JCODE_RUNTIME_PROVIDER")
-                .ok()
-                .is_some_and(|value| value.trim().eq_ignore_ascii_case("azure-openai"))
-            {
-                return "Azure OpenAI".to_string();
             }
             if !self.api_base.contains("openrouter.ai") {
                 return "OpenAI-compatible".to_string();
@@ -2516,12 +2502,6 @@ impl OpenRouterProvider {
 
     /// Check if OPENROUTER_API_KEY is available (env var or config file)
     pub fn has_credentials() -> bool {
-        if matches!(
-            configured_dynamic_bearer_provider().as_deref(),
-            Some("azure")
-        ) {
-            return jcode_base::auth::azure::has_configuration();
-        }
         if configured_allow_no_auth() {
             return true;
         }
@@ -2631,23 +2611,10 @@ impl OpenRouterProvider {
 
     fn resolve_auth() -> Result<ProviderAuth> {
         if let Some(provider) = configured_dynamic_bearer_provider() {
-            return match provider.as_str() {
-                "azure" => {
-                    if jcode_base::auth::azure::has_configuration() {
-                        Ok(ProviderAuth::AzureEntra {
-                            label: "Azure OpenAI Entra ID".to_string(),
-                        })
-                    } else {
-                        anyhow::bail!(
-                            "Azure OpenAI is configured for Entra ID, but Azure settings are incomplete. Run `jcode login --provider azure`."
-                        )
-                    }
-                }
-                other => anyhow::bail!(
-                    "Unsupported JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER '{}'.",
-                    other
-                ),
-            };
+            anyhow::bail!(
+                "Unsupported JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER '{}'.",
+                provider
+            );
         }
 
         if configured_allow_no_auth() {

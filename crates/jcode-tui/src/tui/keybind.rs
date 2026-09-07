@@ -378,7 +378,6 @@ impl ToggleBinding {
 pub struct ToggleKeys {
     pub side_panel: ToggleBinding,
     pub copy_selection: ToggleBinding,
-    pub diagram_pane: ToggleBinding,
     pub typing_scroll_lock: ToggleBinding,
     pub diff_mode_cycle: ToggleBinding,
     pub info_widget: ToggleBinding,
@@ -391,7 +390,6 @@ pub fn load_toggle_keys() -> ToggleKeys {
     ToggleKeys {
         side_panel: ToggleBinding::load(&cfg.keybindings.side_panel_toggle, 'm'),
         copy_selection: ToggleBinding::load(&cfg.keybindings.copy_selection_toggle, 'y'),
-        diagram_pane: ToggleBinding::load(&cfg.keybindings.diagram_pane_toggle, 't'),
         typing_scroll_lock: ToggleBinding::load(&cfg.keybindings.typing_scroll_lock_toggle, 's'),
         diff_mode_cycle: ToggleBinding::load(&cfg.keybindings.diff_mode_cycle, 'g'),
         info_widget: ToggleBinding::load(&cfg.keybindings.info_widget_toggle, 'i'),

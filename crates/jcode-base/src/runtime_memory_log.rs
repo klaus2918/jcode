@@ -77,8 +77,6 @@ pub struct ClientRuntimeMemorySample {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub markdown: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mermaid: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub visual_debug: Option<serde_json::Value>,
 }
 
@@ -128,8 +126,6 @@ pub struct ClientRuntimeMemoryTotals {
     pub side_panel_pinned_cache_estimate_bytes: u64,
     pub side_panel_markdown_cache_estimate_bytes: u64,
     pub side_panel_render_cache_estimate_bytes: u64,
-    pub mermaid_working_set_estimate_bytes: u64,
-    pub mermaid_cache_metadata_estimate_bytes: u64,
     pub visual_debug_frame_estimate_bytes: u64,
     pub total_attributed_bytes: u64,
 }

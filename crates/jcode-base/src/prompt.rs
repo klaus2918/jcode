@@ -6,35 +6,18 @@ use std::process::Command;
 /// Default system prompt for jcode (embedded at compile time)
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("prompt/system_prompt.md");
 
-/// Prompt guidance for the optional Mermaid rendering capability.
-pub const MERMAID_PROMPT: &str = "# Mermaid\n\nRender fenced `mermaid` blocks inline.";
-
 /// Harness capabilities that conditionally contribute prompt modules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PromptCapabilities {
-    pub mermaid: bool,
-}
-
-impl Default for PromptCapabilities {
-    fn default() -> Self {
-        Self { mermaid: true }
-    }
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PromptCapabilities;
 
 impl PromptCapabilities {
     fn current() -> Self {
-        Self {
-            mermaid: crate::config::config().features.mermaid,
-        }
+        Self
     }
 }
 
-fn base_system_prompt_parts(capabilities: PromptCapabilities) -> Vec<String> {
-    let mut parts = vec![DEFAULT_SYSTEM_PROMPT.to_string()];
-    if capabilities.mermaid {
-        parts.push(MERMAID_PROMPT.to_string());
-    }
-    parts
+fn base_system_prompt_parts(_capabilities: PromptCapabilities) -> Vec<String> {
+    vec![DEFAULT_SYSTEM_PROMPT.to_string()]
 }
 
 /// Built-in default swarm prompt: model-routing guidance for spawned swarm

@@ -1,10 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
-use std::time::Duration;
 
 use crate::cli::provider_init;
-
-const AUTH_DOCTOR_VALIDATION_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug, Serialize)]
 struct AuthStatusProviderReport {
@@ -254,21 +251,11 @@ async fn build_auth_doctor_report(
     provider_arg: Option<&str>,
     validate: bool,
 ) -> Result<AuthDoctorReport> {
-    let mut status = crate::auth::AuthStatus::check();
+    let status = crate::auth::AuthStatus::check();
     let providers = select_auth_doctor_providers(provider_arg, &status)?;
     let mut reports = Vec::new();
 
     for provider in providers {
-        let pre_validation_assessment = status.assessment_for_provider(provider);
-        let validation_result = if validate && pre_validation_assessment.is_configured() {
-            Some(run_auth_doctor_validation(provider).await)
-        } else {
-            None
-        };
-        if validation_result.is_some() {
-            crate::auth::AuthStatus::invalidate_cache();
-            status = crate::auth::AuthStatus::check();
-        }
         let assessment = status.assessment_for_provider(provider);
         let validation = assessment
             .last_validation
@@ -291,17 +278,12 @@ async fn build_auth_doctor_report(
                     last_success_ms: record.last_success_ms,
                     last_error: record.last_error.clone(),
                 });
-        let recommended_actions = crate::auth::doctor::recommended_actions(
-            provider,
-            &assessment,
-            validation_result.as_deref(),
-        );
-        let diagnostics =
-            crate::auth::doctor::diagnostics(provider, &assessment, validation_result.as_deref());
+        let recommended_actions =
+            crate::auth::doctor::recommended_actions(provider, &assessment, None);
+        let diagnostics = crate::auth::doctor::diagnostics(provider, &assessment, None);
         let method = assessment.method_detail.clone();
         let health = assessment.health_summary();
-        let needs_attention =
-            crate::auth::doctor::needs_attention(&assessment, validation_result.as_deref());
+        let needs_attention = crate::auth::doctor::needs_attention(&assessment, None);
 
         reports.push(AuthDoctorProviderReport {
             id: provider.id.to_string(),
@@ -320,7 +302,7 @@ async fn build_auth_doctor_report(
             last_refresh_detail,
             validation,
             validation_detail,
-            validation_result,
+            validation_result: None,
             diagnostics,
             needs_attention,
             recommended_actions,
@@ -333,24 +315,6 @@ async fn build_auth_doctor_report(
         any_issue: reports.iter().any(|provider| provider.needs_attention),
         providers: reports,
     })
-}
-
-async fn run_auth_doctor_validation(
-    provider: crate::provider_catalog::LoginProviderDescriptor,
-) -> String {
-    match tokio::time::timeout(
-        Duration::from_secs(AUTH_DOCTOR_VALIDATION_TIMEOUT_SECS),
-        super::super::auth_test::run_post_login_validation_quiet(provider),
-    )
-    .await
-    {
-        Ok(Ok(())) => "validation passed".to_string(),
-        Ok(Err(err)) => err.to_string(),
-        Err(_) => format!(
-            "validation timed out after {}s; run `jcode auth-test --provider {}` for detailed output",
-            AUTH_DOCTOR_VALIDATION_TIMEOUT_SECS, provider.id
-        ),
-    }
 }
 
 fn auth_doctor_validation_detail(
@@ -620,17 +584,6 @@ mod tests {
             .unwrap_or_else(|| panic!("missing auth status provider `{}`", provider_id))
     }
 
-    fn provider_doctor<'a>(
-        report: &'a AuthDoctorReport,
-        provider_id: &str,
-    ) -> &'a AuthDoctorProviderReport {
-        report
-            .providers
-            .iter()
-            .find(|provider| provider.id == provider_id)
-            .unwrap_or_else(|| panic!("missing auth doctor provider `{}`", provider_id))
-    }
-
     #[tokio::test]
     async fn cli_auth_status_doctor_and_login_lifecycle_uses_fresh_sandbox() {
         let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
@@ -658,20 +611,6 @@ mod tests {
             .expect("doctor before login");
         assert_eq!(before_doctor.checked_provider.as_deref(), Some(provider.id));
         assert!(before_doctor.any_issue);
-        let before_doctor_provider = provider_doctor(&before_doctor, provider.id);
-        assert_eq!(before_doctor_provider.status, "not_configured");
-        assert!(before_doctor_provider.needs_attention);
-        assert!(before_doctor_provider.diagnostics.iter().any(|line| {
-            line == &format!("{} is not configured for jcode yet.", provider.display_name)
-        }));
-        assert!(
-            before_doctor_provider
-                .recommended_actions
-                .iter()
-                .any(|line| {
-                    line.contains("jcode provider add") || line.contains("provider add")
-                })
-        );
 
         crate::provider_catalog::save_env_value_to_env_file(
             &resolved.api_key_env,
@@ -719,32 +658,5 @@ mod tests {
             .await
             .expect("doctor after login");
         assert_eq!(after_doctor.checked_provider.as_deref(), Some(provider.id));
-        let after_doctor_provider = provider_doctor(&after_doctor, provider.id);
-        assert_eq!(after_doctor_provider.status, "available");
-        assert_eq!(after_doctor_provider.credential_source, "app config file");
-        assert!(after_doctor_provider.needs_attention);
-        assert!(
-            after_doctor_provider
-                .diagnostics
-                .iter()
-                .any(|line| { line == "No runtime validation has been recorded." })
-        );
-        assert!(
-            after_doctor_provider
-                .recommended_actions
-                .iter()
-                .any(|line| {
-                    line == &format!(
-                        "Run runtime verification: jcode auth-test --provider {}",
-                        provider.id
-                    )
-                })
-        );
-        assert!(
-            after_doctor_provider
-                .recommended_actions
-                .iter()
-                .any(|line| { line == "Review current state: jcode auth status --json" })
-        );
     }
 }

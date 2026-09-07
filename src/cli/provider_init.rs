@@ -19,7 +19,7 @@ use crate::external_auth::{
 
 /// 已废弃的 Claude Code CLI 子进程传输的 CLI id（兼容别名）。
 ///
-/// 散落在 provider_init/login/auth_test/commands 的该魔法字符串统一引用
+/// 散落在 provider_init/login/commands 的该魔法字符串统一引用
 /// 此常量，避免改名或删除时遗漏。M-15 收敛方向：保留为兼容别名（解析为
 /// Claude 凭据路径），不参与 `resolve_provider_input` 的注册表/配置解析链。
 pub const CLAUDE_SUBPROCESS_ID: &str = "claude-subprocess";

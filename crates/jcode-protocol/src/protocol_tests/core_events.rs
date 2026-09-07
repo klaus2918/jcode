@@ -84,12 +84,12 @@ fn test_notify_auth_changed_provider_hint_is_optional() -> Result<()> {
 
     let req = Request::NotifyAuthChanged {
         id: 10,
-        provider: Some("azure-openai".to_string()),
+        provider: Some("openai".to_string()),
         auth: None,
         prefer_strongest: true,
     };
     let json = serde_json::to_string(&req)?;
-    assert!(json.contains("\"provider\":\"azure-openai\""));
+    assert!(json.contains("\"provider\":\"openai\""));
     assert!(json.contains("\"prefer_strongest\":true"));
     let decoded = parse_request_json(&json)?;
     let Request::NotifyAuthChanged {
@@ -102,7 +102,7 @@ fn test_notify_auth_changed_provider_hint_is_optional() -> Result<()> {
         return Err(anyhow!("wrong request type"));
     };
     assert_eq!(id, 10);
-    assert_eq!(provider.as_deref(), Some("azure-openai"));
+    assert_eq!(provider.as_deref(), Some("openai"));
     assert_eq!(auth, None);
     assert!(prefer_strongest);
     Ok(())

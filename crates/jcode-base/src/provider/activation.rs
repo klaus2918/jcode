@@ -4,8 +4,6 @@ use jcode_provider_core::{ActiveProvider, provider_key};
 /// Stable product/runtime identity selected by login or provider initialization.
 ///
 /// This intentionally differs from the lower-level [`ActiveProvider`] execution slot.
-/// For example Azure OpenAI currently reuses the OpenAI-compatible/OpenRouter HTTP
-/// transport, but its runtime identity is still Azure OpenAI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeProviderId {
     Jcode,
@@ -15,7 +13,6 @@ pub enum RuntimeProviderId {
     OpenAiApiKey,
     OpenRouter,
     OpenAiCompatible,
-    AzureOpenAi,
     Cursor,
     Copilot,
     Gemini,
@@ -33,7 +30,6 @@ impl RuntimeProviderId {
             Self::OpenAiApiKey => "openai-api",
             Self::OpenRouter => "openrouter",
             Self::OpenAiCompatible => "openai-compatible",
-            Self::AzureOpenAi => "azure-openai",
             Self::Cursor => "cursor",
             Self::Copilot => "copilot",
             Self::Gemini => "gemini",
@@ -51,7 +47,6 @@ impl RuntimeProviderId {
             Self::OpenAiApiKey => "OpenAI API",
             Self::OpenRouter => "OpenRouter",
             Self::OpenAiCompatible => "OpenAI-compatible",
-            Self::AzureOpenAi => "Azure OpenAI",
             Self::Cursor => "Cursor",
             Self::Copilot => "GitHub Copilot",
             Self::Gemini => "Gemini",
@@ -127,15 +122,6 @@ impl ProviderActivation {
         Self::new(runtime_id, RuntimeSelection::Unlocked { active_hint })
     }
 
-    pub fn azure_openai(model: Option<String>) -> Self {
-        let activation = Self::initial(RuntimeProviderId::AzureOpenAi, ActiveProvider::OpenRouter);
-        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
-            activation.with_model_hint("JCODE_OPENROUTER_MODEL", model)
-        } else {
-            activation
-        }
-    }
-
     pub fn openai_compatible(model: Option<String>) -> Self {
         let activation = Self::initial(
             RuntimeProviderId::OpenAiCompatible,
@@ -161,9 +147,6 @@ impl ProviderActivation {
             }
             RuntimeProviderId::OpenRouter => {
                 crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "openrouter-api-key")
-            }
-            RuntimeProviderId::AzureOpenAi => {
-                crate::env::set_var("JCODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key")
             }
             RuntimeProviderId::OpenAiCompatible => {
                 if std::env::var_os("JCODE_OPENROUTER_TRANSPORT_STATE").is_none() {
@@ -239,82 +222,6 @@ pub fn clear_initial_runtime_provider() {
     );
 }
 
-pub fn apply_azure_openai_runtime() -> Result<Option<String>> {
-    crate::auth::azure::apply_runtime_env()?;
-    let model = crate::auth::azure::load_model();
-    ProviderActivation::azure_openai(model.clone()).apply_env()?;
-    Ok(model)
-}
-
 pub fn apply_openai_compatible_runtime(default_model: Option<String>) -> Result<()> {
     ProviderActivation::openai_compatible(default_model).apply_env()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct EnvGuard {
-        saved: Vec<(&'static str, Option<String>)>,
-    }
-
-    impl EnvGuard {
-        fn new(keys: &[&'static str]) -> Self {
-            let saved = keys
-                .iter()
-                .map(|key| (*key, std::env::var(key).ok()))
-                .collect();
-            for key in keys {
-                crate::env::remove_var(key);
-            }
-            Self { saved }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (key, value) in self.saved.drain(..) {
-                if let Some(value) = value {
-                    crate::env::set_var(key, value);
-                } else {
-                    crate::env::remove_var(key);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn azure_activation_preserves_identity_while_using_openrouter_slot() {
-        // Serialize with every other test that mutates provider env vars
-        // (e.g. anthropic_tests sets JCODE_RUNTIME_PROVIDER=claude); without
-        // this lock the assertions below race parallel tests.
-        let _lock = crate::storage::lock_test_env();
-        let _guard = EnvGuard::new(&[
-            "JCODE_RUNTIME_PROVIDER",
-            "JCODE_ACTIVE_PROVIDER",
-            "JCODE_INITIAL_PROVIDER_EXPLICIT",
-            "JCODE_OPENROUTER_MODEL",
-        ]);
-
-        ProviderActivation::azure_openai(Some("gpt-4.1-mini".to_string()))
-            .apply_env()
-            .unwrap();
-
-        assert_eq!(
-            std::env::var("JCODE_RUNTIME_PROVIDER").as_deref(),
-            Ok("azure-openai")
-        );
-        assert_eq!(
-            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
-            Ok("openrouter")
-        );
-        assert_eq!(
-            std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
-            Ok("1")
-        );
-        assert_eq!(
-            std::env::var("JCODE_OPENROUTER_MODEL").as_deref(),
-            Ok("gpt-4.1-mini")
-        );
-    }
 }

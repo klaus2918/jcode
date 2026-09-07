@@ -1077,7 +1077,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 .filter(|r| !r.trim().is_empty())
                 .unwrap_or("guardrail");
             // Mark the turn so the Done handler can count consecutive
-            // guardrail stops and stop auto-poke/overnight loops that would
+            // guardrail stops and stop auto-poke loops that would
             // otherwise re-send the refused request forever.
             app.turn_guardrail_stopped = true;
             // Plain text prefix: U+1F6E1 shield renders poorly in some
@@ -1160,7 +1160,6 @@ pub(in crate::tui::app) fn handle_server_event(
                     let duration = app.display_turn_duration_secs();
                     app.push_turn_footer(duration);
                 }
-                crate::tui::mermaid::clear_streaming_preview_diagram();
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;
                 app.stream_message_ended = false;
@@ -1297,7 +1296,6 @@ pub(in crate::tui::app) fn handle_server_event(
             app.status = ProcessingStatus::Idle;
             app.stream_message_ended = false;
             let recovered_local = recover_local_interleave_to_queue(app, "request error");
-            crate::tui::mermaid::clear_streaming_preview_diagram();
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
@@ -1374,13 +1372,6 @@ pub(in crate::tui::app) fn handle_server_event(
                 // Terminal: no retry will fire. Offer a one-keypress switch to
                 // the next best model/auth-method (e.g. an expired OAuth login
                 // -> a working provider) with the failed payload staged.
-                app.offer_fallback_after_error_with_payload(
-                    &message,
-                    failed_fallback_payload.clone(),
-                );
-                return false;
-            }
-            if app.stop_overnight_auto_poke_for_non_retryable_error(&message) {
                 app.offer_fallback_after_error_with_payload(
                     &message,
                     failed_fallback_payload.clone(),
@@ -1872,7 +1863,6 @@ pub(in crate::tui::app) fn handle_server_event(
                         // frame re-registers the preview
                         // (markdown_render_full.rs set_streaming_preview_diagram).
                         if !session_changed {
-                            crate::tui::mermaid::clear_streaming_preview_diagram();
                             // A rewind (or rewind-undo) re-apply can race a
                             // stale `Done` from the just-finished turn: the
                             // History payload is written directly to the

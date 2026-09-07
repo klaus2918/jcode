@@ -340,10 +340,6 @@ async fn handle_remote_key_internal(
     }
     let macos_option_shortcut =
         crate::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers);
-    if app.toggle_keys.diagram_pane.matches(code, modifiers) {
-        app.toggle_diagram_pane_position();
-        return Ok(());
-    }
     if let Some(direction) = app.model_switch_keys.direction_for(code, modifiers) {
         app.record_keybinding_fast(crate::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
         remote.cycle_model(direction).await?;
@@ -376,11 +372,7 @@ async fn handle_remote_key_internal(
         app.toggle_centered_mode();
         return Ok(());
     }
-    app.normalize_diagram_state();
-    let diagram_available = app.diagram_available();
-    if app.handle_diagram_focus_key(code, modifiers, diagram_available) {
-        return Ok(());
-    }
+    let diagram_available = false;
     if app.handle_diff_pane_focus_key(code, modifiers) {
         return Ok(());
     }
@@ -475,11 +467,6 @@ async fn handle_remote_key_internal(
         } else {
             app.scroll_to_next_prompt();
         }
-        return Ok(());
-    }
-
-    if let Some(ratio) = App::ctrl_side_panel_ratio_preset(&code, modifiers) {
-        app.set_side_panel_ratio_preset(ratio);
         return Ok(());
     }
 
@@ -1693,10 +1680,8 @@ async fn handle_remote_key_internal(
                     app.pending_images.clear();
                     app.clear_streaming_render_state();
                     app.clear_live_usage_state();
-                    // Full transcript discard: diagrams and side panel pages
-                    // are both orphaned (same rationale as
-                    // reset_current_session; side panel is #605).
-                    crate::tui::mermaid::clear_active_diagrams();
+                    // Full transcript discard: side panel pages are orphaned
+                    // (same rationale as reset_current_session; side panel is #605).
                     super::super::commands_review::clear_side_panel_for_new_session(app);
                     app.is_processing = false;
                     app.status = ProcessingStatus::Idle;

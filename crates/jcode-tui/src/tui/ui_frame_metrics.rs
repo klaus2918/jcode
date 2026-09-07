@@ -24,12 +24,6 @@ pub(crate) struct FramePerfStats {
     pub full_prep_last_prepared_bytes: usize,
     pub full_prep_last_total_wrapped_lines: usize,
     pub full_prep_last_section_count: usize,
-    /// Wall time inside the `prepare_ms` span spent in `restage_requested_payloads`
-    /// (image restaging), which runs before any cache lookup.
-    pub prep_restage_ms: f64,
-    /// Wall time computing the transcript mermaid aspect ratio, which probes
-    /// terminal font geometry.
-    pub prep_aspect_ms: f64,
     /// Total wall time in `prepare_at()` calls, including cache hits. The
     /// difference between this and `full_prep_build_ms` is cache-lookup and
     /// clone overhead.
@@ -52,7 +46,6 @@ pub(crate) struct FramePerfStats {
     pub body_last_prepared_bytes: usize,
     pub body_last_wrapped_lines: usize,
     pub body_last_copy_targets: usize,
-    pub body_last_image_regions: usize,
     pub viewport_scroll: usize,
     pub viewport_visible_end: usize,
     pub viewport_visible_lines: usize,
@@ -512,14 +505,6 @@ pub(super) fn note_full_prep_cache_lookup(elapsed: Duration) {
     with_frame_perf_stats_mut(|stats| stats.full_prep_cache_lookup_ms += duration_ms(elapsed));
 }
 
-pub(super) fn note_prep_restage(elapsed: Duration) {
-    with_frame_perf_stats_mut(|stats| stats.prep_restage_ms += duration_ms(elapsed));
-}
-
-pub(super) fn note_prep_aspect(elapsed: Duration) {
-    with_frame_perf_stats_mut(|stats| stats.prep_aspect_ms += duration_ms(elapsed));
-}
-
 pub(super) fn note_prep_prepare_at(elapsed: Duration) {
     with_frame_perf_stats_mut(|stats| {
         stats.prep_prepare_at_ms += duration_ms(elapsed);
@@ -589,7 +574,6 @@ pub(super) fn note_body_cache_hit(kind: CacheEntryKind, prepared: &PreparedMessa
         stats.body_last_prepared_bytes = estimate_prepared_messages_bytes(prepared);
         stats.body_last_wrapped_lines = prepared.wrapped_lines.len();
         stats.body_last_copy_targets = prepared.copy_targets.len();
-        stats.body_last_image_regions = prepared.image_regions.len();
     });
 }
 
@@ -622,7 +606,6 @@ pub(super) fn note_body_built(
         stats.body_last_prepared_bytes = estimate_prepared_messages_bytes(prepared);
         stats.body_last_wrapped_lines = prepared.wrapped_lines.len();
         stats.body_last_copy_targets = prepared.copy_targets.len();
-        stats.body_last_image_regions = prepared.image_regions.len();
     });
 }
 

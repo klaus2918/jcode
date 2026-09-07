@@ -16,7 +16,7 @@
 //!   - `openai:oauth:<label>` / `openai:api-key`
 //!   - `openai-compatible:<profile-id>` (DeepSeek, Moonshot, NVIDIA NIM, ...)
 //!   - `openrouter`, `jcode`, `copilot`, `gemini`, `cursor`, `bedrock`,
-//!     `antigravity`, `azure-openai`
+//!     `antigravity`
 
 use chrono::{Datelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -196,7 +196,7 @@ pub fn spend_snapshot(source_key: &str) -> Option<ProviderSpend> {
 
 /// All ledger entries (source key -> activity), with spend buckets rolled.
 /// Used by `/usage` to surface logins that have been used but have no
-/// dedicated usage fetcher (Cursor, Bedrock, Azure, ...).
+/// dedicated usage fetcher (Cursor, Bedrock, ...).
 pub fn all_entries() -> Vec<(String, ProviderActivityEntry)> {
     let mut guard = match LEDGER.lock() {
         Ok(guard) => guard,
@@ -257,7 +257,6 @@ pub fn display_name_for_source_key(source_key: &str) -> String {
         "cursor" => "Cursor".to_string(),
         "bedrock" => "AWS Bedrock".to_string(),
         "antigravity" => "Antigravity".to_string(),
-        "azure-openai" => "Azure OpenAI".to_string(),
         other => {
             // Slug -> Title Case fallback.
             other
@@ -326,9 +325,6 @@ pub fn source_key_for_provider_label(label: &str, runtime_provider: Option<&str>
         }
     }
 
-    if normalized.contains("azure") {
-        return "azure-openai".to_string();
-    }
     if normalized.contains("bedrock") {
         return "bedrock".to_string();
     }

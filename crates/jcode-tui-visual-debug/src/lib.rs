@@ -47,17 +47,13 @@ pub struct FrameCapture {
     pub anomalies: Vec<String>,
     /// The actual text content rendered to each area (stripped of ANSI)
     pub rendered_text: RenderedText,
-    /// Mermaid image regions detected in wrapped content
-    pub image_regions: Vec<ImageRegionCapture>,
     /// Render timing information (milliseconds)
     pub render_timing: Option<RenderTimingCapture>,
     /// Info widget placements and summary data
     pub info_widgets: Option<InfoWidgetCapture>,
     /// Render order for major phases
     pub render_order: Vec<String>,
-    /// Mermaid debug stats snapshot (if available)
-    pub mermaid: Option<Value>,
-    /// Side-panel debug snapshot, including live Mermaid utilization when available
+    /// Side-panel debug snapshot (if available)
     pub side_panel: Option<Value>,
     /// Markdown debug stats snapshot (if available)
     pub markdown: Option<Value>,
@@ -74,8 +70,6 @@ pub struct LayoutCapture {
     pub estimated_content_height: usize,
     /// Messages area
     pub messages_area: Option<RectCapture>,
-    /// Diagram area (pinned diagram pane)
-    pub diagram_area: Option<RectCapture>,
     /// Status line area
     pub status_area: Option<RectCapture>,
     /// Queued messages area
@@ -186,16 +180,6 @@ pub struct StateSnapshot {
     pub streaming_text_len: usize,
     pub has_suggestions: bool,
     pub status: String,
-    pub diagram_mode: Option<String>,
-    pub diagram_focus: bool,
-    pub diagram_index: usize,
-    pub diagram_count: usize,
-    pub diagram_scroll_x: i32,
-    pub diagram_scroll_y: i32,
-    pub diagram_pane_ratio: u8,
-    pub diagram_pane_enabled: bool,
-    pub diagram_pane_position: Option<String>,
-    pub diagram_zoom: u8,
 }
 
 /// Actual rendered text content
@@ -213,14 +197,6 @@ pub struct RenderedText {
     pub recent_messages: Vec<MessageCapture>,
     /// Streaming text (if currently streaming)
     pub streaming_text_preview: String,
-}
-
-/// Mermaid image region capture
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct ImageRegionCapture {
-    pub hash: String,
-    pub abs_line_idx: usize,
-    pub height: u16,
 }
 
 /// Captured message for debugging
@@ -693,17 +669,6 @@ fn write_frame(file: &mut File, frame: &FrameCapture) -> std::io::Result<()> {
             frame.rendered_text.streaming_text_preview
         )?;
     }
-    if !frame.image_regions.is_empty() {
-        writeln!(file, "  image_regions:")?;
-        for region in &frame.image_regions {
-            writeln!(
-                file,
-                "    {} @{} (h={})",
-                region.hash, region.abs_line_idx, region.height
-            )?;
-        }
-    }
-
     // Render timing
     if let Some(timing) = &frame.render_timing {
         writeln!(
@@ -742,9 +707,6 @@ fn write_frame(file: &mut File, frame: &FrameCapture) -> std::io::Result<()> {
         }
     }
 
-    if let Some(mermaid) = &frame.mermaid {
-        writeln!(file, "Mermaid: {}", mermaid)?;
-    }
     if let Some(side_panel) = &frame.side_panel {
         writeln!(file, "Side panel: {}", side_panel)?;
     }
@@ -773,12 +735,10 @@ pub struct FrameCaptureBuilder {
     pub layout: LayoutCapture,
     pub state: StateSnapshot,
     pub rendered_text: RenderedText,
-    pub image_regions: Vec<ImageRegionCapture>,
     pub anomalies: Vec<String>,
     pub render_timing: Option<RenderTimingCapture>,
     pub info_widgets: Option<InfoWidgetCapture>,
     pub render_order: Vec<String>,
-    pub mermaid: Option<Value>,
     pub side_panel: Option<Value>,
     pub markdown: Option<Value>,
     pub theme: Option<Value>,
@@ -815,11 +775,9 @@ impl FrameCaptureBuilder {
             state: self.state,
             anomalies: self.anomalies,
             rendered_text: self.rendered_text,
-            image_regions: self.image_regions,
             render_timing: self.render_timing,
             info_widgets: self.info_widgets,
             render_order: self.render_order,
-            mermaid: self.mermaid,
             side_panel: self.side_panel,
             markdown: self.markdown,
             theme: self.theme,

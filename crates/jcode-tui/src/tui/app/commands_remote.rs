@@ -12,7 +12,7 @@ network, using the same protocol the local UI speaks.
 
 - `/remote` or `/remote status` - gateway state, dial address, paired devices
 - `/remote on` / `/remote off` - enable or disable the gateway
-- `/remote pair` - show a pairing code and QR for a new device
+- `/remote pair` - show a pairing code for a new device
 - `/remote revoke <device>` - remove a paired device
 
 Setup is: `/remote on`, restart the server, then `/remote pair`.
@@ -109,12 +109,6 @@ fn show_pairing_invite(app: &mut App) {
                 invite.spaced_code(),
                 invite.dial_address
             ));
-
-            if let Ok(qr) = crate::login_qr::render_unicode_qr(&invite.uri) {
-                body.push_str("\n```\n");
-                body.push_str(&qr);
-                body.push_str("\n```\n");
-            }
 
             app.push_display_message(DisplayMessage::system(body));
             app.set_status_notice("Pairing code ready");

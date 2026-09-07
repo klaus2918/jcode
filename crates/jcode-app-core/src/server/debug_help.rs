@@ -123,18 +123,6 @@ CLIENT COMMANDS (client: prefix):
   client:render-order      - Get render order list
   client:anomalies         - Get latest visual debug anomalies
   client:theme             - Get palette snapshot
-  client:mermaid:stats     - Get mermaid render/cache stats
-  client:mermaid:memory    - Mermaid memory profile (RSS + cache estimates)
-  client:mermaid:memory-bench [n] - Synthetic Mermaid memory benchmark
-  client:mermaid:flicker-bench [n] - Benchmark viewport protocol churn / flicker risk
-  client:image-scroll-bench [imgs] [frames] [visible] - Benchmark inline-image scroll latency (stat syscalls + fit-state rebuilds)
-  client:mermaid:ui-bench[:<j>] - Benchmark live Mermaid UI render path
-  client:mermaid:cache     - List mermaid cache entries
-  client:mermaid:state     - Get image state (resize modes)
-  client:mermaid:test      - Render test diagram
-  client:mermaid:scroll    - Run scroll simulation test
-  client:mermaid:render <c> - Render arbitrary mermaid
-  client:mermaid:evict     - Clear mermaid cache
   client:markdown:stats    - Get markdown render stats
   client:markdown:memory   - Markdown highlight cache memory estimate
   client:memory            - Aggregate client memory profile
@@ -169,7 +157,6 @@ TESTER COMMANDS (tester: prefix):
   tester:<id>:scroll-test  - Run offscreen scroll+diagram test
   tester:<id>:scroll-suite - Run scroll+diagram test suite
   tester:<id>:side-panel-latency - Benchmark headless side-panel input->frame latency
-  tester:<id>:mermaid-ui-bench - Benchmark live Mermaid UI render path
   tester:<id>:stop         - Stop tester
 
 Examples:

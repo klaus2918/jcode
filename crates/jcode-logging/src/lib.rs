@@ -724,7 +724,6 @@ mod tests {
             "optional",
             "anthropic_api",
             "openai_api",
-            "azure_api",
             "copilot_cred",
             "session_provider",
             "routes_in",

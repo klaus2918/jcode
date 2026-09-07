@@ -1,5 +1,6 @@
 use super::*;
 use crate::tui::ui::{self, WrappedLineMap};
+use jcode_tui_messages::ImageRegion;
 
 /// Auxiliary render data for an assistant message that is otherwise recomputed
 /// by re-parsing markdown on every body rebuild. Building the body misses its
@@ -187,7 +188,7 @@ fn default_message_alignment(role: &str, centered: bool) -> ratatui::layout::Ali
     if centered
         && !matches!(
             role,
-            "tool" | "system" | "swarm" | "background_task" | "overnight" | "todos"
+            "tool" | "system" | "swarm" | "background_task" | "todos"
         )
     {
         ratatui::layout::Alignment::Center
@@ -199,68 +200,6 @@ fn default_message_alignment(role: &str, centered: bool) -> ratatui::layout::Ali
 fn is_error_copy_content(content: &str) -> bool {
     let trimmed = content.trim_start();
     trimmed.starts_with("Error:") || trimmed.starts_with("error:") || trimmed.starts_with("Failed:")
-}
-
-/// Build the image regions for an image/mermaid placeholder in `wrapped_lines`,
-/// where each placeholder "owns" the run of blank lines that follow it.
-///
-/// Done in a single reverse pass that precomputes, for every line, the length
-/// of the blank run starting at that line. The previous implementation scanned
-/// forward through the trailing blanks for every placeholder, which is O(L^2)
-/// when a message has many placeholders each followed by long blank runs.
-pub(super) fn compute_image_regions(
-    wrapped_lines: &[ratatui::text::Line<'static>],
-) -> Vec<ImageRegion> {
-    fn is_blank_line(line: &ratatui::text::Line<'static>) -> bool {
-        line.spans.is_empty() || (line.spans.len() == 1 && line.spans[0].content.is_empty())
-    }
-
-    let len = wrapped_lines.len();
-    // blank_run[i] = number of consecutive blank lines starting at index i.
-    let mut blank_run = vec![0usize; len + 1];
-    for idx in (0..len).rev() {
-        blank_run[idx] = if is_blank_line(&wrapped_lines[idx]) {
-            blank_run[idx + 1] + 1
-        } else {
-            0
-        };
-    }
-
-    let mut image_regions = Vec::new();
-    for (idx, line) in wrapped_lines.iter().enumerate() {
-        if let Some(hash) = super::super::mermaid::parse_image_placeholder(line) {
-            // The placeholder line plus the blank run immediately after it.
-            let height = (1 + blank_run[idx + 1]).min(u16::MAX as usize) as u16;
-            image_regions.push(ImageRegion {
-                abs_line_idx: idx,
-                end_line: idx + height as usize,
-                hash,
-                height,
-                // Mermaid crop regions don't know their rendered width here;
-                // 0 = treat the rows as fully occupied for layout purposes.
-                width: 0,
-                render: jcode_tui_messages::ImageRegionRender::Crop,
-            });
-        } else if let Some((hash, rows, cols)) =
-            super::super::mermaid::parse_inline_image_placeholder(line)
-        {
-            // Inline raster image anchored in the transcript body. The marker
-            // encodes its exact geometry; clamp to the blank run that actually
-            // follows so a wrapped/truncated placeholder can never claim
-            // non-blank lines below it.
-            let available = (1 + blank_run[idx + 1]).min(u16::MAX as usize) as u16;
-            let height = rows.max(1).min(available);
-            image_regions.push(ImageRegion {
-                abs_line_idx: idx,
-                end_line: idx + height as usize,
-                hash,
-                height,
-                width: cols,
-                render: jcode_tui_messages::ImageRegionRender::Fit,
-            });
-        }
-    }
-    image_regions
 }
 
 fn error_copy_target(content: &str, rendered_line_count: usize) -> Option<RawCopyTarget> {
@@ -425,48 +364,6 @@ fn empty_prepared_messages() -> PreparedMessages {
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
     }
-}
-
-/// Stamp `prepared` with the deferred-mermaid staleness marker: `Some(epoch)`
-/// when any wrapped line is the "rendering mermaid diagram..." placeholder
-/// (a background render is still in flight), `None` otherwise. `epoch_before`
-/// must be the deferred-render epoch read *before* the markdown was rendered,
-/// so a render completing mid-build immediately reads as stale.
-fn stamp_mermaid_pending(prepared: &mut PreparedMessages, epoch_before: u64) {
-    prepared.mermaid_pending_epoch = prepared
-        .wrapped_lines
-        .iter()
-        .any(markdown::line_is_mermaid_pending_placeholder)
-        .then_some(epoch_before);
-}
-
-/// Merge the pending stamp of a reused base with a freshly rendered part.
-/// Keeps the earliest epoch so staleness is never masked.
-fn merge_mermaid_pending(
-    base: Option<u64>,
-    fresh_lines_pending: bool,
-    epoch_before: u64,
-) -> Option<u64> {
-    let fresh = fresh_lines_pending.then_some(epoch_before);
-    match (base, fresh) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
-}
-
-/// Transcript message index owning the first deferred-mermaid pending
-/// placeholder line, for cutting a stale base at a message boundary. `None`
-/// when no pending line exists.
-fn first_mermaid_pending_message(prepared: &PreparedMessages) -> Option<usize> {
-    let line_idx = prepared
-        .wrapped_lines
-        .iter()
-        .position(markdown::line_is_mermaid_pending_placeholder)?;
-    Some(
-        prepared
-            .message_boundaries
-            .partition_point(|boundary| boundary.wrapped_len <= line_idx),
-    )
 }
 
 fn active_batch_progress(app: &dyn TuiState) -> Option<crate::bus::BatchProgress> {
@@ -650,12 +547,6 @@ pub(super) fn prepare_messages(
     width: u16,
     height: u16,
 ) -> Arc<PreparedChatFrame> {
-    // A cached prepared frame intentionally owns only image ids. Recover any
-    // staged source evicted by the byte budget or a visibility toggle before an
-    // exact frame-cache hit can bypass the normal anchored-image resolver.
-    let restage_start = Instant::now();
-    super::inline_image_ui::restage_requested_payloads(app);
-    super::note_prep_restage(restage_start.elapsed());
     if cfg!(test) {
         return Arc::new(prepare_messages_inner(app, width, height));
     }
@@ -665,23 +556,11 @@ pub(super) fn prepare_messages(
         height,
         diff_mode: app.diff_mode(),
         messages_version: app.display_messages_version(),
-        diagram_mode: app.diagram_mode(),
         centered: app.centered_mode(),
-        mermaid_aspect_bucket: crate::tui::mermaid::current_preferred_aspect_ratio_bucket(),
         is_processing: app.is_processing(),
         streaming_text_len: app.streaming_text().len(),
         streaming_text_hash: super::hash_text_for_cache(app.streaming_text()),
         batch_progress_hash: active_batch_progress_hash(app),
-        // An unpinned transcript must not reuse a previously prepared frame
-        // containing anchored images. With no images, both modes are visually
-        // identical and `(0, 0)` reuse is safe.
-        inline_images_signature: if app.pin_images() {
-            app.side_pane_images_signature()
-        } else {
-            (0, 0)
-        },
-        inline_images_visible: app.inline_images_visible(),
-        expanded_images_version: app.expanded_images_version(),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
     };
 
@@ -699,18 +578,9 @@ pub(super) fn prepare_messages(
         };
         let mut cache = cache;
         if let Some((prepared, kind)) = cache.get_exact_with_kind(&key) {
-            // A completed deferred mermaid render does not bump
-            // `messages_version`/`streaming_text_hash`, so an exact hit can
-            // still bake in a stale "rendering..." placeholder. Fall through
-            // to a rebuild, which re-renders the pending tail.
-            let stale = prepared
-                .mermaid_pending_epoch()
-                .is_some_and(|stamp| crate::tui::mermaid::deferred_render_epoch() != stamp);
-            if !stale {
-                super::note_full_prep_cache_lookup(cache_lookup_start.elapsed());
-                super::note_full_prep_cache_hit(kind, prepared.as_ref());
-                return prepared;
-            }
+            super::note_full_prep_cache_lookup(cache_lookup_start.elapsed());
+            super::note_full_prep_cache_hit(kind, prepared.as_ref());
+            return prepared;
         }
     }
 
@@ -774,28 +644,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
     let body_prepared = prepare_body_cached(app, width);
     let body_ms = body_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Anchored images render inside the body at their producing message; only
-    // images without a resolvable anchor target fall back to this trailing
-    // inline section so nothing silently disappears.
-    let inline_images_prepared = if app.pin_images() {
-        let anchored = super::inline_image_ui::resolve_anchored_items_cached(app);
-        let items = anchored.unplaced_items(app.display_messages());
-        if items.is_empty() {
-            Arc::new(empty_prepared_messages())
-        } else {
-            let prefix_blank = !body_prepared.wrapped_lines.is_empty();
-            Arc::new(super::inline_image_ui::build_section(
-                &items,
-                width,
-                height,
-                prefix_blank,
-                app.inline_images_visible(),
-                &super::inline_image_ui::AppExpandLevels(app),
-            ))
-        }
-    } else {
-        Arc::new(empty_prepared_messages())
-    };
+    let inline_images_prepared = Arc::new(empty_prepared_messages());
 
     let batch_start = Instant::now();
     let has_batch_progress = active_batch_progress(app).is_some();
@@ -1110,13 +959,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         width,
         diff_mode: app.diff_mode(),
         messages_version: app.display_messages_version(),
-        diagram_mode: app.diagram_mode(),
         centered: app.centered_mode(),
-        mermaid_aspect_bucket: crate::tui::mermaid::current_preferred_aspect_ratio_bucket(),
-        pin_images: app.pin_images(),
-        inline_images_visible: app.inline_images_visible(),
-        images_signature: app.side_pane_images_signature(),
-        expanded_images_version: app.expanded_images_version(),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
     };
     let msg_count = app.display_messages().len();
@@ -1133,19 +976,9 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
 
     let mut cache = cache;
     if let Some((prepared, kind)) = cache.get_exact_with_kind(&key) {
-        // A deferred mermaid render completing does not bump
-        // `messages_version`, so an exact hit can still be stale: it bakes in
-        // a "rendering..." placeholder whose background render has since
-        // finished. Fall through to the rebuild path, which truncates the
-        // base at the pending message and re-renders the tail.
-        let stale = prepared
-            .mermaid_pending_epoch
-            .is_some_and(|stamp| crate::tui::mermaid::deferred_render_epoch() != stamp);
-        if !stale {
-            super::note_body_cache_lookup(cache_lookup_start.elapsed());
-            super::note_body_cache_hit(kind, prepared.as_ref());
-            return prepared;
-        }
+        super::note_body_cache_lookup(cache_lookup_start.elapsed());
+        super::note_body_cache_hit(kind, prepared.as_ref());
+        return prepared;
     }
 
     super::note_body_cache_lookup(cache_lookup_start.elapsed());
@@ -1187,37 +1020,12 @@ pub(super) fn build_body_from_base(
     app: &dyn TuiState,
     width: u16,
     mut prev: Arc<PreparedMessages>,
-    mut prev_count: usize,
+    prev_count: usize,
     prev_prompt_offset: usize,
     msg_count: usize,
 ) -> (Arc<PreparedMessages>, &'static str) {
     let messages = app.display_messages();
-    // A stale deferred-mermaid base (its background render finished after the
-    // base was built) must not be reused verbatim: cut it at the message that
-    // owns the first pending placeholder so that message and everything after
-    // it re-render and pick up the completed diagram.
-    if let Some(stamp) = prev.mermaid_pending_epoch
-        && crate::tui::mermaid::deferred_render_epoch() != stamp
-    {
-        match first_mermaid_pending_message(prev.as_ref()) {
-            Some(keep) if !prev.message_boundaries.is_empty() => {
-                let prepared = Arc::make_mut(&mut prev);
-                truncate_prepared_to_boundary(prepared, keep);
-                prepared.mermaid_pending_epoch = None;
-                prev_count = prepared.message_boundaries.len();
-            }
-            Some(_) => {
-                // No boundary tracking: cannot cut at the pending message.
-                return (Arc::new(prepare_body(app, width, false)), "full");
-            }
-            None => {
-                // Stamp outlived its placeholder (e.g. the pending tail was
-                // truncated away); clear it and reuse normally.
-                Arc::make_mut(&mut prev).mermaid_pending_epoch = None;
-            }
-        }
-    }
-    // The selected base shares this key's width/mode/image signature. Find the
+    // The selected base shares this key's width/mode signature. Find the
     // longest message prefix whose hashes still match the current transcript.
     let k = matching_prefix_len(prev.as_ref(), messages);
     if k == prev_count && prev_count == msg_count {
@@ -1289,8 +1097,6 @@ struct BodyRenderCtx<'a> {
     prompt_number_offset: usize,
     total_prompts: usize,
     pending_count: usize,
-    anchored_images: Arc<super::inline_image_ui::AnchoredInlineImages>,
-    inline_images_visible: bool,
     messages: &'a [DisplayMessage],
     swarm_members: Vec<crate::protocol::SwarmMemberStatus>,
 }
@@ -1319,9 +1125,6 @@ struct BodyAcc {
     /// Next 1-based prompt number to assign. Seeded from the reused base in the
     /// incremental path so numbering continues without rescanning the prefix.
     prompt_num: usize,
-    /// 0-based ordinal of the next rendered user prompt excluding synthetic
-    /// attached-image label messages; mirrors the session renderer's count.
-    anchor_prompt_ordinal: usize,
     /// True when a prior (reused) body already has content, so the first message
     /// rendered here still gets its leading separator blank.
     body_has_content: bool,
@@ -1398,20 +1201,6 @@ fn render_message_into(
                 &msg.content,
                 align,
             );
-            if !crate::session::is_attached_image_label_text(&msg.content) {
-                let ordinal = acc.anchor_prompt_ordinal;
-                acc.anchor_prompt_ordinal += 1;
-                if let Some(items) = ctx.anchored_images.by_prompt.get(&ordinal) {
-                    for line in super::inline_image_ui::anchored_image_lines(
-                        items,
-                        width,
-                        ctx.inline_images_visible,
-                        &super::inline_image_ui::AppExpandLevels(app),
-                    ) {
-                        acc.push_auto(line);
-                    }
-                }
-            }
         }
         "assistant" => {
             let content_width = width.saturating_sub(4);
@@ -1548,16 +1337,6 @@ fn render_message_into(
                         expandable,
                     ));
                 }
-                if let Some(items) = ctx.anchored_images.by_tool.get(&tc.id) {
-                    for line in super::inline_image_ui::anchored_image_lines(
-                        items,
-                        width,
-                        ctx.inline_images_visible,
-                        &super::inline_image_ui::AppExpandLevels(app),
-                    ) {
-                        acc.push_auto(line);
-                    }
-                }
             }
         }
         "system" => {
@@ -1652,18 +1431,6 @@ fn render_message_into(
                 acc.push_auto(align_if_unset(line, align));
             }
         }
-        "overnight" => {
-            let content_width = width.saturating_sub(4);
-            let cached = get_cached_message_lines(
-                msg,
-                content_width,
-                app.diff_mode(),
-                super::messages::render_overnight_message,
-            );
-            for line in cached {
-                acc.push_auto(align_if_unset(line, align));
-            }
-        }
         "todos" => {
             let content_width = width.saturating_sub(4);
             let cached = get_cached_message_lines(
@@ -1729,16 +1496,8 @@ pub(super) fn prepare_body_incremental(
 
     // Read before rendering the tail: a background diagram render completing
     // mid-build must leave the stamp already-stale.
-    let mermaid_epoch_before = crate::tui::mermaid::deferred_render_epoch();
     let centered = app.centered_mode();
     markdown::set_center_code_blocks(centered);
-
-    // Images anchored to transcript messages render inline right after the
-    // message that produced them. An incremental base is only reused when the
-    // image set is unchanged (cache key includes the image signature), so any
-    // anchored image matching a *new* message must be injected here; its anchor
-    // target did not exist when the base was built.
-    let anchored_images = super::inline_image_ui::resolve_anchored_items_cached(app);
 
     // The number of user prompts already rendered equals the number of cached
     // user prompt texts. Re-counting `messages[..prev_msg_count]` here on every
@@ -1747,16 +1506,6 @@ pub(super) fn prepare_body_incremental(
     // extended in lockstep with each rendered user message, so its length is the
     // exact prior prompt count.
     let prev_prompt_count = prev.user_prompt_texts.len();
-    // 0-based ordinal of the next rendered user prompt, excluding synthetic
-    // attached-image label messages, mirroring the session renderer's count.
-    let anchor_prompt_ordinal = if anchored_images.by_prompt.is_empty() {
-        0
-    } else {
-        prev.user_prompt_texts
-            .iter()
-            .filter(|text| !crate::session::is_attached_image_label_text(text))
-            .count()
-    };
 
     let ctx = BodyRenderCtx {
         app,
@@ -1765,15 +1514,12 @@ pub(super) fn prepare_body_incremental(
         prompt_number_offset: app.compacted_hidden_user_prompts(),
         total_prompts: app.display_user_message_count(),
         pending_count: input_ui::pending_prompt_count(app),
-        anchored_images,
-        inline_images_visible: app.inline_images_visible(),
         messages,
         swarm_members: app.swarm_members_for_transcript(),
     };
 
     let mut acc = BodyAcc {
         prompt_num: prev_prompt_count,
-        anchor_prompt_ordinal,
         body_has_content: !prev.wrapped_lines.is_empty(),
         ..BodyAcc::default()
     };
@@ -1796,15 +1542,7 @@ pub(super) fn prepare_body_incremental(
     );
 
     let prepared = Arc::make_mut(&mut prev);
-    let new_tail_pending = new_wrapped
-        .wrapped_lines
-        .iter()
-        .any(markdown::line_is_mermaid_pending_placeholder);
-    prepared.mermaid_pending_epoch = merge_mermaid_pending(
-        prepared.mermaid_pending_epoch,
-        new_tail_pending,
-        mermaid_epoch_before,
-    );
+    prepared.mermaid_pending_epoch = None;
     let prev_len = prepared.wrapped_lines.len();
     let prev_raw_len = prepared.raw_plain_lines.len();
     let prev_prompt_len = prepared.user_prompt_texts.len();
@@ -1952,16 +1690,8 @@ pub(super) fn truncate_prepared_to_boundary(prepared: &mut PreparedMessages, kee
         .retain(|r| r.start_line < wrapped_len);
     prepared.copy_targets.retain(|t| t.start_line < wrapped_len);
 
-    // The pending-mermaid placeholder may have lived in the dropped tail;
-    // recompute so a stale-positive stamp cannot force rebuilds forever.
-    if prepared.mermaid_pending_epoch.is_some()
-        && !prepared
-            .wrapped_lines
-            .iter()
-            .any(markdown::line_is_mermaid_pending_placeholder)
-    {
-        prepared.mermaid_pending_epoch = None;
-    }
+    // The mermaid pending placeholder feature was removed; clear any stale epoch.
+    prepared.mermaid_pending_epoch = None;
 }
 
 /// Longest message prefix length `k` such that `base.message_boundaries[..k]`
@@ -2020,10 +1750,6 @@ pub(super) fn suffix_reuse_compatible(
     base_prompt_offset: usize,
 ) -> bool {
     if drop_msgs == 0 || drop_msgs >= base.message_boundaries.len() {
-        return false;
-    }
-    let anchored = super::inline_image_ui::resolve_anchored_items_cached(app);
-    if !anchored.by_prompt.is_empty() {
         return false;
     }
     let dropped_prompts = base.message_boundaries[drop_msgs - 1].user_prompt_len;
@@ -2091,8 +1817,6 @@ pub(super) fn prepare_body_prepended(
         prompt_number_offset: app.compacted_hidden_user_prompts(),
         total_prompts: app.display_user_message_count(),
         pending_count: input_ui::pending_prompt_count(app),
-        anchored_images: super::inline_image_ui::resolve_anchored_items_cached(app),
-        inline_images_visible: app.inline_images_visible(),
         messages,
         swarm_members: app.swarm_members_for_transcript(),
     };
@@ -2285,8 +2009,6 @@ fn prepare_streaming_cached(
         return empty_prepared_messages();
     }
 
-    // Read before rendering: see `stamp_mermaid_pending`.
-    let mermaid_epoch_before = crate::tui::mermaid::deferred_render_epoch();
     let centered = app.centered_mode();
     markdown::set_center_code_blocks(centered);
     let display_width = width.saturating_sub(4) as usize;
@@ -2314,9 +2036,7 @@ fn prepare_streaming_cached(
         lines.push(align_if_unset(line, align));
     }
 
-    let mut prepared = wrap_lines(lines, &[], &[], &[], width);
-    stamp_mermaid_pending(&mut prepared, mermaid_epoch_before);
-    prepared
+    wrap_lines(lines, &[], &[], &[], width)
 }
 
 pub(super) fn prepare_body(
@@ -2325,8 +2045,6 @@ pub(super) fn prepare_body(
     include_streaming: bool,
 ) -> PreparedMessages {
     // Read before rendering: a background diagram render completing mid-build
-    // must leave the stamp already-stale (see `stamp_mermaid_pending`).
-    let mermaid_epoch_before = crate::tui::mermaid::deferred_render_epoch();
     let centered = app.centered_mode();
     markdown::set_center_code_blocks(centered);
     let display_width = width.saturating_sub(4) as usize;
@@ -2339,10 +2057,6 @@ pub(super) fn prepare_body(
         prompt_number_offset: app.compacted_hidden_user_prompts(),
         total_prompts: app.display_user_message_count(),
         pending_count: input_ui::pending_prompt_count(app),
-        // Images anchored to transcript messages render inline right after the
-        // message that produced them (tool result or user prompt).
-        anchored_images: super::inline_image_ui::resolve_anchored_items_cached(app),
-        inline_images_visible: app.inline_images_visible(),
         messages,
         swarm_members: app.swarm_members_for_transcript(),
     };
@@ -2379,7 +2093,7 @@ pub(super) fn prepare_body(
         }
     }
 
-    let mut prepared = wrap_lines_with_map(
+    wrap_lines_with_map(
         acc.lines,
         &acc.raw_plain_lines,
         &acc.line_raw_overrides,
@@ -2390,9 +2104,7 @@ pub(super) fn prepare_body(
         &acc.edit_tool_line_ranges,
         &acc.copy_targets,
         &acc.segments,
-    );
-    stamp_mermaid_pending(&mut prepared, mermaid_epoch_before);
-    prepared
+    )
 }
 
 fn wrap_lines(
@@ -2455,7 +2167,7 @@ fn wrap_lines(
         wrapped_idx += count;
     }
 
-    let image_regions = compute_image_regions(&wrapped_lines);
+    let image_regions = Vec::new();
 
     let wrapped_plain_lines = Arc::new(wrapped_lines.iter().map(ui::line_plain_text).collect());
 
@@ -2557,7 +2269,7 @@ fn wrap_lines_with_map(
     }
     raw_to_wrapped.push(wrapped_idx);
 
-    let image_regions = compute_image_regions(&wrapped_lines);
+    let image_regions = Vec::new();
 
     let mut edit_tool_ranges = Vec::new();
     for (msg_idx, file_path, raw_start, raw_end, expandable) in edit_ranges {

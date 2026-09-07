@@ -182,8 +182,6 @@ fn auth_issue_runtime_display_name_tracks_direct_compatible_profiles() {
         "JCODE_PROVIDER_PROFILE_ACTIVE",
     ]);
 
-    crate::env::set_var("JCODE_RUNTIME_PROVIDER", "azure-openai");
-    assert_eq!(runtime_provider_display_name("openrouter"), "Azure OpenAI");
     crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
     crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
     crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
@@ -1020,14 +1018,7 @@ model_picker_providers = ["self-deepseek"]
         "generic openai-compatible login entry must survive the allowlist: {filtered:?}"
     );
     // Unrelated built-in providers are hidden.
-    for hidden in [
-        "claude",
-        "anthropic-api",
-        "openai",
-        "openrouter",
-        "bedrock",
-        "azure",
-    ] {
+    for hidden in ["claude", "anthropic-api", "openai", "openrouter", "bedrock"] {
         assert!(
             !filtered.iter().any(|p| p.id == hidden),
             "allowlist must hide built-in login provider '{hidden}': {filtered:?}"
@@ -1052,7 +1043,7 @@ model_picker_providers = ["self-deepseek"]
         )),
         "auth-status must keep the generic openai-compatible entry: {auth_filtered:?}"
     );
-    for hidden in ["claude", "openai", "openrouter", "bedrock", "azure"] {
+    for hidden in ["claude", "openai", "openrouter", "bedrock"] {
         assert!(
             !auth_filtered.iter().any(|p| p.id == hidden),
             "auth-status must hide built-in provider '{hidden}': {auth_filtered:?}"

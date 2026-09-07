@@ -298,7 +298,6 @@ pub(super) fn reset_current_session(app: &mut App) {
     // Ctrl+R recovery) deliberately keep the registry because body-cache
     // prefix reuse means retained messages do not re-render/re-register
     // (see the comments at the /rewind handlers in commands.rs).
-    crate::tui::mermaid::clear_active_diagrams();
     app.queued_messages.clear();
     app.pasted_contents.clear();
     app.pending_images.clear();

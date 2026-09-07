@@ -797,7 +797,7 @@ pub(super) fn handle_text_paste(app: &mut App, text: String) {
         text.len(),
         text.lines().count()
     ));
-    super::at_file::handle_paste_text(app, &text);
+    insert_input_text(app, &text);
 }
 
 impl App {
@@ -1057,11 +1057,6 @@ pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
         return false;
     }
 
-    // `@` at a word boundary opens the workspace file picker.
-    if super::at_file::try_trigger_file_pick(app, text) {
-        return true;
-    }
-
     let onboarding_suggestions = matches!(
         app.onboarding_phase(),
         Some(crate::tui::app::onboarding_flow::OnboardingPhase::Suggestions)
@@ -1312,7 +1307,7 @@ pub(super) fn clear_input_for_escape(app: &mut App) {
 pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
     // Temp-file pastes (`@[粘贴内容N]` markers) and `@file` references expand
     // first; legacy in-memory pastes remain as a fallback.
-    let mut result = super::at_file::expand_placeholders(app, input);
+    let mut result = input.to_string();
     for content in app.pasted_contents.iter().rev() {
         let placeholder = paste_placeholder(content);
         if let Some(pos) = result.rfind(&placeholder) {
@@ -1410,7 +1405,7 @@ impl App {
 
     /// Folds this turn's guardrail-stop flag into the consecutive counter.
     /// Call once per finished turn, before scheduling automatic follow-ups.
-    /// Returns true when automatic continuation (auto-poke/overnight poke)
+    /// Returns true when automatic continuation (auto-poke)
     /// must stop because the provider keeps refusing: a guardrail refusal is
     /// deterministic for the same request, so re-poking loops forever
     /// (observed live as one refused API call per auto-poke, every ~7s).
@@ -1424,18 +1419,17 @@ impl App {
         self.consecutive_guardrail_stops >= Self::GUARDRAIL_STOP_MAX_CONSECUTIVE
     }
 
-    /// Disarm auto-poke and overnight poke after repeated guardrail refusals
+    /// Disarm auto-poke after repeated guardrail refusals
     /// and tell the user why, instead of silently re-sending the refused
     /// request on every turn end.
     pub(super) fn stop_auto_continuation_after_guardrail(&mut self) {
-        let had_overnight = self.overnight_auto_poke.take().is_some();
-        if !self.auto_poke_incomplete_todos && !had_overnight {
+        if !self.auto_poke_incomplete_todos {
             return;
         }
         let cleared = super::commands::disable_auto_poke(self);
         crate::logging::warn(&format!(
-            "Stopping auto-poke after {} consecutive provider guardrail stops (cleared {} queued poke message(s), overnight={})",
-            self.consecutive_guardrail_stops, cleared, had_overnight
+            "Stopping auto-poke after {} consecutive provider guardrail stops (cleared {} queued poke message(s))",
+            self.consecutive_guardrail_stops, cleared
         ));
         self.push_display_message(DisplayMessage::system(format!(
             "🛑 The provider refused {} turns in a row, so we stopped poking. The same request will keep getting refused. Rephrase or narrow the task, then /poke to resume.",
@@ -1445,15 +1439,14 @@ impl App {
     }
 
     /// Turn-end entry point for automatic continuations. Applies the
-    /// guardrail circuit breaker first, then tries auto-poke and overnight
-    /// poke scheduling. Returns true when a follow-up was queued.
+    /// guardrail circuit breaker first, then tries auto-poke scheduling.
+    /// Returns true when a follow-up was queued.
     pub(super) fn schedule_turn_end_followups(&mut self) -> bool {
         if self.guardrail_stops_exhausted_at_turn_end() {
             self.stop_auto_continuation_after_guardrail();
             return false;
         }
         self.schedule_auto_poke_followup_if_needed()
-            || self.schedule_overnight_poke_followup_if_needed()
     }
 
     /// Deliver this turn's deferred quality-check reminder, if anything is
@@ -1956,11 +1949,6 @@ pub(super) fn handle_navigation_shortcuts(
         return true;
     }
 
-    if let Some(ratio) = App::ctrl_side_panel_ratio_preset(&code, modifiers) {
-        app.set_side_panel_ratio_preset(ratio);
-        return true;
-    }
-
     if let Some(rank) = App::ctrl_prompt_rank(&code, modifiers) {
         app.scroll_to_recent_prompt_rank(rank);
         return true;
@@ -1991,7 +1979,6 @@ pub(super) fn is_scroll_only_key(app: &App, code: KeyCode, modifiers: KeyModifie
 
     if app.scroll_keys.scroll_amount(code, modifiers).is_some()
         || app.scroll_keys.prompt_jump(code, modifiers).is_some()
-        || App::ctrl_side_panel_ratio_preset(&code, modifiers).is_some()
         || App::ctrl_prompt_rank(&code, modifiers).is_some()
         || app.scroll_keys.is_bookmark(code, modifiers)
         || (modifiers.contains(KeyModifiers::ALT)
@@ -2023,43 +2010,10 @@ pub(super) fn is_scroll_only_key(app: &App, code: KeyCode, modifiers: KeyModifie
         }
     }
 
-    let diagram_available = app.diagram_available();
-    if diagram_available && app.diagram_focus && !modifiers.contains(KeyModifiers::CONTROL) {
+    if modifiers.contains(KeyModifiers::CONTROL) && app.diff_pane_visible() {
         match code {
-            KeyCode::Char('h')
-            | KeyCode::Left
-            | KeyCode::Char('l')
-            | KeyCode::Right
-            | KeyCode::Char('k')
-            | KeyCode::Up
-            | KeyCode::Char('j')
-            | KeyCode::Down
-            | KeyCode::Char('+')
-            | KeyCode::Char('=')
-            | KeyCode::Char('-')
-            | KeyCode::Char('_')
-            | KeyCode::Char(']')
-            | KeyCode::Char('[')
-            | KeyCode::Char('o')
-            | KeyCode::Esc => return true,
+            KeyCode::Char('h') | KeyCode::Char('l') => return true,
             _ => {}
-        }
-    }
-
-    if modifiers.contains(KeyModifiers::CONTROL) {
-        if diagram_available {
-            match code {
-                KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
-                    return true;
-                }
-                _ => {}
-            }
-        }
-        if app.diff_pane_visible() {
-            match code {
-                KeyCode::Char('h') | KeyCode::Char('l') => return true,
-                _ => {}
-            }
         }
     }
 
@@ -2102,10 +2056,6 @@ pub(super) fn handle_pre_control_shortcuts(
 
     if app.toggle_keys.side_panel.matches(code, modifiers) {
         app.toggle_side_panel();
-        return true;
-    }
-    if app.toggle_keys.diagram_pane.matches(code, modifiers) {
-        app.toggle_diagram_pane_position();
         return true;
     }
     if app.toggle_keys.typing_scroll_lock.matches(code, modifiers) {
@@ -2184,11 +2134,6 @@ pub(super) fn handle_pre_control_shortcuts(
         return true;
     }
 
-    app.normalize_diagram_state();
-    let diagram_available = app.diagram_available();
-    if app.handle_diagram_focus_key(code, modifiers, diagram_available) {
-        return true;
-    }
     if app.handle_diff_pane_focus_key(code, modifiers) {
         return true;
     }
@@ -2237,10 +2182,6 @@ pub(super) fn handle_visible_copy_shortcut(
         return true;
     }
 
-    if handle_inline_image_toggle_shortcut(app, c) {
-        return true;
-    }
-
     if let Some(target) = crate::tui::ui::recent_flicker_copy_target_for_key(c)
         .or_else(|| crate::tui::ui::visible_copy_target_for_key(c))
     {
@@ -2270,22 +2211,6 @@ fn visible_copy_shortcut_key(code: KeyCode, modifiers: KeyModifiers) -> Option<c
     };
 
     modifiers.contains(KeyModifiers::ALT).then_some(c)
-}
-
-/// Alt+Shift+I toggles inline transcript images between expanded and
-/// collapsed label stubs. Only active when the transcript actually has
-/// inline images, so the chord stays inert otherwise.
-fn handle_inline_image_toggle_shortcut(app: &mut App, key: char) -> bool {
-    if !key.eq_ignore_ascii_case(&'i') {
-        return false;
-    }
-    use crate::tui::TuiState as _;
-    if app.side_pane_images_signature().0 == 0 {
-        return false;
-    }
-    app.record_copy_badge_key_press('i');
-    app.toggle_inline_images();
-    true
 }
 
 fn handle_expand_edit_badge_shortcut(app: &mut App, key: char) -> bool {
@@ -2332,9 +2257,6 @@ pub(super) fn handle_modal_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<bool> {
-    if app.file_pick.is_some() && super::at_file::handle_file_pick_key(app, code, modifiers) {
-        return Ok(true);
-    }
     // Unhandled keys (e.g. Ctrl chords) fall through to the normal input
     // handlers so the draft stays editable while the picker is open.
 
@@ -2419,11 +2341,7 @@ pub(super) fn handle_global_control_shortcuts(
                 app.interleave_images.clear();
                 app.pending_soft_interrupts.clear();
                 app.pending_soft_interrupt_requests.clear();
-                if app.cancel_overnight_for_interrupt() {
-                    app.set_status_notice("Interrupting... Overnight cancelled");
-                } else {
-                    app.set_status_notice("Interrupting...");
-                }
+                app.set_status_notice("Interrupting...");
             } else {
                 app.handle_quit_request();
             }
@@ -2555,16 +2473,9 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
                 app.interleave_images.clear();
                 app.pending_soft_interrupts.clear();
                 app.pending_soft_interrupt_requests.clear();
-                let cancelled_overnight = app.cancel_overnight_for_interrupt();
                 if disabled_auto_poke {
                     super::commands::disable_auto_poke(app);
-                    if cancelled_overnight {
-                        app.set_status_notice("Interrupting... Auto-poke OFF, overnight cancelled");
-                    } else {
-                        app.set_status_notice("Interrupting... Auto-poke OFF");
-                    }
-                } else if cancelled_overnight {
-                    app.set_status_notice("Interrupting... Overnight cancelled");
+                    app.set_status_notice("Interrupting... Auto-poke OFF");
                 } else {
                     app.set_status_notice("Interrupting...");
                 }
@@ -2582,7 +2493,6 @@ pub(super) fn take_prepared_input(app: &mut App) -> PreparedInput {
     let raw_input = std::mem::take(&mut app.input);
     app.record_prompt_history(&raw_input);
     let expanded = expand_paste_placeholders(app, &raw_input);
-    super::at_file::cleanup_paste_files(app);
     app.pasted_contents.clear();
     let images = std::mem::take(&mut app.pending_images);
     app.cursor_pos = 0;
@@ -2760,9 +2670,6 @@ impl App {
             return Ok(());
         }
 
-        self.normalize_diagram_state();
-        let diagram_available = self.diagram_available();
-
         // Ctrl / Alt(Option) / Cmd(Super) + Up all recall queued/pending messages
         // for editing and then walk prompt history. We accept any of the three
         // single modifiers so the gesture works regardless of which one a given
@@ -2785,7 +2692,7 @@ impl App {
 
         // Handle ctrl combos regardless of processing state
         if modifiers.contains(KeyModifiers::CONTROL)
-            && handle_global_control_shortcuts(self, code, diagram_available)
+            && handle_global_control_shortcuts(self, code, false)
         {
             return Ok(());
         }
@@ -2886,7 +2793,6 @@ impl App {
     fn commit_resize_redraw(&mut self, now: std::time::Instant) -> bool {
         self.last_resize_redraw = Some(now);
         self.resize_redraw_pending = false;
-        self.handle_diagram_geometry_change();
         true
     }
 
@@ -3275,7 +3181,6 @@ impl App {
         self.reasoning_block_start = None;
         self.refresh_split_view_if_needed();
         self.streaming_md_renderer.borrow_mut().reset();
-        crate::tui::mermaid::clear_streaming_preview_diagram();
     }
 
     /// Reset provider-reported usage that belongs to a transcript being fully
@@ -3341,7 +3246,6 @@ impl App {
         self.reasoning_block_start = None;
         self.refresh_split_view_if_needed();
         self.streaming_md_renderer.borrow_mut().reset();
-        crate::tui::mermaid::clear_streaming_preview_diagram();
         content
     }
 
@@ -3366,7 +3270,6 @@ impl App {
             // `replace_streaming_text` (remote TextReplace, debug snapshot
             // restore); `take_streaming_text` and `clear_streaming_render_state`
             // both clear it themselves.
-            crate::tui::mermaid::clear_streaming_preview_diagram();
             return false;
         }
 
@@ -3426,7 +3329,6 @@ impl App {
             return;
         }
         self.pasted_contents.clear();
-        super::at_file::cleanup_paste_files(self);
         self.cursor_pos = 0;
         self.clear_input_undo_history();
         self.follow_chat_bottom(); // Reset to bottom and resume auto-scroll on new input

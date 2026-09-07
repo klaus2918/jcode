@@ -68,9 +68,6 @@ impl Config {
         if let Ok(v) = std::env::var("JCODE_COPY_SELECTION_TOGGLE_KEY") {
             self.keybindings.copy_selection_toggle = v;
         }
-        if let Ok(v) = std::env::var("JCODE_DIAGRAM_PANE_TOGGLE_KEY") {
-            self.keybindings.diagram_pane_toggle = v;
-        }
         if let Ok(v) = std::env::var("JCODE_TYPING_SCROLL_LOCK_TOGGLE_KEY") {
             self.keybindings.typing_scroll_lock_toggle = v;
         }
@@ -135,11 +132,6 @@ impl Config {
             } else {
                 DiffDisplayMode::Off
             };
-        }
-        if let Ok(v) = std::env::var("JCODE_PIN_IMAGES")
-            && let Some(parsed) = parse_env_bool(&v)
-        {
-            self.display.pin_images = parsed;
         }
         if let Ok(v) = std::env::var("JCODE_PIN_TODOS")
             && let Some(parsed) = parse_env_bool(&v)
@@ -286,11 +278,6 @@ impl Config {
         if let Ok(v) = std::env::var("JCODE_SWARM_ENABLED") {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.features.swarm = parsed;
-            }
-        }
-        if let Ok(v) = std::env::var("JCODE_ENABLE_MERMAID") {
-            if let Some(parsed) = parse_env_bool(&v) {
-                self.features.mermaid = parsed;
             }
         }
         if let Ok(v) = std::env::var("JCODE_AUTO_POKE") {
@@ -540,21 +527,6 @@ impl Config {
         }
         if let Ok(v) = std::env::var("JCODE_NTFY_SERVER") {
             self.safety.ntfy_server = v;
-        }
-        if let Ok(v) = std::env::var("JCODE_SMTP_PASSWORD") {
-            self.safety.email_password = Some(v);
-        }
-        if let Ok(v) = std::env::var("JCODE_EMAIL_TO") {
-            self.safety.email_to = Some(v);
-            self.safety.email_enabled = true;
-        }
-        if let Ok(v) = std::env::var("JCODE_IMAP_HOST") {
-            self.safety.email_imap_host = Some(v);
-        }
-        if let Ok(v) = std::env::var("JCODE_EMAIL_REPLY_ENABLED") {
-            if let Some(parsed) = parse_env_bool(&v) {
-                self.safety.email_reply_enabled = parsed;
-            }
         }
         if let Ok(v) = std::env::var("JCODE_TELEGRAM_BOT_TOKEN") {
             self.safety.telegram_bot_token = Some(v);

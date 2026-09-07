@@ -654,7 +654,6 @@ impl App {
                 _ => {}
             }
         }
-        self.sync_diagram_fit_context();
         self.prewarm_focused_side_panel();
     }
 
@@ -751,13 +750,11 @@ impl App {
         let Ok((terminal_width, terminal_height)) = crossterm::terminal::size() else {
             return;
         };
-        let has_protocol = crate::tui::mermaid::protocol_type().is_some();
         let _ = crate::tui::prewarm_focused_side_panel(
             &self.side_panel,
             terminal_width,
             terminal_height,
-            self.diagram_pane_ratio,
-            has_protocol,
+            40,
             self.centered,
         );
     }

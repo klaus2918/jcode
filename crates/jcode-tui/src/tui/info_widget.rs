@@ -91,8 +91,6 @@ pub enum WidgetKind {
     KvCache,
     /// Current model name
     ModelInfo,
-    /// Mermaid diagrams
-    Diagrams,
     /// Ambient mode status
     AmbientMode,
     /// Rotating tips/shortcuts
@@ -105,7 +103,6 @@ impl WidgetKind {
     /// Priority for display (lower = higher priority)
     pub fn priority(self) -> u8 {
         match self {
-            WidgetKind::Diagrams => 0, // Highest priority - user explicitly wants to see it
             WidgetKind::WorkspaceMap => 1,
             WidgetKind::Overview => 2,
             WidgetKind::Todos => 3,
@@ -126,7 +123,6 @@ impl WidgetKind {
     /// Preferred side for this widget
     pub fn preferred_side(self) -> Side {
         match self {
-            WidgetKind::Diagrams => Side::Right, // Diagrams on right
             WidgetKind::WorkspaceMap => Side::Right,
             WidgetKind::Overview => Side::Right,
             WidgetKind::Todos => Side::Right,
@@ -147,7 +143,6 @@ impl WidgetKind {
     /// Minimum height needed for this widget
     pub fn min_height(self) -> u16 {
         match self {
-            WidgetKind::Diagrams => 10, // Diagrams need more space
             WidgetKind::WorkspaceMap => 1,
             WidgetKind::Overview => 8,
             WidgetKind::Todos => 3,
@@ -168,7 +163,6 @@ impl WidgetKind {
     /// All widget kinds in priority order
     pub fn all_by_priority() -> &'static [WidgetKind] {
         &[
-            WidgetKind::Diagrams,
             WidgetKind::WorkspaceMap,
             WidgetKind::Overview,
             WidgetKind::Todos,
@@ -188,7 +182,6 @@ impl WidgetKind {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            WidgetKind::Diagrams => "diagrams",
             WidgetKind::WorkspaceMap => "workspace",
             WidgetKind::Overview => "overview",
             WidgetKind::Todos => "todos",
@@ -544,8 +537,6 @@ impl MemoryInfo {
     }
 }
 
-pub use jcode_tui_mermaid::DiagramInfo;
-
 /// Git repository status for the info widget
 #[derive(Debug, Clone)]
 pub struct GitInfo {
@@ -633,8 +624,6 @@ pub struct InfoWidgetData {
     pub upstream_provider: Option<String>,
     /// Active connection type (websocket/https/etc.)
     pub connection_type: Option<String>,
-    /// Mermaid diagrams to display
-    pub diagrams: Vec<DiagramInfo>,
     /// Visible Niri-style workspace rows
     pub workspace_rows: Vec<VisibleWorkspaceRow>,
     /// Lightweight animation tick for workspace map rendering
@@ -676,7 +665,6 @@ impl InfoWidgetData {
             && self.memory_info.is_none()
             && self.swarm_info.is_none()
             && self.background_info.is_none()
-            && self.diagrams.is_empty()
             && self.workspace_rows.is_empty()
     }
 
@@ -687,7 +675,6 @@ impl InfoWidgetData {
         }
 
         match kind {
-            WidgetKind::Diagrams => !self.diagrams.is_empty(),
             WidgetKind::WorkspaceMap => !self.workspace_rows.is_empty(),
             WidgetKind::Overview => {
                 let mut sections = 0usize;
@@ -809,7 +796,7 @@ impl InfoWidgetData {
                     .map(|u| u.max_usage_pct())
                     .unwrap_or(0);
                 if max_pct >= 80 {
-                    1 // Very high - right after diagrams
+                    1 // Very high
                 } else if max_pct >= 50 {
                     3 // Elevated - after overview and todos
                 } else {
@@ -1100,13 +1087,6 @@ pub(crate) fn calculate_widget_height(
             }
             layout.max_page_height
         }
-        WidgetKind::Diagrams => {
-            if data.diagrams.is_empty() {
-                return 0;
-            }
-            // Use the full available height so the image fills the panel
-            max_height.saturating_sub(border_height)
-        }
         WidgetKind::Todos => {
             if data.todos.is_empty() {
                 return 0;
@@ -1333,17 +1313,10 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
 
     let inner = block.inner(rect);
 
-    // Diagrams need special handling - render image instead of text
-    if placement.kind == WidgetKind::Diagrams {
-        frame.render_widget(block, rect);
-        render_diagrams_widget(frame, inner, data);
-        return;
-    }
     if placement.kind == WidgetKind::Overview {
         // Check if overview would actually render content before drawing the border
         let mut overview = data.clone();
         overview.memory_info = None;
-        overview.diagrams.clear();
         let layout = compute_page_layout(&overview, inner.width as usize, inner.height);
         if layout.pages.is_empty() || layout.max_page_height == 0 {
             return;
@@ -1374,30 +1347,14 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     frame.render_widget(para, inner);
 }
 
-/// Render mermaid diagrams widget (renders images, not text)
-fn render_diagrams_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData) {
-    if data.diagrams.is_empty() {
-        return;
-    }
-
-    // For now, just render the first/most recent diagram
-    // Could add pagination later for multiple diagrams
-    let diagram = &data.diagrams[0];
-
-    // Scale up as well as down so margin diagrams use the whole widget instead
-    // of appearing as a small top-left crop in a large panel.
-    super::mermaid::render_image_widget_scale(diagram.hash, inner, frame.buffer_mut(), false);
-}
-
 fn render_overview_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
 
     let mut overview = data.clone();
-    // Keep memory graph and diagram visuals in dedicated widgets.
+    // Keep memory graph visuals in dedicated widgets.
     overview.memory_info = None;
-    overview.diagrams.clear();
 
     let layout = compute_page_layout(&overview, inner.width as usize, inner.height);
     if layout.pages.is_empty() {
@@ -1618,9 +1575,8 @@ fn render_widget_content(
     inner: Rect,
 ) -> Vec<Line<'static>> {
     match kind {
-        WidgetKind::Diagrams => Vec::new(), // Handled specially in render_single_widget
         WidgetKind::WorkspaceMap => Vec::new(), // Handled specially in render_single_widget
-        WidgetKind::Overview => Vec::new(), // Handled specially in render_single_widget
+        WidgetKind::Overview => Vec::new(),     // Handled specially in render_single_widget
         WidgetKind::Todos => render_todos_widget(data, inner),
         WidgetKind::ContextUsage => render_context_widget(data, inner),
         WidgetKind::MemoryActivity => render_memory_widget(data, inner),

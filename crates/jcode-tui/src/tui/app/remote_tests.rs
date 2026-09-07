@@ -221,7 +221,7 @@ fn auth_provider_hint_resolves_every_emitted_login_completed_provider() {
     // src/tui/app/auth.rs) must resolve to a canonical server provider id so the
     // auth-change refresh is attributed to the right provider and the post-login
     // model auto-select runs. Before the loose display-name resolution, only
-    // Azure and OpenAI-compatible logins resolved; every direct provider sent no
+    // OpenAI-compatible logins resolved; every direct provider sent no
     // hint, so the server fell back to the session's active provider (the
     // "OpenAI credentials are active" bug) and skipped the model switch.
     //
@@ -257,7 +257,6 @@ fn auth_provider_hint_resolves_every_emitted_login_completed_provider() {
         // mapping, the single source of truth for post-login attribution.
         let expected: Option<String> = match descriptor.target {
             LoginProviderTarget::AutoImport => None,
-            LoginProviderTarget::Azure => Some("azure-openai".to_string()),
             LoginProviderTarget::OpenAiCompatible(profile) => Some(profile.id.to_string()),
             _ => Some(descriptor.id.to_string()),
         };

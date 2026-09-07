@@ -560,27 +560,16 @@ pub(super) async fn handle_bus_event(
 /// auth-change refresh for a completed login.
 ///
 /// `LoginCompleted.provider` is the login descriptor's display label (e.g.
-/// "Anthropic API"), id, or alias - not the canonical server provider id. This
-/// used to only map Azure and OpenAI-compatible logins, so direct logins
-/// (Claude OAuth/API key, OpenAI, OpenRouter, Bedrock, ...) sent no hint. With
+/// "Anthropic API"), id, or alias - not the canonical server provider id. Direct
+/// logins (Claude OAuth/API key, OpenAI, OpenRouter, Bedrock, ...) sent no hint. With
 /// no hint the server fell back to the session's currently active provider,
 /// mislabeling the catalog-refresh message ("OpenAI credentials are active"
 /// after an Anthropic API-key login) and skipping the post-login model switch.
 fn auth_provider_hint_for_login_provider(provider: &str) -> Option<&'static str> {
     let provider = provider.trim();
-    // Azure's runtime id ("azure-openai") differs from its login descriptor id
-    // ("azure"); keep the dedicated mapping used across the auth lifecycle.
-    if provider.eq_ignore_ascii_case("azure")
-        || provider.eq_ignore_ascii_case("azure-openai")
-        || provider.eq_ignore_ascii_case("azure openai")
-    {
-        return Some("azure-openai");
-    }
-
     use crate::provider_catalog::LoginProviderTarget;
     let descriptor = crate::provider_catalog::resolve_login_provider_loose(provider)?;
     match descriptor.target {
-        LoginProviderTarget::Azure => Some("azure-openai"),
         // OpenAI-compatible profiles carry their own catalog namespace id.
         LoginProviderTarget::OpenAiCompatible(profile) => Some(profile.id),
         // Auto-import has no single runtime to attribute the refresh to.
@@ -615,13 +604,7 @@ fn auth_changed_event_for_login_provider(provider: &str) -> Option<crate::protoc
     // `openai_compatible_profile_by_id`: native providers (`anthropic-api`,
     // `openai-api`) alias doctor-probe compat profiles with the same id, but
     // their auth activation deliberately routes through the native runtime.
-    if provider_id == "azure-openai" {
-        auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new("azure-openai"));
-        auth.expected_catalog_namespace =
-            Some(crate::protocol::CatalogNamespace::new("azure-openai"));
-    } else if descriptor
-        .is_some_and(|d| matches!(d.target, LoginProviderTarget::OpenAiCompatible(_)))
-    {
+    if descriptor.is_some_and(|d| matches!(d.target, LoginProviderTarget::OpenAiCompatible(_))) {
         auth.expected_runtime = Some(crate::protocol::RuntimeProviderKey::new(
             "openai-compatible",
         ));
@@ -1590,20 +1573,10 @@ async fn handle_debug_command(app: &mut App, cmd: &str, remote: &mut RemoteConne
             "model": app.remote_provider_model.as_deref().unwrap_or(app.provider.name()),
             "connection_type": app.connection_type.clone(),
             "remote_transport": app.remote_transport.clone(),
-            "diagram_mode": format!("{:?}", app.diagram_mode),
-            "diagram_focus": app.diagram_focus,
-            "diagram_index": app.diagram_index,
-            "diagram_scroll": [app.diagram_scroll_x, app.diagram_scroll_y],
-            "diagram_pane_ratio": app.diagram_pane_ratio_target,
-            "diagram_pane_enabled": app.diagram_pane_enabled,
-            "diagram_pane_position": format!("{:?}", app.diagram_pane_position),
-            "diagram_zoom": app.diagram_zoom,
-            "diagram_count": crate::tui::mermaid::get_active_diagrams().len(),
             "remote": true,
             "server_version": app.remote_server_version.clone(),
             "server_has_update": app.remote_server_has_update,
             "version": jcode_build_meta::version(),
-            "diagram_mode": format!("{:?}", app.diagram_mode),
         })
         .to_string();
     }

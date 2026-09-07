@@ -409,62 +409,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                 print_provider_test_coverage_report(&report, colorize);
             }
         }
-        Some(Command::ProviderDoctor {
-            provider,
-            tier,
-            json,
-        }) => {
-            crate::cli::provider_doctor::run_provider_doctor_command(
-                &provider,
-                args.model.as_deref(),
-                &tier,
-                json,
-            )
-            .await?;
-        }
-        Some(Command::AuthTest {
-            login,
-            all_configured,
-            no_smoke,
-            no_tool_smoke,
-            prompt,
-            json,
-            output,
-            coverage,
-            context_audit,
-            coverage_file,
-            coverage_limit,
-        }) => {
-            if coverage {
-                commands::run_auth_test_coverage_command(
-                    json,
-                    output.as_deref(),
-                    coverage_file.as_deref(),
-                    coverage_limit,
-                )?;
-            } else if context_audit {
-                commands::run_auth_test_context_audit_command(
-                    args.provider.as_deref().unwrap_or("auto"),
-                    all_configured,
-                    json,
-                    output.as_deref(),
-                )
-                .await?;
-            } else {
-                commands::run_auth_test_command(
-                    args.provider.as_deref().unwrap_or("auto"),
-                    args.model.as_deref(),
-                    login,
-                    all_configured,
-                    no_smoke,
-                    no_tool_smoke,
-                    prompt.as_deref(),
-                    json,
-                    output.as_deref(),
-                )
-                .await?;
-            }
-        }
         Some(Command::Restart { action }) => match action {
             RestartCommand::Save { auto_restore } => {
                 commands::run_restart_save_command(auto_restore).await?

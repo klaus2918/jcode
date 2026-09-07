@@ -26,15 +26,12 @@ members = [
     "crates/jcode-fuzzy",
     "crates/jcode-memory-types",
     "crates/jcode-message-types",
-    "crates/jcode-overnight-core",
     "crates/jcode-plan",
     "crates/jcode-swarm-core",
     "crates/jcode-protocol",
     "crates/jcode-selfdev-types",
     "crates/jcode-session-types",
     "crates/jcode-storage",
-    "crates/jcode-azure-auth",
-    "crates/jcode-notify-email",
     "crates/jcode-provider-metadata",
     "crates/jcode-provider-env",
     "crates/jcode-provider-core",
@@ -44,12 +41,11 @@ members = [
     "crates/jcode-provider-openrouter-runtime",
     "crates/jcode-provider-anthropic-runtime",
     "crates/jcode-provider-openai-runtime",
-    "crates/jcode-provider-doctor",
     "crates/jcode-tui-markdown",
     "crates/jcode-tui-messages",
+    "crates/jcode-tui-mermaid",
     "crates/jcode-usage-types",
     "crates/jcode-tui-core",
-    "crates/jcode-tui-mermaid",
     "crates/jcode-task-types",
     "crates/jcode-tool-core",
     "crates/jcode-tool-types",
@@ -87,11 +83,6 @@ required-features = ["dev-bins"]
 [[bin]]
 name = "memory_recall_bench"
 path = "src/bin/memory_recall_bench.rs"
-required-features = ["dev-bins"]
-
-[[bin]]
-name = "mermaid_side_panel_probe"
-path = "src/bin/mermaid_side_panel_probe.rs"
 required-features = ["dev-bins"]
 
 [[bin]]
@@ -158,7 +149,6 @@ jcode-build-meta = { path = "crates/jcode-build-meta" }
 jcode-tui = { path = "crates/jcode-tui", default-features = false }
 # `jcode provider-doctor` / provider diagnostics; sits downstream of jcode-base
 # so doctor edits do not rebuild the base -> app-core -> tui spine.
-jcode-provider-doctor = { path = "crates/jcode-provider-doctor" }
 jcode-provider-openrouter-runtime = { path = "crates/jcode-provider-openrouter-runtime" }
 jcode-provider-anthropic-runtime = { path = "crates/jcode-provider-anthropic-runtime" }
 jcode-provider-openai-runtime = { path = "crates/jcode-provider-openai-runtime" }
@@ -186,9 +176,6 @@ jemalloc-prof = [
 ]
 # Local embeddings live in jcode-base; this feature just forwards down the stack.
 embeddings = ["jcode-tui/embeddings"]
-# Internal release feature: build a supported OpenSSL inside the CentOS 7
-# compatibility image while preserving the glibc 2.17 runtime baseline.
-linux-compat-vendored-openssl = ["jcode-tui/linux-compat-vendored-openssl"]
 mmdr-size-api = ["jcode-tui/mmdr-size-api"]
 
 [target.'cfg(windows)'.dependencies]

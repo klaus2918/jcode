@@ -1,6 +1,5 @@
 pub mod account_store;
 pub mod active_method;
-pub mod azure;
 pub mod claude;
 pub mod codex;
 mod commands;
@@ -159,9 +158,7 @@ fn auth_state_label(state: AuthState) -> &'static str {
     }
 }
 
-fn bool_label(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
-}
+// (removed dead `bool_label` helper)
 
 fn log_auth_status_snapshot(event: &str, status: &AuthStatus) {
     crate::logging::auth_event(
@@ -172,9 +169,6 @@ fn log_auth_status_snapshot(event: &str, status: &AuthStatus) {
             ("claude", auth_state_label(status.anthropic.state)),
             ("openai", auth_state_label(status.openai)),
             ("openrouter", auth_state_label(status.openrouter)),
-            ("azure", auth_state_label(status.azure)),
-            ("azure_api_auth", bool_label(status.azure_has_api_key)),
-            ("azure_entra", bool_label(status.azure_uses_entra)),
         ],
     );
 }
@@ -189,7 +183,7 @@ fn auth_readiness_for_provider(
         AuthState::Expired => AuthReadinessLevel::CredentialPresent,
         AuthState::Available => {
             if last_validation.and_then(|record| record.provider_smoke_ok) == Some(true) {
-                return model_smoke_readiness_for_provider(provider);
+                return AuthReadinessLevel::RequestValid;
             }
 
             available_provider_base_readiness(provider)
@@ -202,15 +196,6 @@ fn available_provider_base_readiness(provider: LoginProviderDescriptor) -> AuthR
         crate::provider_catalog::LoginProviderTarget::Claude
         | crate::provider_catalog::LoginProviderTarget::OpenAi => AuthReadinessLevel::Authenticated,
         _ => AuthReadinessLevel::CredentialPresent,
-    }
-}
-
-fn model_smoke_readiness_for_provider(provider: LoginProviderDescriptor) -> AuthReadinessLevel {
-    match provider.target {
-        // Azure model names are deployment IDs. A successful smoke call proves the
-        // resource, auth, and selected deployment all work together.
-        crate::provider_catalog::LoginProviderTarget::Azure => AuthReadinessLevel::DeploymentValid,
-        _ => AuthReadinessLevel::RequestValid,
     }
 }
 
@@ -344,7 +329,6 @@ impl AuthStatus {
             || self.jcode == AuthState::Available
             || self.openai == AuthState::Available
             || self.openrouter == AuthState::Available
-            || self.azure == AuthState::Available
     }
 
     /// Emit a structured, non-secret snapshot of which providers currently have
@@ -371,9 +355,6 @@ impl AuthStatus {
                 ("openai_oauth", self.openai_has_oauth.to_string()),
                 ("openai_api", self.openai_has_api_key.to_string()),
                 ("openrouter", self.openrouter.label().to_string()),
-                ("azure", self.azure.label().to_string()),
-                ("azure_api", self.azure_has_api_key.to_string()),
-                ("azure_entra", self.azure_uses_entra.to_string()),
             ],
         );
     }
@@ -396,7 +377,6 @@ impl AuthStatus {
             LoginProviderAuthStateKey::Jcode => self.jcode,
             LoginProviderAuthStateKey::Anthropic => self.anthropic.state,
             LoginProviderAuthStateKey::OpenAi => self.openai,
-            LoginProviderAuthStateKey::Azure => self.azure,
             LoginProviderAuthStateKey::OpenRouterLike => self.openrouter,
         }
     }
@@ -461,7 +441,6 @@ impl AuthStatus {
                     AuthState::NotConfigured
                 }
             }
-            _ => self.state_for_key(provider.auth_state_key),
         }
     }
 
@@ -694,28 +673,6 @@ impl AuthStatus {
                     AuthValidationMethod::PresenceCheck,
                 )
             }
-            crate::provider_catalog::LoginProviderTarget::Azure => {
-                let (source, detail) = summarize_sources(vec![
-                    azure_entra_source(),
-                    env_source(crate::auth::azure::API_KEY_ENV),
-                    config_source(
-                        crate::auth::azure::API_KEY_ENV,
-                        crate::auth::azure::ENV_FILE,
-                        "~/.config/jcode/azure-openai.env",
-                    ),
-                ]);
-                (
-                    source,
-                    detail,
-                    AuthExpiryConfidence::ConfigurationOnly,
-                    if crate::auth::azure::uses_entra_id() {
-                        AuthRefreshSupport::Automatic
-                    } else {
-                        AuthRefreshSupport::NotApplicable
-                    },
-                    AuthValidationMethod::ConfigurationCheck,
-                )
-            }
             crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
                 // Prefer the active named config profile's credential location
                 // (set via `--provider-profile`) over the built-in profile env
@@ -829,7 +786,6 @@ fn build_auth_status_uncached(_mode: AuthProbeMode) -> (AuthStatus, Vec<(&'stati
     record_auth_probe_step(&mut timings, "openrouter", || {
         probe_openrouter_status(&mut status)
     });
-    record_auth_probe_step(&mut timings, "azure", || probe_azure_status(&mut status));
     record_auth_probe_step(&mut timings, "openai", || probe_openai_status(&mut status));
 
     (status, timings)
@@ -879,14 +835,6 @@ fn probe_anthropic_status(status: &mut AuthStatus) {
 fn probe_openrouter_status(status: &mut AuthStatus) {
     if crate::provider::openrouter::has_credentials() {
         status.openrouter = AuthState::Available;
-    }
-}
-
-fn probe_azure_status(status: &mut AuthStatus) {
-    status.azure_has_api_key = crate::auth::azure::has_api_key();
-    status.azure_uses_entra = crate::auth::azure::uses_entra_id();
-    if crate::auth::azure::has_configuration() {
-        status.azure = AuthState::Available;
     }
 }
 
@@ -982,7 +930,6 @@ fn assessment_for_key(
             )
         }
         LoginProviderAuthStateKey::Jcode
-        | LoginProviderAuthStateKey::Azure
         | LoginProviderAuthStateKey::OpenRouterLike
         | LoginProviderAuthStateKey::ExternalImport => (
             AuthCredentialSource::None,
@@ -1051,15 +998,6 @@ fn external_api_key_source(env_key: &str) -> Option<(AuthCredentialSource, Strin
         (
             AuthCredentialSource::TrustedExternalFile,
             format!("trusted external auth import ({env_key})"),
-        )
-    })
-}
-
-fn azure_entra_source() -> Option<(AuthCredentialSource, String)> {
-    crate::auth::azure::uses_entra_id().then(|| {
-        (
-            AuthCredentialSource::AzureDefaultCredential,
-            "Azure DefaultAzureCredential".to_string(),
         )
     })
 }

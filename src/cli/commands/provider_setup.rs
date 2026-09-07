@@ -49,7 +49,6 @@ pub(crate) struct ProviderSetupReport {
     auth: String,
     default_set: bool,
     run_command: String,
-    auth_test_command: String,
 }
 
 pub(crate) fn run_provider_add_command(options: ProviderAddOptions) -> Result<()> {
@@ -86,7 +85,6 @@ pub(crate) fn run_provider_add_command(options: ProviderAddOptions) -> Result<()
         }
         println!();
         println!("Run:       {}", report.run_command);
-        println!("Validate:  {}", report.auth_test_command);
     }
 
     Ok(())
@@ -279,11 +277,6 @@ pub(crate) fn configure_provider_profile(
                 .map(|model| format!(" --model {}", shell_quote(model)))
                 .unwrap_or_default()
         ),
-        auth_test_command: format!(
-            "jcode --provider-profile {} auth-test --prompt {}",
-            shell_quote(&name),
-            shell_quote("Reply exactly JCODE_PROVIDER_SETUP_OK")
-        ),
     })
 }
 
@@ -320,14 +313,8 @@ fn validate_profile_name(raw: &str) -> Result<String> {
 }
 
 fn ensure_profile_name_not_reserved(name: &str) -> Result<()> {
-    const RESERVED_PROVIDER_NAMES: &[&str] = &[
-        "auto",
-        "claude-subprocess",
-        "compat",
-        "custom",
-        "azure-openai",
-        "aoai",
-    ];
+    const RESERVED_PROVIDER_NAMES: &[&str] =
+        &["auto", "claude-subprocess", "compat", "custom", "aoai"];
     if resolve_login_provider(name).is_some()
         || RESERVED_PROVIDER_NAMES
             .iter()

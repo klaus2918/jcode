@@ -385,7 +385,7 @@ fn frontier_families(activation: &AuthActivationResult) -> &'static [FrontierFam
     };
     match activation.provider_id.as_deref() {
         Some("claude") | Some("claude-api") => &[CLAUDE, FABLE],
-        Some("openai") | Some("openai-api") | Some("azure-openai") => &[GPT],
+        Some("openai") | Some("openai-api") => &[GPT],
         _ => &[],
     }
 }
@@ -661,12 +661,6 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
                 api_method,
                 crate::provider::ModelRouteApiMethod::JcodeSubscription
             );
-        }
-        "azure-openai" => {
-            // Azure OpenAI reuses the OpenRouter transport (configured via Azure
-            // env), so its routes carry the `openrouter` api_method while keeping
-            // the `azure-openai` runtime identity.
-            return matches!(api_method, crate::provider::ModelRouteApiMethod::OpenRouter);
         }
         _ => {}
     }

@@ -120,7 +120,7 @@ pub struct AmbientTranscript {
     pub summary: Option<String>,
     pub compactions: u32,
     pub memories_modified: u32,
-    /// Full conversation transcript (markdown) for email notifications
+    /// Full conversation transcript (markdown) for notifications
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
 }
@@ -374,7 +374,7 @@ fn persist_history(history: &[Decision]) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Record a permission decision by directly manipulating the queue/history JSON files.
-/// Used by the IMAP reply poller which doesn't have access to the live SafetySystem instance.
+/// Used by channel reply pollers which don't have access to the live SafetySystem instance.
 pub fn record_permission_via_file(
     request_id: &str,
     approved: bool,
@@ -704,7 +704,7 @@ mod tests {
             sys.request_permission(req);
             assert_eq!(sys.pending_requests().len(), baseline + 1);
 
-            record_permission_via_file("req_file_test", true, "email_reply", None).unwrap();
+            record_permission_via_file("req_file_test", true, "file", None).unwrap();
 
             let sys2 = SafetySystem::new();
             let still_pending = sys2

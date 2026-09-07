@@ -105,7 +105,7 @@ pub const OPENAI_COMPAT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderD
 };
 
 // Config-driven (Reasonix-aligned) login surface. Built-in third-party /
-// first-party vendors (Claude/OpenAI/OpenRouter/Bedrock/Azure/Google/Gemini)
+// first-party vendors (Claude/OpenAI/OpenRouter/Bedrock/Google/Gemini)
 // are intentionally absent: models are connected via `[[providers]]` config
 // entries and an `openai-compatible` endpoint, not interactive login. The
 // generic openai-compatible entry, local endpoints (LM Studio / Ollama),

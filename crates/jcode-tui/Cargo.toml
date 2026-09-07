@@ -71,9 +71,9 @@ jcode-selfdev-types = { path = "../jcode-selfdev-types" }
 jcode-session-types = { path = "../jcode-session-types" }
 jcode-provider-core = { path = "../jcode-provider-core" }
 jcode-tui-markdown = { path = "../jcode-tui-markdown" }
+jcode-tui-mermaid = { path = "../jcode-tui-mermaid" }
 jcode-tui-messages = { path = "../jcode-tui-messages" }
 jcode-tui-core = { path = "../jcode-tui-core" }
-jcode-tui-mermaid = { path = "../jcode-tui-mermaid" }
 jcode-tui-render = { path = "../jcode-tui-render" }
 jcode-tui-visual-debug = { path = "../jcode-tui-visual-debug" }
 jcode-tui-session-picker = { path = "../jcode-tui-session-picker", features = ["serde"] }
@@ -94,7 +94,6 @@ dev-bins = []
 jemalloc = ["jcode-app-core/jemalloc"]
 jemalloc-prof = ["jcode-app-core/jemalloc-prof"]
 embeddings = ["jcode-app-core/embeddings"]
-linux-compat-vendored-openssl = ["jcode-app-core/linux-compat-vendored-openssl"]
 mmdr-size-api = ["jcode-tui-mermaid/mmdr-size-api"]
 # Forwards the application core's `test-support` feature (and onward to
 # jcode-base) so downstream crates' test targets can reach the whole stack's

@@ -48,14 +48,12 @@ pub enum AppRuntimeMode {
     TestHarness,
 }
 
-mod at_file;
 mod auth;
 mod catchup;
 mod commands;
 mod commands_colors;
 mod commands_dispatch;
 mod commands_improve;
-mod commands_overnight;
 mod commands_plan;
 mod commands_remote;
 mod commands_review;
@@ -106,6 +104,10 @@ mod tui_state;
 mod turn;
 mod turn_memory;
 mod turn_notify;
+// ui_prefs（内联图像可见性等持久化偏好）在 feature-simplification 移除图像侧栏
+// 后仅剩 cfg(test) 用例引用（scroll_copy_02 等），生产编译无使用者；
+// 标 cfg(test) 令其只在测试目标中编译，避免生产 dead_code。
+#[cfg(test)]
 mod ui_prefs;
 
 pub(crate) use self::state_ui_storage::compact_display_messages_for_storage;
@@ -636,34 +638,6 @@ pub(super) struct HistoryScrollAnchor {
     pub base_total: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct OvernightAutoPokeFingerprint {
-    pub run_id: String,
-    pub status: String,
-    pub last_activity_at: String,
-    pub events_len: usize,
-    pub task_total: usize,
-    pub task_completed: usize,
-    pub task_active: usize,
-    pub task_blocked: usize,
-    pub task_validated: usize,
-    pub session_message_count: usize,
-    pub review_notes_mtime: Option<u64>,
-    pub validation_files: usize,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct OvernightAutoPokeState {
-    pub run_id: String,
-    pub last_fingerprint: OvernightAutoPokeFingerprint,
-    pub stalled_turns: u8,
-    pub error_turns: u8,
-    pub total_pokes_sent: u16,
-    pub diagnostic_sent: bool,
-    pub morning_report_poked: bool,
-    pub final_wrap_poked: bool,
-}
-
 #[derive(Clone, Debug, Default)]
 struct CommandCandidatesCache {
     candidates: Vec<(String, &'static str)>,
@@ -957,15 +931,11 @@ pub struct App {
     /// update `consecutive_guardrail_stops`.
     turn_guardrail_stopped: bool,
     /// Consecutive turns that ended in a provider guardrail/refusal stop.
-    /// Auto-poke and overnight poke must stop re-sending after a few of
+    /// Auto-poke must stop re-sending after a few of
     /// these: the same request refused once is almost always refused again,
     /// so blindly poking loops forever (observed live: one refused API call
     /// every ~7s until manually interrupted).
     consecutive_guardrail_stops: u8,
-    // When armed by /overnight, automatically continue guarded follow-up turns until wake/wrap.
-    // feature-simplification (S-7): /overnight is default-off (JCODE_OVERNIGHT_ENABLED=1),
-    // so this state can only be armed when the coordinator is explicitly enabled.
-    overnight_auto_poke: Option<OvernightAutoPokeState>,
     // Pending cross-provider resend after a failover warning/countdown.
     pending_provider_failover: Option<PendingProviderFailover>,
     // Interactive "switch to next best model/method and resend" offer surfaced
@@ -1052,16 +1022,6 @@ pub struct App {
     restart_requested: Option<String>,
     // Pasted content storage (displayed as placeholders, expanded on submit)
     pasted_contents: Vec<String>,
-    // Multiline pastes stored in temp files, referenced by `@[粘贴内容...]`
-    // markers. Expanded from disk on submit, then the temp files are removed.
-    paste_files: Vec<at_file::PasteFileRef>,
-    // Active `@` workspace-file picker, or None when closed.
-    file_pick: Option<at_file::FilePickState>,
-    // Cached workspace file list (relative paths) for the `@` picker. Built
-    // once per session on first `@`, bounded by the index limit.
-    file_index: Option<Vec<String>>,
-    // Monotonic counter for naming paste temp files.
-    paste_file_seq: u64,
     // Pending pasted images (media_type, base64_data) attached to next message
     pending_images: Vec<(String, String)>,
     // One-shot flag: the next submitted prompt is routed to a new headed session.
@@ -1261,35 +1221,6 @@ pub struct App {
     diff_mode: crate::config::DiffDisplayMode,
     // Center all content (from config)
     pub(crate) centered: bool,
-    // Diagram display mode (from config)
-    diagram_mode: crate::config::DiagramDisplayMode,
-    // Whether the pinned diagram pane has focus
-    diagram_focus: bool,
-    // Selected diagram index in pinned mode (most recent = 0)
-    diagram_index: usize,
-    // Diagram scroll offsets in cells (only used when focused)
-    diagram_scroll_x: i32,
-    diagram_scroll_y: i32,
-    // Diagram pane width ratio (percentage)
-    diagram_pane_ratio: u8,
-    // Animation state for smooth pane ratio transitions
-    diagram_pane_ratio_from: u8,
-    diagram_pane_ratio_target: u8,
-    diagram_pane_anim_start: Option<Instant>,
-    // Set once the user manually resizes the pane (drag or +/- keys), so the
-    // adaptive image-width default stops overriding their explicit choice.
-    diagram_pane_ratio_user_adjusted: bool,
-    // Whether the pinned diagram pane is visible
-    diagram_pane_enabled: bool,
-    // Position of pinned diagram pane (side or top)
-    diagram_pane_position: crate::config::DiagramPanePosition,
-    // Diagram zoom percentage (100 = normal)
-    diagram_zoom: u8,
-    // Last diagram hash that was actually visible in the pinned pane.
-    // Used to detect identity/layout changes that should reset back to fit.
-    last_visible_diagram_hash: Option<u64>,
-    // Whether the user is dragging the diagram pane border
-    diagram_pane_dragging: bool,
     // Scroll offset for pinned diff pane
     diff_pane_scroll: usize,
     diff_pane_scroll_x: i32,
@@ -1337,18 +1268,13 @@ pub struct App {
     // a panel the user deliberately closed.
     side_panel_explicit_hidden: bool,
     // Pin read images to side pane
+    //
+    // feature-simplification 移除图像侧栏后，该状态位在生产路径只被恢复/初始化
+    // 写入、不再有生产读取；但 remote_events / scroll_copy 等 cfg(test) 用例仍
+    // 直接读写它，远端显示快照也会透传该值。为保留测试语义与未来恢复侧栏的
+    // 钩子，保留字段并抑制 dead_code。
+    #[allow(dead_code)]
     pin_images: bool,
-    // Inline transcript images render expanded (true) or as collapsed label
-    // stubs (false). Toggled with Alt+Shift+I; persisted in UI preferences so
-    // it survives restarts and session resumes.
-    inline_images_visible: bool,
-    // Per-image inline expand level (Fit/Large), keyed by image id. Cycled
-    // by clicking the `expand` badge under an image. Absent ids are `Fit`.
-    // `expanded_images_version` bumps on every change so the body/full prep
-    // caches (which embed anchored images) invalidate exactly like the
-    // `inline_images_visible` toggle does.
-    expanded_images: std::collections::HashMap<u64, super::ui::inline_image_ui::ImageExpandLevel>,
-    expanded_images_version: u64,
     // Auto-hide deadline for the pinned image side pane only.
     pinned_images_auto_hide_deadline: Option<Instant>,
     pinned_images_seen_count: usize,
@@ -1593,8 +1519,6 @@ pub struct App {
     usage_overlay: Option<RefCell<super::usage_overlay::UsageOverlay>>,
     /// Whether a usage refresh request is currently in flight.
     usage_report_refreshing: bool,
-    /// Last time the passive overnight progress card polled its run files.
-    last_overnight_card_refresh: Option<Instant>,
     /// Per-client Niri-style workspace navigation state. Previously a process
     /// global; now owned per App instance.
     workspace_client: super::workspace_client::WorkspaceClientState,
@@ -1664,14 +1588,14 @@ impl App {
     /// changes the stored todos (progress) or auto-poke is re-armed.
     const TODO_COMPLETION_GATE_MAX_ATTEMPTS: u8 = 5;
     /// Consecutive guardrail/refusal-stopped turns tolerated before automatic
-    /// continuation paths (auto-poke, overnight poke) are stopped. Guardrail
+    /// continuation paths (auto-poke) are stopped. Guardrail
     /// refusals are deterministic for the same request, so re-poking the same
     /// session just burns one refused API call per poke forever (observed
     /// live: refusal + auto-poke alternating every ~7s until interrupted).
     const GUARDRAIL_STOP_MAX_CONSECUTIVE: u8 = 2;
     /// Circuit breaker for credential failures: once this many consecutive
     /// turn errors classify as credential/auth failures, every automatic
-    /// resend path (auto-retry, auto-poke, overnight poke, queued follow-ups)
+    /// resend path (auto-retry, auto-poke, queued follow-ups)
     /// is stopped until auth changes or a turn succeeds. Telemetry showed
     /// runaway sessions logging thousands of 401s at one failed turn per
     /// retry (18k in one session) because retry loops kept resending against

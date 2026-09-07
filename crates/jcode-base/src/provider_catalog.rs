@@ -266,12 +266,6 @@ pub fn active_openai_compatible_display_name() -> Option<String> {
 
 pub fn runtime_provider_display_name(provider_name: &str) -> String {
     if provider_name.eq_ignore_ascii_case("openrouter") {
-        if let Ok(runtime_provider) = std::env::var("JCODE_RUNTIME_PROVIDER")
-            && runtime_provider.trim().eq_ignore_ascii_case("azure-openai")
-        {
-            return "Azure OpenAI".to_string();
-        }
-
         active_openai_compatible_display_name().unwrap_or_else(|| "OpenRouter".to_string())
     } else {
         provider_name.to_string()
@@ -330,12 +324,12 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("gpt-5.1-codex-max");
         }
         "opencode-go" => {
-            push("minimax-m2.7");
-            push("kimi-k2.5");
-            push("glm-5");
-            push("glm-5.1");
             push("deepseek-v4-flash");
-            push("qwen3.5-plus");
+            // push("minimax-m2.7");
+            // push("kimi-k2.5");
+            // push("glm-5");
+            // push("glm-5.1");
+            // push("qwen3.5-plus");
         }
         "zai" => {
             push("glm-4.5");

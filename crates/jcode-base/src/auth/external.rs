@@ -598,7 +598,6 @@ fn hermes_expires_at_ms(object: &serde_json::Map<String, Value>) -> Option<i64> 
 fn provider_keys_for_env(env_key: &str) -> &'static [&'static str] {
     match env_key {
         "ANTHROPIC_API_KEY" => &["anthropic", "claude"],
-        "AZURE_OPENAI_API_KEY" => &["azure-openai-responses", "azure", "azure-openai"],
         "OPENAI_API_KEY" => &["openai", "openai-api"],
         "GEMINI_API_KEY" => &["google", "gemini"],
         "MISTRAL_API_KEY" => &["mistral"],

@@ -410,7 +410,6 @@ mod tests {
             auth_method: crate::tui::info_widget::AuthMethod::Unknown,
             upstream_provider: None,
             connection_type: None,
-            diagrams: Vec::new(),
             workspace_rows: Vec::new(),
             workspace_animation_tick: 0,
             ambient_info: None,

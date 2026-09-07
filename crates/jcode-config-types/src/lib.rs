@@ -166,27 +166,6 @@ impl OverscrollStatusMode {
     }
 }
 
-/// How to display mermaid diagrams.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DiagramDisplayMode {
-    /// Don't show diagrams in dedicated widgets (only inline in messages).
-    #[default]
-    None,
-    /// Show diagrams in info widget margins (opportunistic, if space available).
-    Margin,
-    /// Show diagrams in a dedicated pinned pane (forces space allocation).
-    Pinned,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DiagramPanePosition {
-    #[default]
-    Side,
-    Top,
-}
-
 /// How much vertical spacing to use when rendering markdown blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1167,8 +1146,6 @@ pub struct KeybindingsConfig {
     pub side_panel_toggle: String,
     /// Toggle copy/selection mode (default: "alt+y")
     pub copy_selection_toggle: String,
-    /// Toggle the diagram pane position (default: "alt+t")
-    pub diagram_pane_toggle: String,
     /// Toggle typing scroll lock (default: "alt+s")
     pub typing_scroll_lock_toggle: String,
     /// Cycle inline diff display mode (default: "alt+g")
@@ -1225,7 +1202,6 @@ impl Default for KeybindingsConfig {
             workspace_right: get("workspace_right", "alt+l"),
             side_panel_toggle: get("side_panel_toggle", "alt+m"),
             copy_selection_toggle: get("copy_selection_toggle", "alt+y"),
-            diagram_pane_toggle: get("diagram_pane_toggle", "alt+t"),
             typing_scroll_lock_toggle: get("typing_scroll_lock_toggle", "alt+s"),
             diff_mode_cycle: get("diff_mode_cycle", "alt+g"),
             info_widget_toggle: get("info_widget_toggle", "alt+i"),
@@ -1291,10 +1267,6 @@ pub struct DisplayConfig {
     /// When unset, falls back to `show_thinking` (true => full, false => off).
     #[serde(default)]
     reasoning_display: Option<ReasoningDisplayMode>,
-    /// How to display mermaid diagrams (none/margin/pinned, default: none).
-    /// `none` still renders diagrams inline in the transcript via the inline
-    /// image pipeline; `margin`/`pinned` add dedicated widget placements.
-    pub diagram_mode: DiagramDisplayMode,
     /// Markdown block spacing style (compact/document, default: compact)
     pub markdown_spacing: MarkdownSpacingMode,
     /// LaTeX rendering style (none/unicode/image, default: image)
@@ -1381,7 +1353,6 @@ impl Default for DisplayConfig {
             centered: false,
             show_thinking: false,
             reasoning_display: Some(ReasoningDisplayMode::Off),
-            diagram_mode: DiagramDisplayMode::default(),
             markdown_spacing: MarkdownSpacingMode::default(),
             latex_rendering: LatexRenderingMode::default(),
             idle_animation: false,
@@ -1456,8 +1427,6 @@ pub struct FeatureConfig {
     pub memory: bool,
     /// Enable swarm coordination features (default: true)
     pub swarm: bool,
-    /// Enable Mermaid rendering and Mermaid-specific model guidance (default: true)
-    pub mermaid: bool,
     /// Default state of auto-poke (automatic follow-up when the model stops with
     /// incomplete todos). `/poke on` / `/poke off` still override this per session
     /// (default: true)
@@ -1481,7 +1450,6 @@ impl Default for FeatureConfig {
         Self {
             memory: true,
             swarm: true,
-            mermaid: true,
             auto_poke: true,
             message_timestamps: true,
             persist_memory_injections: false,
@@ -1674,7 +1642,7 @@ impl Default for AmbientConfig {
 
 /// Desktop notification configuration for interactive sessions.
 ///
-/// Unlike `[safety]` (ambient-mode ntfy/email/channel notifications), this
+/// Unlike `[safety]` (ambient-mode ntfy/channel notifications), this
 /// section controls lightweight local desktop notifications for the normal
 /// interactive TUI, e.g. "agent finished a long turn".
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1721,24 +1689,6 @@ pub struct SafetyConfig {
     pub ntfy_server: String,
     /// Enable desktop notifications via notify-send (default: true)
     pub desktop_notifications: bool,
-    /// Enable email notifications (default: false)
-    pub email_enabled: bool,
-    /// Email recipient
-    pub email_to: Option<String>,
-    /// SMTP host (e.g. smtp.gmail.com)
-    pub email_smtp_host: Option<String>,
-    /// SMTP port (default: 587)
-    pub email_smtp_port: u16,
-    /// Email sender address
-    pub email_from: Option<String>,
-    /// SMTP password (prefer JCODE_SMTP_PASSWORD env var)
-    pub email_password: Option<String>,
-    /// IMAP host for receiving email replies (e.g. imap.gmail.com)
-    pub email_imap_host: Option<String>,
-    /// IMAP port (default: 993)
-    pub email_imap_port: u16,
-    /// Enable email reply → agent directive feature (default: false)
-    pub email_reply_enabled: bool,
     /// Enable Telegram notifications (default: false)
     pub telegram_enabled: bool,
     /// Telegram bot token (from @BotFather)
@@ -1783,15 +1733,6 @@ impl Default for SafetyConfig {
             ntfy_topic: None,
             ntfy_server: "https://ntfy.sh".to_string(),
             desktop_notifications: true,
-            email_enabled: false,
-            email_to: None,
-            email_smtp_host: None,
-            email_smtp_port: 587,
-            email_from: None,
-            email_password: None,
-            email_imap_host: None,
-            email_imap_port: 993,
-            email_reply_enabled: false,
             telegram_enabled: false,
             telegram_bot_token: None,
             telegram_chat_id: None,

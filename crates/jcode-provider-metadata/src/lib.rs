@@ -30,7 +30,6 @@ pub enum LoginProviderTarget {
     OpenAi,
     OpenAiApiKey,
     OpenRouter,
-    Azure,
     OpenAiCompatible(OpenAiCompatibleProfile),
 }
 
@@ -40,7 +39,6 @@ pub enum LoginProviderAuthStateKey {
     Jcode,
     Anthropic,
     OpenAi,
-    Azure,
     OpenRouterLike,
 }
 
@@ -505,10 +503,6 @@ mod tests {
             Some("openai-compatible")
         );
         assert_eq!(
-            resolve_login_provider("aoai").map(|provider| provider.id),
-            Some("azure")
-        );
-        assert_eq!(
             resolve_login_provider("lm-studio").map(|provider| provider.id),
             Some("lmstudio")
         );
@@ -562,10 +556,6 @@ mod tests {
             Some("openrouter")
         );
         assert_eq!(
-            resolve_login_selection("8", &providers).map(|provider| provider.id),
-            Some("azure")
-        );
-        assert_eq!(
             resolve_login_selection("9", &providers).map(|provider| provider.id),
             Some("openai-compatible")
         );
@@ -595,10 +585,6 @@ mod tests {
         assert_eq!(
             resolve_login_selection("6", &providers).map(|provider| provider.id),
             Some("openrouter")
-        );
-        assert_eq!(
-            resolve_login_selection("8", &providers).map(|provider| provider.id),
-            Some("azure")
         );
         assert_eq!(
             resolve_login_selection("9", &providers).map(|provider| provider.id),

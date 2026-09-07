@@ -110,8 +110,6 @@ impl Config {
 **Notifications:**
 - ntfy.sh: {}
 - Desktop: {}
-- Email: {}
-- Email replies: {}
 - Telegram: {}
 - Telegram replies: {}
 - Discord: {}
@@ -142,8 +140,8 @@ impl Config {
             self.display.centered,
             self.display.markdown_spacing.label(),
             self.display.latex_rendering.as_str(),
-            self.display.pin_images,
             self.display.diff_line_wrap,
+            self.display.pin_images,
             self.display.queue_mode,
             self.display.auto_server_reload,
             self.display.mouse_capture,
@@ -293,22 +291,6 @@ impl Config {
                 .unwrap_or_else(|| "disabled".to_string()),
             if self.safety.desktop_notifications {
                 "enabled"
-            } else {
-                "disabled"
-            },
-            if self.safety.email_enabled {
-                self.safety
-                    .email_to
-                    .as_deref()
-                    .unwrap_or("enabled (no recipient)")
-            } else {
-                "disabled"
-            },
-            if self.safety.email_reply_enabled {
-                self.safety
-                    .email_imap_host
-                    .as_deref()
-                    .unwrap_or("enabled (no IMAP host)")
             } else {
                 "disabled"
             },

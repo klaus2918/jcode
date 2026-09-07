@@ -61,39 +61,6 @@ struct SidePanelFrameProfile {
     frame: usize,
     ms: f64,
     markdown_renders: u64,
-    mermaid_requests: u64,
-    mermaid_cache_hits: u64,
-    mermaid_cache_misses: u64,
-    mermaid_render_success: u64,
-    side_panel_markdown_hits: u64,
-    side_panel_markdown_misses: u64,
-    side_panel_render_hits: u64,
-    side_panel_render_misses: u64,
-    deferred_pending_after: usize,
-    deferred_enqueued: u64,
-    deferred_deduped: u64,
-    deferred_worker_renders: u64,
-    image_state_hits: u64,
-    image_state_misses: u64,
-    fit_state_reuse_hits: u64,
-    fit_protocol_rebuilds: u64,
-    viewport_state_reuse_hits: u64,
-    viewport_protocol_rebuilds: u64,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-struct MermaidUiBenchmarkSummary {
-    protocol_supported: bool,
-    protocol: Option<String>,
-    pending_frames: usize,
-    protocol_render_frames: usize,
-    protocol_rebuild_frames: usize,
-    first_worker_render_frame: Option<usize>,
-    first_protocol_render_frame: Option<usize>,
-    first_deferred_idle_frame: Option<usize>,
-    time_to_first_worker_render_ms: Option<f64>,
-    time_to_first_protocol_render_ms: Option<f64>,
-    time_to_deferred_idle_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -137,71 +104,6 @@ fn summarize_timing(samples_ms: &[f64]) -> TimingSummary {
         p95_ms: percentile_ms(&sorted, 0.95),
         p99_ms: percentile_ms(&sorted, 0.99),
         max_ms: sorted.last().copied().unwrap_or(0.0),
-    }
-}
-
-fn summarize_mermaid_ui(
-    profiles: &[SidePanelFrameProfile],
-    protocol_supported: bool,
-    protocol: Option<String>,
-) -> MermaidUiBenchmarkSummary {
-    let mut elapsed_ms = 0.0;
-    let mut first_worker_render_frame = None;
-    let mut first_protocol_render_frame = None;
-    let mut first_deferred_idle_frame = None;
-    let mut saw_pending = false;
-    let mut pending_frames = 0usize;
-    let mut protocol_render_frames = 0usize;
-    let mut protocol_rebuild_frames = 0usize;
-    let mut time_to_first_worker_render_ms = None;
-    let mut time_to_first_protocol_render_ms = None;
-    let mut time_to_deferred_idle_ms = None;
-
-    for profile in profiles {
-        elapsed_ms += profile.ms;
-        if profile.deferred_pending_after > 0 {
-            saw_pending = true;
-            pending_frames += 1;
-        }
-        if first_worker_render_frame.is_none() && profile.deferred_worker_renders > 0 {
-            first_worker_render_frame = Some(profile.frame);
-            time_to_first_worker_render_ms = Some(elapsed_ms);
-        }
-        let protocol_rendered = profile.image_state_hits > 0
-            || profile.image_state_misses > 0
-            || profile.fit_state_reuse_hits > 0
-            || profile.fit_protocol_rebuilds > 0
-            || profile.viewport_state_reuse_hits > 0
-            || profile.viewport_protocol_rebuilds > 0;
-        if protocol_rendered {
-            protocol_render_frames += 1;
-            if first_protocol_render_frame.is_none() {
-                first_protocol_render_frame = Some(profile.frame);
-                time_to_first_protocol_render_ms = Some(elapsed_ms);
-            }
-        }
-        if profile.fit_protocol_rebuilds > 0 || profile.viewport_protocol_rebuilds > 0 {
-            protocol_rebuild_frames += 1;
-        }
-        if saw_pending && first_deferred_idle_frame.is_none() && profile.deferred_pending_after == 0
-        {
-            first_deferred_idle_frame = Some(profile.frame);
-            time_to_deferred_idle_ms = Some(elapsed_ms);
-        }
-    }
-
-    MermaidUiBenchmarkSummary {
-        protocol_supported,
-        protocol,
-        pending_frames,
-        protocol_render_frames,
-        protocol_rebuild_frames,
-        first_worker_render_frame,
-        first_protocol_render_frame,
-        first_deferred_idle_frame,
-        time_to_first_worker_render_ms,
-        time_to_first_protocol_render_ms,
-        time_to_deferred_idle_ms,
     }
 }
 
@@ -249,10 +151,6 @@ struct Args {
     #[arg(long, value_enum, default_value = "managed")]
     side_panel_source: SidePanelSource,
 
-    /// Number of mermaid blocks to generate in side panel content
-    #[arg(long, default_value = "4")]
-    side_panel_mermaids: usize,
-
     /// Load realistic benchmark content from a saved session id or path
     #[arg(long)]
     session: Option<String>,
@@ -284,18 +182,6 @@ struct Args {
     /// Report policy as if running under a synthetic environment profile
     #[arg(long, value_enum)]
     synthetic_profile: Option<BenchSyntheticProfile>,
-
-    /// Keep any existing mermaid cache instead of forcing a cold-cache benchmark start
-    #[arg(long, default_value_t = false)]
-    keep_mermaid_cache: bool,
-
-    /// Number of inline images in the simulated transcript (--mode image-scroll)
-    #[arg(long, default_value = "60")]
-    images: usize,
-
-    /// Number of inline images visible per frame (--mode image-scroll)
-    #[arg(long, default_value = "3")]
-    images_visible: usize,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -305,9 +191,6 @@ enum BenchMode {
     FileDiff,
     SidePanel,
     CopySelection,
-    MermaidUi,
-    MermaidFlicker,
-    ImageScroll,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -351,7 +234,6 @@ struct BenchState {
     provider_model: String,
     started_at: Instant,
     diff_pane_scroll: usize,
-    diff_pane_scroll_x: i32,
     diff_pane_focus: bool,
     side_panel: SidePanelSnapshot,
     bench_file_paths: Vec<PathBuf>,
@@ -369,15 +251,14 @@ impl BenchState {
         assistant_len: usize,
         mode: BenchMode,
         side_panel_source: SidePanelSource,
-        side_panel_mermaids: usize,
     ) -> Result<Self> {
         let mut messages = Vec::with_capacity(turns * 2);
         let mut bench_file_paths = Vec::new();
-        let side_panel = if matches!(mode, BenchMode::SidePanel | BenchMode::MermaidUi) {
+        let side_panel = if matches!(mode, BenchMode::SidePanel) {
             make_bench_side_panel(
                 assistant_len.max(240),
                 side_panel_source,
-                side_panel_mermaids,
+                0,
                 &mut bench_file_paths,
             )?
         } else {
@@ -447,7 +328,6 @@ impl BenchState {
             provider_model: "gpt-5.2-codex".to_string(),
             started_at: Instant::now(),
             diff_pane_scroll: usize::MAX,
-            diff_pane_scroll_x: 0,
             diff_pane_focus: matches!(mode, BenchMode::FileDiff | BenchMode::SidePanel),
             side_panel,
             bench_file_paths,
@@ -534,7 +414,6 @@ impl BenchState {
                 .unwrap_or_else(|| "session-replay".to_string()),
             started_at: Instant::now(),
             diff_pane_scroll: usize::MAX,
-            diff_pane_scroll_x: 0,
             diff_pane_focus: matches!(mode, BenchMode::FileDiff | BenchMode::SidePanel),
             side_panel,
             bench_file_paths: Vec::new(),
@@ -570,14 +449,7 @@ impl BenchState {
     }
 
     fn prewarm_side_panel(&self, width: u16, height: u16) -> bool {
-        jcode::tui::prewarm_focused_side_panel(
-            &self.side_panel,
-            width,
-            height,
-            40,
-            jcode::tui::mermaid::protocol_type().is_some(),
-            false,
-        )
+        jcode::tui::prewarm_focused_side_panel(&self.side_panel, width, height, 40, false)
     }
 }
 
@@ -828,10 +700,6 @@ impl TuiState for BenchState {
         })
     }
 
-    fn side_pane_images(&self) -> Vec<jcode::session::RenderedImage> {
-        Vec::new()
-    }
-
     fn display_messages_version(&self) -> u64 {
         self.messages_version
     }
@@ -1054,62 +922,14 @@ impl TuiState for BenchState {
         jcode::auth::AuthStatus::default()
     }
 
-    fn diagram_mode(&self) -> jcode::config::DiagramDisplayMode {
-        jcode::config::DiagramDisplayMode::Pinned
-    }
-
-    fn diagram_focus(&self) -> bool {
-        false
-    }
-
-    fn diagram_index(&self) -> usize {
-        0
-    }
-
-    fn diagram_scroll(&self) -> (i32, i32) {
-        (0, 0)
-    }
-
-    fn diagram_pane_ratio(&self) -> u8 {
-        40
-    }
-
-    fn diagram_pane_ratio_user_adjusted(&self) -> bool {
-        false
-    }
-
-    fn diagram_pane_animating(&self) -> bool {
-        false
-    }
-
-    fn diagram_pane_enabled(&self) -> bool {
-        true
-    }
-
-    fn diagram_pane_position(&self) -> jcode::config::DiagramPanePosition {
-        jcode::config::DiagramPanePosition::default()
-    }
-
-    fn diagram_zoom(&self) -> u8 {
-        100
-    }
     fn diff_pane_scroll(&self) -> usize {
         self.diff_pane_scroll
-    }
-    fn diff_pane_scroll_x(&self) -> i32 {
-        self.diff_pane_scroll_x
-    }
-    fn side_panel_image_zoom_percent(&self) -> u8 {
-        100
     }
     fn diff_pane_focus(&self) -> bool {
         self.diff_pane_focus
     }
     fn side_panel(&self) -> &jcode::side_panel::SidePanelSnapshot {
         &self.side_panel
-    }
-    fn pin_images(&self) -> bool {
-        false
     }
 
     fn chat_native_scrollbar(&self) -> bool {
@@ -1213,114 +1033,18 @@ fn main() -> Result<()> {
             args.assistant_len,
             args.mode,
             args.side_panel_source,
-            args.side_panel_mermaids,
         )?
     };
     let stream_text = make_text(args.assistant_len.max(args.stream_chunk));
-
-    if matches!(args.mode, BenchMode::MermaidFlicker) {
-        let result = jcode::tui::mermaid::debug_flicker_benchmark(args.frames.max(4));
-        println!("mode: {:?}", args.mode);
-        println!("steps: {}", result.steps);
-        println!("protocol_supported: {}", result.protocol_supported);
-        if let Some(protocol) = &result.protocol {
-            println!("protocol: {}", protocol);
-        }
-        println!("fit_avg_ms: {:.2}", result.fit_timing.avg_ms);
-        println!("fit_p95_ms: {:.2}", result.fit_timing.p95_ms);
-        println!("viewport_avg_ms: {:.2}", result.viewport_timing.avg_ms);
-        println!("viewport_p95_ms: {:.2}", result.viewport_timing.p95_ms);
-        println!(
-            "viewport_protocol_rebuilds: {}",
-            result.deltas.viewport_protocol_rebuilds
-        );
-        println!(
-            "viewport_state_reuse_hits: {}",
-            result.deltas.viewport_state_reuse_hits
-        );
-        println!(
-            "fit_protocol_rebuilds: {}",
-            result.deltas.fit_protocol_rebuilds
-        );
-        println!(
-            "fit_state_reuse_hits: {}",
-            result.deltas.fit_state_reuse_hits
-        );
-        println!("clear_operations: {}", result.deltas.clear_operations);
-        println!(
-            "viewport_protocol_rebuild_rate: {:.4}",
-            result.viewport_protocol_rebuild_rate
-        );
-        println!(
-            "fit_protocol_rebuild_rate: {:.4}",
-            result.fit_protocol_rebuild_rate
-        );
-        return Ok(());
-    }
-
-    if matches!(args.mode, BenchMode::ImageScroll) {
-        let result = jcode::tui::mermaid::debug_image_scroll_benchmark(
-            args.images,
-            args.frames.max(4),
-            args.images_visible,
-        );
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            return Ok(());
-        }
-        println!("mode: {:?}", args.mode);
-        println!("protocol: {}", result.protocol.as_deref().unwrap_or("none"));
-        println!("images: {}", result.images);
-        println!("frames: {}", result.frames);
-        println!("visible_per_frame: {}", result.visible_per_frame);
-        println!("frame_avg_ms: {:.4}", result.frame_timing.avg_ms);
-        println!("frame_p95_ms: {:.4}", result.frame_timing.p95_ms);
-        println!("frame_p99_ms: {:.4}", result.frame_timing.p99_ms);
-        println!("frame_max_ms: {:.4}", result.frame_timing.max_ms);
-        println!("cache_stat_syscalls: {}", result.cache_stat_syscalls);
-        println!(
-            "cache_stat_syscalls_per_frame: {:.4}",
-            result.cache_stat_syscalls_per_frame
-        );
-        println!("visible_draw_skips: {}", result.visible_draw_skips);
-        println!("fit_protocol_rebuilds: {}", result.fit_protocol_rebuilds);
-        println!("fit_state_reuse_hits: {}", result.fit_state_reuse_hits);
-        println!(
-            "retained_image_state_source_bytes: {}",
-            result.retained_image_state_source_bytes
-        );
-        println!(
-            "retained_source_cache_decoded_bytes: {}",
-            result.retained_source_cache_decoded_bytes
-        );
-        println!(
-            "retained_fitted_source_decoded_bytes: {}",
-            result.retained_fitted_source_decoded_bytes
-        );
-        println!(
-            "retained_working_set_estimate_bytes: {}",
-            result.retained_working_set_estimate_bytes
-        );
-        return Ok(());
-    }
 
     if matches!(args.mode, BenchMode::FileDiff) {
         state.diff_mode = jcode::config::DiffDisplayMode::File;
     }
 
-    let profile_mermaid_ui = matches!(args.mode, BenchMode::MermaidUi);
-    let profile_side_panel = matches!(args.mode, BenchMode::SidePanel | BenchMode::MermaidUi);
+    let profile_side_panel = matches!(args.mode, BenchMode::SidePanel);
     if profile_side_panel {
-        jcode::tui::mermaid::init_picker();
-        jcode::tui::mermaid::clear_active_diagrams();
-        jcode::tui::mermaid::clear_streaming_preview_diagram();
         jcode::tui::clear_side_panel_render_caches();
-        jcode::tui::reset_side_panel_debug_stats();
         jcode::tui::markdown::reset_debug_stats();
-        jcode::tui::mermaid::reset_debug_stats();
-        if !args.keep_mermaid_cache {
-            let _ = jcode::tui::mermaid::clear_cache();
-        }
         if !args.no_side_panel_prewarm {
             let _ = state.prewarm_side_panel(args.width, args.height);
         }
@@ -1341,7 +1065,6 @@ fn main() -> Result<()> {
                 state.diff_pane_scroll = (frame * 3) % args.scroll_cycle.max(1);
             } else if matches!(args.mode, BenchMode::SidePanel) {
                 state.diff_pane_scroll = (frame * 3) % args.scroll_cycle.max(1);
-                state.diff_pane_scroll_x = if frame % 2 == 0 { 0 } else { 2 };
             }
         }
         if matches!(args.mode, BenchMode::SidePanel)
@@ -1375,8 +1098,6 @@ fn main() -> Result<()> {
             });
         }
         let markdown_before = profile_side_panel.then(jcode::tui::markdown::debug_stats);
-        let mermaid_before = profile_side_panel.then(jcode::tui::mermaid::debug_stats);
-        let side_panel_before = profile_side_panel.then(jcode::tui::side_panel_debug_stats);
         let frame_start = Instant::now();
         terminal.draw(|f| jcode::tui::render_frame(f, &state))?;
         let frame_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
@@ -1392,70 +1113,14 @@ fn main() -> Result<()> {
             }
             copy_extract_times_ms.push(copy_start.elapsed().as_secs_f64() * 1000.0);
         }
-        if let (Some(markdown_before), Some(mermaid_before), Some(side_panel_before)) =
-            (markdown_before, mermaid_before, side_panel_before)
-        {
+        if let Some(markdown_before) = markdown_before {
             let markdown_after = jcode::tui::markdown::debug_stats();
-            let mermaid_after = jcode::tui::mermaid::debug_stats();
-            let side_panel_after = jcode::tui::side_panel_debug_stats();
             side_panel_profiles.push(SidePanelFrameProfile {
                 frame,
                 ms: frame_ms,
                 markdown_renders: markdown_after
                     .total_renders
                     .saturating_sub(markdown_before.total_renders),
-                mermaid_requests: mermaid_after
-                    .total_requests
-                    .saturating_sub(mermaid_before.total_requests),
-                mermaid_cache_hits: mermaid_after
-                    .cache_hits
-                    .saturating_sub(mermaid_before.cache_hits),
-                mermaid_cache_misses: mermaid_after
-                    .cache_misses
-                    .saturating_sub(mermaid_before.cache_misses),
-                mermaid_render_success: mermaid_after
-                    .render_success
-                    .saturating_sub(mermaid_before.render_success),
-                side_panel_markdown_hits: side_panel_after
-                    .markdown_cache_hits
-                    .saturating_sub(side_panel_before.markdown_cache_hits),
-                side_panel_markdown_misses: side_panel_after
-                    .markdown_cache_misses
-                    .saturating_sub(side_panel_before.markdown_cache_misses),
-                side_panel_render_hits: side_panel_after
-                    .render_cache_hits
-                    .saturating_sub(side_panel_before.render_cache_hits),
-                side_panel_render_misses: side_panel_after
-                    .render_cache_misses
-                    .saturating_sub(side_panel_before.render_cache_misses),
-                deferred_pending_after: mermaid_after.deferred_pending,
-                deferred_enqueued: mermaid_after
-                    .deferred_enqueued
-                    .saturating_sub(mermaid_before.deferred_enqueued),
-                deferred_deduped: mermaid_after
-                    .deferred_deduped
-                    .saturating_sub(mermaid_before.deferred_deduped),
-                deferred_worker_renders: mermaid_after
-                    .deferred_worker_renders
-                    .saturating_sub(mermaid_before.deferred_worker_renders),
-                image_state_hits: mermaid_after
-                    .image_state_hits
-                    .saturating_sub(mermaid_before.image_state_hits),
-                image_state_misses: mermaid_after
-                    .image_state_misses
-                    .saturating_sub(mermaid_before.image_state_misses),
-                fit_state_reuse_hits: mermaid_after
-                    .fit_state_reuse_hits
-                    .saturating_sub(mermaid_before.fit_state_reuse_hits),
-                fit_protocol_rebuilds: mermaid_after
-                    .fit_protocol_rebuilds
-                    .saturating_sub(mermaid_before.fit_protocol_rebuilds),
-                viewport_state_reuse_hits: mermaid_after
-                    .viewport_state_reuse_hits
-                    .saturating_sub(mermaid_before.viewport_state_reuse_hits),
-                viewport_protocol_rebuilds: mermaid_after
-                    .viewport_protocol_rebuilds
-                    .saturating_sub(mermaid_before.viewport_protocol_rebuilds),
             });
         }
     }
@@ -1472,18 +1137,7 @@ fn main() -> Result<()> {
     let warm_start = args.warmup_frames.min(frame_times_ms.len());
     let warm_summary = summarize_timing(&frame_times_ms[warm_start..]);
     let first_frame_ms = frame_times_ms.first().copied().unwrap_or(0.0);
-    let side_panel_final_stats = profile_side_panel.then(jcode::tui::side_panel_debug_stats);
     let markdown_final_stats = profile_side_panel.then(jcode::tui::markdown::debug_stats);
-    let mermaid_final_stats = profile_side_panel.then(jcode::tui::mermaid::debug_stats);
-    let mermaid_ui_summary = if profile_mermaid_ui {
-        Some(summarize_mermaid_ui(
-            &side_panel_profiles,
-            jcode::tui::mermaid::protocol_type().is_some(),
-            jcode::tui::mermaid::protocol_type().map(|p| format!("{:?}", p)),
-        ))
-    } else {
-        None
-    };
     let actual_policy = summarize_policy("detected", jcode::perf::tui_policy());
     let synthetic_policy = args.synthetic_profile.map(|kind| {
         let synthetic = jcode::perf::synthetic_profile(kind.to_system_profile());
@@ -1494,13 +1148,7 @@ fn main() -> Result<()> {
     });
     let cold_frame_count = side_panel_profiles
         .iter()
-        .filter(|frame| {
-            frame.markdown_renders > 0
-                || frame.mermaid_cache_misses > 0
-                || frame.mermaid_render_success > 0
-                || frame.side_panel_markdown_misses > 0
-                || frame.side_panel_render_misses > 0
-        })
+        .filter(|frame| frame.markdown_renders > 0)
         .count();
 
     if args.json {
@@ -1511,7 +1159,6 @@ fn main() -> Result<()> {
             "frames": args.frames,
             "warmup_frames": args.warmup_frames,
             "prewarm_side_panel": profile_side_panel && !args.no_side_panel_prewarm,
-            "keep_mermaid_cache": args.keep_mermaid_cache,
             "session": state.session_source,
             "session_messages": if !state.messages.is_empty() { Some(state.messages.len()) } else { None },
             "tui_policy": {
@@ -1522,10 +1169,7 @@ fn main() -> Result<()> {
                 Some(json!({
                     "pages": state.side_panel.pages.len(),
                     "focused_page": state.side_panel.focused_page_id,
-                    "final_cache_stats": side_panel_final_stats,
                     "markdown_stats": markdown_final_stats,
-                    "mermaid_stats": mermaid_final_stats,
-                    "mermaid_ui_summary": mermaid_ui_summary,
                     "cold_frame_count": cold_frame_count,
                     "frame_profiles": side_panel_profiles,
                 }))
@@ -1613,9 +1257,8 @@ fn main() -> Result<()> {
         println!("session: {}", session_source);
         println!("session_messages: {}", state.messages.len());
     }
-    if matches!(args.mode, BenchMode::SidePanel | BenchMode::MermaidUi) {
+    if matches!(args.mode, BenchMode::SidePanel) {
         println!("side_panel_source: {:?}", args.side_panel_source);
-        println!("side_panel_mermaids: {}", args.side_panel_mermaids);
         println!("side_panel_pages: {}", state.side_panel.pages.len());
         println!(
             "focused_side_panel_page: {}",
@@ -1626,13 +1269,6 @@ fn main() -> Result<()> {
                 .unwrap_or("none")
         );
         println!("side_panel_prewarm: {}", !args.no_side_panel_prewarm);
-        println!("mermaid_cache_cold_start: {}", !args.keep_mermaid_cache);
-        if let Some(summary) = &mermaid_ui_summary {
-            println!("protocol_supported: {}", summary.protocol_supported);
-            if let Some(protocol) = &summary.protocol {
-                println!("protocol: {}", protocol);
-            }
-        }
     }
     println!("frames: {}", args.frames);
     println!("warmup_frames: {}", args.warmup_frames);
@@ -1648,98 +1284,16 @@ fn main() -> Result<()> {
     println!("warm_p99_ms: {:.2}", warm_summary.p99_ms);
     println!("fps: {:.1}", fps);
     if profile_side_panel {
-        let markdown_frames = side_panel_profiles
-            .iter()
-            .filter(|frame| frame.markdown_renders > 0)
-            .count();
-        let mermaid_miss_frames = side_panel_profiles
-            .iter()
-            .filter(|frame| frame.mermaid_cache_misses > 0)
-            .count();
-        let render_miss_frames = side_panel_profiles
-            .iter()
-            .filter(|frame| frame.side_panel_render_misses > 0)
-            .count();
         println!("cold_frames: {}", cold_frame_count);
-        println!("frames_with_markdown_render: {}", markdown_frames);
-        println!("frames_with_mermaid_cache_miss: {}", mermaid_miss_frames);
-        println!("frames_with_render_cache_miss: {}", render_miss_frames);
-        if let Some(stats) = side_panel_final_stats {
-            println!(
-                "side_panel_markdown_cache_hits: {}",
-                stats.markdown_cache_hits
-            );
-            println!(
-                "side_panel_markdown_cache_misses: {}",
-                stats.markdown_cache_misses
-            );
-            println!("side_panel_render_cache_hits: {}", stats.render_cache_hits);
-            println!(
-                "side_panel_render_cache_misses: {}",
-                stats.render_cache_misses
-            );
-            println!(
-                "side_panel_markdown_cache_entries: {}",
-                stats.markdown_cache_entries
-            );
-            println!(
-                "side_panel_render_cache_entries: {}",
-                stats.render_cache_entries
-            );
-        }
+        println!(
+            "frames_with_markdown_render: {}",
+            side_panel_profiles
+                .iter()
+                .filter(|frame| frame.markdown_renders > 0)
+                .count()
+        );
         if let Some(stats) = markdown_final_stats {
             println!("markdown_total_renders: {}", stats.total_renders);
-        }
-        if let Some(stats) = mermaid_final_stats {
-            println!("mermaid_total_requests: {}", stats.total_requests);
-            println!("mermaid_cache_hits: {}", stats.cache_hits);
-            println!("mermaid_cache_misses: {}", stats.cache_misses);
-            println!("mermaid_render_success: {}", stats.render_success);
-            println!("mermaid_deferred_enqueued: {}", stats.deferred_enqueued);
-            println!("mermaid_deferred_deduped: {}", stats.deferred_deduped);
-            println!(
-                "mermaid_deferred_worker_renders: {}",
-                stats.deferred_worker_renders
-            );
-            println!("mermaid_image_state_hits: {}", stats.image_state_hits);
-            println!("mermaid_image_state_misses: {}", stats.image_state_misses);
-            println!(
-                "mermaid_fit_protocol_rebuilds: {}",
-                stats.fit_protocol_rebuilds
-            );
-            println!(
-                "mermaid_viewport_protocol_rebuilds: {}",
-                stats.viewport_protocol_rebuilds
-            );
-        }
-        if let Some(summary) = mermaid_ui_summary {
-            println!("mermaid_pending_frames: {}", summary.pending_frames);
-            println!(
-                "mermaid_protocol_render_frames: {}",
-                summary.protocol_render_frames
-            );
-            println!(
-                "mermaid_protocol_rebuild_frames: {}",
-                summary.protocol_rebuild_frames
-            );
-            if let Some(frame) = summary.first_worker_render_frame {
-                println!("mermaid_first_worker_render_frame: {}", frame);
-            }
-            if let Some(ms) = summary.time_to_first_worker_render_ms {
-                println!("mermaid_time_to_first_worker_render_ms: {:.2}", ms);
-            }
-            if let Some(frame) = summary.first_protocol_render_frame {
-                println!("mermaid_first_protocol_render_frame: {}", frame);
-            }
-            if let Some(ms) = summary.time_to_first_protocol_render_ms {
-                println!("mermaid_time_to_first_protocol_render_ms: {:.2}", ms);
-            }
-            if let Some(frame) = summary.first_deferred_idle_frame {
-                println!("mermaid_first_deferred_idle_frame: {}", frame);
-            }
-            if let Some(ms) = summary.time_to_deferred_idle_ms {
-                println!("mermaid_time_to_deferred_idle_ms: {:.2}", ms);
-            }
         }
     }
 

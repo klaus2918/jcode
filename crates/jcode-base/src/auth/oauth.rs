@@ -454,17 +454,9 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
 
         let redirect_uri = format!("http://localhost:{}/callback", port);
         let auth_url = claude_auth_url(&redirect_uri, &challenge, &verifier);
-        let manual_auth_url = claude_auth_url(claude::REDIRECT_URI, &challenge, &verifier);
 
         eprintln!("\nOpen this URL in your browser:\n");
         eprintln!("{}\n", auth_url);
-        if let Some(qr) = crate::login_qr::indented_section(
-            &manual_auth_url,
-            "No browser on this machine? Scan this QR on another device, finish login there, then paste the full callback URL back here:",
-            "    ",
-        ) {
-            eprintln!("{qr}\n");
-        }
         eprintln!("Opening browser for Claude login...\n");
         let browser_opened = if crate::auth::browser_suppressed(no_browser) {
             false
@@ -478,7 +470,7 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
             );
         } else {
             eprintln!(
-                "Couldn't open a browser on this machine. Use the QR code or manual URL above, then paste the callback URL here.\n"
+                "Couldn't open a browser on this machine. Use the URL above, then paste the callback URL here.\n"
             );
         }
 
@@ -523,13 +515,6 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
 
     eprintln!("\nOpen this URL in your browser:\n");
     eprintln!("{}\n", auth_url);
-    if let Some(qr) = crate::login_qr::indented_section(
-        &auth_url,
-        "Scan this QR on another device if this machine has no browser:",
-        "    ",
-    ) {
-        eprintln!("{qr}\n");
-    }
     eprintln!("Opening browser for Claude login...\n");
     if !crate::auth::browser_suppressed(no_browser) {
         let _ = open::that(&auth_url);
@@ -847,13 +832,6 @@ pub async fn login_openai(no_browser: bool) -> Result<OAuthTokens> {
 
     eprintln!("\nOpen this URL in your browser:\n");
     eprintln!("{}\n", auth_url);
-    if let Some(qr) = crate::login_qr::indented_section(
-        &auth_url,
-        "Scan this QR on another device if this machine has no browser:",
-        "    ",
-    ) {
-        eprintln!("{qr}\n");
-    }
 
     let callback_listener = bind_callback_listener(port).ok();
     let browser_opened = if crate::auth::browser_suppressed(no_browser) {
@@ -890,7 +868,7 @@ pub async fn login_openai(no_browser: bool) -> Result<OAuthTokens> {
         }
     } else if !browser_opened {
         eprintln!(
-            "Couldn't open a browser on this machine. Use the QR code above, then paste the full callback URL here.\n"
+            "Couldn't open a browser on this machine. Use the URL above, then paste the full callback URL here.\n"
         );
     }
 

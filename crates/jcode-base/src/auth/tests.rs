@@ -86,10 +86,6 @@ fn full_and_fast_auth_status_match_for_shared_probe_fields() {
         "JCODE_OPENROUTER_STATIC_MODELS",
         "JCODE_OPENROUTER_MODEL",
         "JCODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER",
-        crate::auth::azure::ENDPOINT_ENV,
-        crate::auth::azure::API_KEY_ENV,
-        crate::auth::azure::MODEL_ENV,
-        crate::auth::azure::USE_ENTRA_ENV,
         "COPILOT_GITHUB_TOKEN",
         "GH_TOKEN",
         "GITHUB_TOKEN",
@@ -127,13 +123,6 @@ fn full_and_fast_auth_status_match_for_shared_probe_fields() {
     ] {
         crate::env::remove_var(key);
     }
-    crate::env::set_var(
-        crate::auth::azure::ENDPOINT_ENV,
-        "https://example.openai.azure.com",
-    );
-    crate::env::set_var(crate::auth::azure::API_KEY_ENV, "azure-test-key");
-    crate::env::set_var(crate::auth::azure::MODEL_ENV, "gpt-test-deployment");
-    crate::env::remove_var(crate::auth::azure::USE_ENTRA_ENV);
     crate::env::set_var("COPILOT_GITHUB_TOKEN", "gho_test_token");
     crate::env::remove_var("GH_TOKEN");
     crate::env::remove_var("GITHUB_TOKEN");
@@ -154,7 +143,6 @@ fn full_and_fast_auth_status_match_for_shared_probe_fields() {
     assert_eq!(full.anthropic.state, AuthState::Available);
     assert_eq!(full.openai, AuthState::Available);
     assert_eq!(full.openrouter, AuthState::Available);
-    assert_eq!(full.azure, AuthState::Available);
 
     for (key, value) in saved {
         restore_env_var(key, value);
@@ -229,12 +217,6 @@ fn assert_auth_status_shared_fields_match(full: &AuthStatus, fast: &AuthStatus) 
         "anthropic.has_api_key"
     );
     assert_eq!(full.openrouter, fast.openrouter, "openrouter");
-    assert_eq!(full.azure, fast.azure, "azure");
-    assert_eq!(
-        full.azure_has_api_key, fast.azure_has_api_key,
-        "azure api key"
-    );
-    assert_eq!(full.azure_uses_entra, fast.azure_uses_entra, "azure entra");
     assert_eq!(full.openai, fast.openai, "openai");
     assert_eq!(full.openai_has_oauth, fast.openai_has_oauth, "openai oauth");
     assert_eq!(

@@ -125,11 +125,6 @@ pub(super) fn build_registry(inputs: &RegistryInputs<'_>) -> Vec<KnownHotkey> {
         "toggle the side panel",
     );
     push(
-        inputs.toggles.diagram_pane.binding().cloned(),
-        "diagram_pane_toggle",
-        "toggle the diagram pane",
-    );
-    push(
         inputs.toggles.typing_scroll_lock.binding().cloned(),
         "typing_scroll_lock_toggle",
         "toggle typing scroll lock",
@@ -1110,7 +1105,6 @@ mod tests {
         let toggle_bindings: &[(&str, Option<&KeyBinding>)] = &[
             ("side_panel_toggle", toggles.side_panel.binding()),
             ("copy_selection_toggle", toggles.copy_selection.binding()),
-            ("diagram_pane_toggle", toggles.diagram_pane.binding()),
             (
                 "typing_scroll_lock_toggle",
                 toggles.typing_scroll_lock.binding(),

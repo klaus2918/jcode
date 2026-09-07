@@ -6,9 +6,10 @@ use super::TEST_VISIBLE_COPY_TARGETS;
 #[cfg(not(test))]
 use super::visible_copy_targets_state;
 use super::{
-    CopyTarget, CopyTargetKind, EditToolRange, ImageRegion, PreparedChatFrame, PreparedMessages,
+    CopyTarget, CopyTargetKind, EditToolRange, PreparedChatFrame, PreparedMessages,
     PreparedSection, VisibleCopyTarget, WrappedLineMap, body_cache, full_prep_cache, pinned_ui,
 };
+use jcode_tui_messages::ImageRegion;
 
 fn estimate_lines_bytes(lines: &[Line<'static>]) -> usize {
     lines
