@@ -28,18 +28,25 @@ pub async fn run() -> Result<()> {
         .spawn(crate::memory_log::cleanup_old_memory_logs)
         .ok();
     // Prune stale per-session `.bak` recovery copies (never the transcripts
+    // Prune stale per-session `.bak` recovery copies (never the transcripts
     // themselves) so the sessions directory does not grow without bound.
     std::thread::Builder::new()
         .name("jcode-session-bak-prune".to_string())
         .spawn(crate::session::prune_old_session_backups)
         .ok();
     logging::info("jcode starting");
-
-    // resonix 对齐：把旧分散 env 文件（openai-compatible.env 等）合并进统一
-    // `<jcode home>/.env`。幂等且静默失败不阻塞启动。
-    if let Err(err) = crate::provider_catalog::maybe_migrate_legacy_env_files() {
-        logging::warn(&format!("Failed to migrate legacy env files: {err:#}"));
-    }
+    // Move file I/O operations to background threads to avoid blocking startup.
+    // These operations are idempotent and can safely run concurrently.
+    std::thread::Builder::new()
+        .name("jcode-init-io".to_string())
+        .spawn(|| {
+            // resonix 对齐：把旧分散 env 文件（openai-compatible.env 等）合并进统一
+            // `<jcode home>/.env`。幂等且静默失败不阻塞启动。
+            if let Err(err) = crate::provider_catalog::maybe_migrate_legacy_env_files() {
+                logging::warn(&format!("Failed to migrate legacy env files: {err:#}"));
+            }
+        })
+        .ok();
 
     // Wire config-reload reactions without making config depend on auth/bus:
     // when the config cache reloads, invalidate the auth-status cache and
@@ -105,17 +112,18 @@ pub async fn run() -> Result<()> {
 
     // Invert the legacy tui -> cli dependency for shared-server spawning: the
     // CLI owns the provider-bootstrap spawn logic and registers it here, so the
-    // TUI reconnect loop can request a replacement server via server_spawn
-    // without referencing cli.
-    crate::server_spawn::register_default_server_spawner(Box::new(|| {
-        Box::pin(async { dispatch::spawn_server("auto", None, None).await })
-    }));
-
     crate::tui::keybind::log_keybinding_default_warnings();
     crate::platform::raise_nofile_limit_best_effort(8_192);
     startup_profile::mark("nofile_limit");
 
-    storage::harden_user_config_permissions();
+    // Move permission hardening to a background thread to avoid blocking startup.
+    // This operation is idempotent and safe to run concurrently.
+    std::thread::Builder::new()
+        .name("jcode-perm-harden".to_string())
+        .spawn(|| {
+            storage::harden_user_config_permissions();
+        })
+        .ok();
     startup_profile::mark("perm_harden");
 
     perf::init_background();
