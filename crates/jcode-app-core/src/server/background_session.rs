@@ -215,3 +215,82 @@ pub(super) fn spawn_background_session_monitor(
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 所有测试合并为一个，避免并行执行时共享全局 TRACKER 的竞争条件。
+    #[test]
+    fn tracker_lifecycle() {
+        // --- 清理初始状态 ---
+        if let Ok(mut tracker) = TRACKER.lock() {
+            tracker.sessions.clear();
+            tracker.completion_tx = None;
+        }
+
+        // --- register + list ---
+        register_background_session("sess-1", Some("优化查询".to_string()));
+        register_background_session("sess-2", None);
+
+        let list = list_background_sessions();
+        assert_eq!(list.len(), 2);
+        let names: Vec<Option<&str>> = list
+            .iter()
+            .map(|info| info.friendly_name.as_deref())
+            .collect();
+        assert!(names.contains(&Some("优化查询")));
+        assert!(names.contains(&None));
+
+        // --- unregister ---
+        assert!(is_background_session("sess-1"));
+        unregister_background_session("sess-1");
+        assert!(!is_background_session("sess-1"));
+        unregister_background_session("nonexistent");
+
+        // --- is_background_session ---
+        assert!(!is_background_session("sess-x"));
+        register_background_session("sess-x", None);
+        assert!(is_background_session("sess-x"));
+        unregister_background_session("sess-x");
+        assert!(!is_background_session("sess-x"));
+
+        // --- clear_all ---
+        register_background_session("a", None);
+        register_background_session("b", None);
+        register_background_session("c", None);
+        // sess-2 从前面注册段遗留，加上 a/b/c 共 4 个
+        assert_eq!(list_background_sessions().len(), 4);
+        clear_all_background_sessions();
+        assert_eq!(list_background_sessions().len(), 0);
+
+        // --- register 替换已有条目 ---
+        register_background_session("sess-1", Some("旧名".to_string()));
+        register_background_session("sess-1", Some("新名".to_string()));
+        let list = list_background_sessions();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].friendly_name.as_deref(), Some("新名"));
+
+        // --- notify_completion 通道 ---
+        let mut rx = init_background_session_tracker();
+        notify_completion(BackgroundCompletionEvent {
+            session_id: "sess-done".to_string(),
+            friendly_name: Some("测试任务".to_string()),
+            duration: Duration::from_secs(5),
+        });
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.session_id, "sess-done");
+        assert_eq!(event.friendly_name.as_deref(), Some("测试任务"));
+        assert_eq!(event.duration, Duration::from_secs(5));
+
+        // --- list 为空 ---
+        clear_all_background_sessions();
+        assert!(list_background_sessions().is_empty());
+
+        // --- 清理 ---
+        if let Ok(mut tracker) = TRACKER.lock() {
+            tracker.sessions.clear();
+            tracker.completion_tx = None;
+        }
+    }
+}
