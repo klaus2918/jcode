@@ -32,6 +32,7 @@ pub(super) async fn run_stream_with_retries(
     api_base: String,
     auth: ProviderAuth,
     send_openrouter_headers: bool,
+    conversation_id: String,
     request: Value,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
@@ -87,6 +88,7 @@ pub(super) async fn run_stream_with_retries(
             api_base.clone(),
             auth.clone(),
             send_openrouter_headers,
+            conversation_id.clone(),
             request.clone(),
             attempt_tx,
             Arc::clone(&provider_pin),
@@ -155,6 +157,7 @@ async fn stream_response(
     api_base: String,
     auth: ProviderAuth,
     send_openrouter_headers: bool,
+    conversation_id: String,
     request: Value,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
@@ -187,6 +190,10 @@ async fn stream_response(
             .header("HTTP-Referer", "https://github.com/jcode")
             .header("X-Title", "jcode");
     }
+
+    // OpenCode (Zen / Go) endpoints route each conversation by session and reject
+    // requests that omit `x-opencode-session` with 400 MissingSessionID (issue #1167).
+    req = apply_opencode_session_header(req, &api_base, &conversation_id);
 
     let response = jcode_provider_core::transport::send_with_initial_response_timeout(
         req.json(&request),

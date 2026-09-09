@@ -1022,6 +1022,7 @@ fn make_provider() -> OpenRouterProvider {
         static_context_limits: HashMap::new(),
         static_image_input_support: HashMap::new(),
         send_openrouter_headers: true,
+        conversation_id: new_conversation_id(),
         models_cache: Arc::new(RwLock::new(ModelsCache::default())),
         model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
         endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
@@ -1052,6 +1053,7 @@ fn make_custom_compatible_provider() -> OpenRouterProvider {
         static_context_limits: HashMap::new(),
         static_image_input_support: HashMap::new(),
         send_openrouter_headers: false,
+        conversation_id: new_conversation_id(),
         models_cache: Arc::new(RwLock::new(ModelsCache::default())),
         model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
         endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
@@ -1383,6 +1385,7 @@ fn direct_deepseek_chat_request_sends_reasoning_effort() {
         supports_provider_features: false,
         supports_model_catalog: false,
         send_openrouter_headers: false,
+        conversation_id: new_conversation_id(),
         ..make_custom_compatible_provider()
     };
     provider
@@ -1439,6 +1442,7 @@ fn direct_openai_compatible_chat_request_preserves_max_reasoning_effort() {
         supports_provider_features: false,
         supports_model_catalog: false,
         send_openrouter_headers: false,
+        conversation_id: new_conversation_id(),
         ..make_custom_compatible_provider()
     };
     provider
@@ -1508,6 +1512,7 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
         reasoning_effort_support: None,
         static_models: vec!["static-login-flow-fallback".to_string()],
         send_openrouter_headers: false,
+        conversation_id: new_conversation_id(),
         ..make_custom_compatible_provider()
     };
 
@@ -1557,6 +1562,7 @@ fn openai_compatible_model_catalog_refresh_calls_models_endpoint_and_updates_dis
         profile_id: None,
         reasoning_effort_support: None,
         send_openrouter_headers: false,
+        conversation_id: new_conversation_id(),
         ..make_custom_compatible_provider()
     };
     assert_eq!(fresh_provider.context_window(), 131_072);
@@ -1593,6 +1599,7 @@ fn built_in_openai_compatible_static_models_drop_out_after_live_catalog() {
         profile_id: Some("cerebras".to_string()),
         static_models: vec!["gpt-oss-120b".to_string(), "zai-glm-4.7".to_string()],
         send_openrouter_headers: false,
+        conversation_id: new_conversation_id(),
         ..make_custom_compatible_provider()
     };
 
@@ -1622,6 +1629,7 @@ fn direct_openai_compatible_static_models_are_marked_as_fallback_before_live_cat
         profile_id: Some("opencode".to_string()),
         static_models: vec!["minimax-m2.7".to_string()],
         send_openrouter_headers: false,
+        conversation_id: new_conversation_id(),
         ..make_custom_compatible_provider()
     };
 
@@ -1647,6 +1655,7 @@ fn cerebras_live_catalog_models_are_selectable_on_explicit_switch() {
         profile_id: Some("cerebras".to_string()),
         static_models: vec!["gpt-oss-120b".to_string()],
         send_openrouter_headers: false,
+        conversation_id: new_conversation_id(),
         ..make_custom_compatible_provider()
     };
 
@@ -2608,6 +2617,7 @@ fn midstream_transport_fault_emits_retry_rollback_before_replay() {
                 label: "test".to_string(),
             },
             false,
+            new_conversation_id(),
             request,
             tx,
             Arc::new(Mutex::new(None)),
@@ -2929,5 +2939,113 @@ model_catalog = false
     );
 
     jcode_base::config::invalidate_config_cache();
+}
+// OpenCode Go/Zen routes each inference request by conversation session and
+// rejects requests that omit the `x-opencode-session` header with a 400
+// MissingSessionID error (issue #1167). The host decision lives in the header
+// helper, so it is exercised directly below; the non-OpenCode plumbing is
+// covered by non_opencode_chat_request_omits_session_header.
+
+#[test]
+fn is_opencode_api_base_matches_opencode_go_hosts() {
+    assert!(is_opencode_api_base("https://opencode.ai/zen/go/v1"));
+    assert!(is_opencode_api_base("https://zen-go.opencode.ai/v1"));
+    assert!(is_opencode_api_base("https://api.opencode.ai/zen/go/v1"));
+    assert!(!is_opencode_api_base("https://opencode.ai.example.com/v1"));
+    assert!(!is_opencode_api_base("https://openrouter.ai/api/v1"));
+    assert!(!is_opencode_api_base("http://127.0.0.1:11434/v1"));
+    assert!(!is_opencode_api_base("not a url"));
+}
+
+#[test]
+fn apply_opencode_session_header_only_targets_opencode_hosts() {
+    let conversation_id = "conv-123".to_string();
+
+    let req = apply_opencode_session_header(
+        reqwest::Client::new().post("https://opencode.ai/zen/go/v1/chat/completions"),
+        "https://opencode.ai/zen/go/v1",
+        &conversation_id,
+    )
+    .build()
+    .expect("build opencode request");
+    assert_eq!(
+        req.headers()
+            .get(OPENCODE_SESSION_HEADER)
+            .and_then(|v| v.to_str().ok()),
+        Some(conversation_id.as_str()),
+        "opencode.ai inference requests must carry the conversation session header"
+    );
+
+    let req = apply_opencode_session_header(
+        reqwest::Client::new().post("https://openrouter.ai/api/v1/chat/completions"),
+        "https://openrouter.ai/api/v1",
+        &conversation_id,
+    )
+    .build()
+    .expect("build openrouter request");
+    assert!(
+        req.headers().get(OPENCODE_SESSION_HEADER).is_none(),
+        "non-OpenCode endpoints must not receive the opencode session header"
+    );
+}
+
+#[test]
+fn new_conversation_id_is_a_fresh_uuid() {
+    let first = new_conversation_id();
+    let second = new_conversation_id();
+    assert_eq!(first.len(), 36, "uuid v4 stringifies to 36 chars");
+    assert!(
+        first.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+        "uuid must be hex digits and dashes: {first}"
+    );
+    assert_ne!(
+        first, second,
+        "every provider instance needs its own conversation session id"
+    );
+}
+
+// The session id must stay out of requests to non-OpenCode hosts across the
+// full complete() -> run_stream_with_retries -> stream_response path.
+#[test]
+fn non_opencode_chat_request_omits_session_header() {
+    let (api_base, request_rx) = spawn_single_response_chat_server();
+    let provider = OpenRouterProvider {
+        api_base,
+        supports_provider_features: false,
+        supports_model_catalog: false,
+        send_openrouter_headers: false,
+        ..make_custom_compatible_provider()
+    };
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+        timestamp: None,
+        tool_duration_ms: None,
+    }];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let mut stream = provider
+            .complete(&messages, &[], "", None)
+            .await
+            .expect("fake chat request should start");
+        while let Some(event) = stream.next().await {
+            event.expect("stream event should parse");
+        }
+    });
+
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("capture fake provider request");
+    assert!(
+        !request.to_ascii_lowercase().contains("x-opencode-session"),
+        "local test endpoint must not receive the opencode session header: {request}"
+    );
 }
 include!("openrouter_stream_options_tests.rs");
