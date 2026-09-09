@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub(super) struct BackgroundSessionInfo {
     /// session ID
+    #[allow(dead_code)] // Phase 2 TUI 集成时使用
     pub session_id: String,
     /// 切换为后台的时间
     pub moved_to_background_at: Instant,
@@ -86,17 +87,18 @@ pub(super) fn register_background_session(
 
 /// 移除后台会话注册（完成后或恢复前台时调用）
 pub(super) fn unregister_background_session(session_id: &str) {
-    if let Ok(mut tracker) = TRACKER.lock() {
-        if tracker.sessions.remove(session_id).is_some() {
-            crate::logging::info(&format!(
-                "BACKGROUND_SESSION: unregistered {}",
-                session_id
-            ));
-        }
+    if let Ok(mut tracker) = TRACKER.lock()
+        && tracker.sessions.remove(session_id).is_some()
+    {
+        crate::logging::info(&format!(
+            "BACKGROUND_SESSION: unregistered {}",
+            session_id
+        ));
     }
 }
 
 /// 检查 session 是否为后台会话
+#[allow(dead_code)] // Phase 2 TUI session picker 集成时使用
 pub(super) fn is_background_session(session_id: &str) -> bool {
     TRACKER
         .lock()
@@ -105,6 +107,7 @@ pub(super) fn is_background_session(session_id: &str) -> bool {
 }
 
 /// 获取所有后台会话的信息快照
+#[allow(dead_code)] // Phase 2 TUI 后台面板集成时使用
 pub fn list_background_sessions() -> Vec<BackgroundSessionInfo> {
     TRACKER
         .lock()
@@ -114,14 +117,15 @@ pub fn list_background_sessions() -> Vec<BackgroundSessionInfo> {
 
 /// 发送完成通知（由监控任务调用）
 pub(super) fn notify_completion(event: BackgroundCompletionEvent) {
-    if let Ok(tracker) = TRACKER.lock() {
-        if let Some(tx) = &tracker.completion_tx {
-            let _ = tx.send(event);
-        }
+    if let Ok(tracker) = TRACKER.lock()
+        && let Some(tx) = &tracker.completion_tx
+    {
+        let _ = tx.send(event);
     }
 }
 
 /// 清理所有后台会话记录（server 关闭时调用）
+#[allow(dead_code)] // Phase 2 graceful shutdown 集成时使用
 pub(super) fn clear_all_background_sessions() {
     if let Ok(mut tracker) = TRACKER.lock() {
         let count = tracker.sessions.len();
@@ -158,11 +162,7 @@ pub(super) fn spawn_background_session_monitor(
             }
 
             // 从 SessionAgents 中获取 Agent 引用，检查是否完成
-            let agents_snapshot = {
-                match sessions.read().await {
-                    guard => guard.clone(),
-                }
-            };
+            let agents_snapshot = sessions.read().await.clone();
 
             for session_id in &session_ids {
                 let agent_arc = match agents_snapshot.get(session_id) {
