@@ -1,5 +1,6 @@
 mod available_models_dedup;
 mod await_members_state;
+mod background_session;
 mod background_tasks;
 mod client_actions;
 mod client_api;
@@ -1806,6 +1807,19 @@ impl Server {
                 }
             });
         }
+
+        // 初始化后台会话跟踪器，监控切换后继续执行的 session
+        let completion_rx = background_session::init_background_session_tracker();
+        background_session::spawn_background_session_monitor(self.sessions.clone());
+        tokio::spawn(async move {
+            let mut rx = completion_rx;
+            while let Some(event) = rx.recv().await {
+                crate::logging::info(&format!(
+                    "BACKGROUND_SESSION: notification - {} ({:?}) completed in {:?}",
+                    event.session_id, event.friendly_name, event.duration
+                ));
+            }
+        });
     }
 
     fn spawn_registry_metadata_publisher(&self, registry_info: crate::registry::ServerInfo) {

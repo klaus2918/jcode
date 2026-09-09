@@ -1028,6 +1028,23 @@ async fn cleanup_detached_source_session_if_unused(
 ) {
     unregister_session_event_sender(swarm_members, old_session_id, client_connection_id).await;
 
+    // 如果 Agent 正在执行 turn（Mutex 被锁定），保留 session 继续在后台执行，
+    // 不清理、不 mark_closed，由后台监控任务在 turn 完成后处理。
+    if source_agent.try_lock().is_err() {
+        crate::logging::info(&format!(
+            "BACKGROUND_SESSION: keeping {} alive (agent busy during session switch)",
+            old_session_id
+        ));
+        let friendly_name = {
+            let members = swarm_members.read().await;
+            members
+                .get(old_session_id)
+                .and_then(|m| m.friendly_name.clone())
+        };
+        super::background_session::register_background_session(old_session_id, friendly_name);
+        return;
+    }
+
     if !remove_detached_source_if_unclaimed(
         old_session_id,
         client_connection_id,

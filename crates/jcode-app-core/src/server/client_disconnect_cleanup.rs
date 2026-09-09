@@ -106,6 +106,35 @@ pub(super) async fn cleanup_client_connection(
         return Ok(());
     }
 
+    // 如果断连时 Agent 仍在执行 turn（Crashed disposition 且 Mutex 被锁定），
+    // 保留 session 继续在后台执行，不销毁 Agent。
+    if disposition == DisconnectDisposition::Crashed {
+        // 尝试获取 Agent 引用并检查是否忙碌
+        let agent_busy = {
+            let sessions_guard = sessions.read().await;
+            sessions_guard
+                .get(client_session_id)
+                .map(|arc| arc.try_lock().is_err())
+                .unwrap_or(false)
+        };
+        if agent_busy {
+            crate::logging::info(&format!(
+                "BACKGROUND_SESSION: keeping {} alive (agent busy during disconnect)",
+                client_session_id
+            ));
+            let friendly_name = {
+                let members = swarm_members.read().await;
+                members
+                    .get(client_session_id)
+                    .and_then(|m| m.friendly_name.clone())
+            };
+            super::background_session::register_background_session(client_session_id, friendly_name);
+            // 仅清理连接相关资源，保留 session 和 Agent
+            event_handle.abort();
+            return Ok(());
+        }
+    }
+
     {
         if let Some(agent_arc) = super::remove_session_entry(sessions, client_session_id).await {
             let lock_result =
