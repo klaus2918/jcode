@@ -1,0 +1,27 @@
+{
+  "version": "0.65.0",
+  "date": "2026-09-12",
+  "title": "Fork 首发：配置驱动模型接入",
+  "highlights": [
+    "模型接入完全由配置定义：在 config.toml 里用 [[providers]] 数组或 [providers.<name>] 表书写任意兼容端点（OpenAI 与 Anthropic 两种协议风格均可），密钥只以环境变量名 api_key_env 的形式引用 ~/.jcode/.env，不再内置任何第三方 provider 预设",
+    "会话内即可切换模型接入：/provider 选择 provider，/model 选择具体模型，切换后无需重启，也不丢失当前会话"
+  ],
+  "improvements": [
+    "技能与 MCP 配置支持免重启重载：/skill-reload 与 /mcp-reload",
+    "输入框支持 @ 引用工作空间文件，可在句中触发并带内容预览，多行粘贴自动转为临时文件",
+    "上下文压缩的触发阈值改为可配置",
+    "注入给模型的消息时间戳改用本地时区，不再是裸 UTC",
+    "启动阶段的文件读写移出关键路径，缩短首屏时间",
+    "session 切换时仍在忙碌的 Agent 会在后台继续执行，切回该 session 可看到结果，不再被直接中断",
+    "移除内嵌浏览器能力、5 个原生登录 runtime 与内置第三方 provider 预设，模型面收敛为纯配置驱动",
+    "移除桌面 GUI、macOS 菜单栏与全局热键、听写、遥测上报、云同步与视频导出等外围能力，专注 TUI 与 CLI",
+    "移除 GitHub 在线自更新，仅保留本地装包与 git 源码重建两条更新路径"
+  ],
+  "fixes": [
+    "模型切换后若目标模型不支持当前推理强度，改为静默降级而不是报错中断",
+    "运行中的会话调用斜杠技能前会重新从磁盘读取技能快照，避免读到过期定义",
+    "补齐缺失的 thinking 块并在自愈后正确回传，修复部分 Anthropic 兼容网关的请求被拒",
+    "兼容 DeepSeek 风格网关回显无签名 thinking 的响应形态",
+    "OpenCode go/zen 通道的请求会附带会话头（x-opencode-session）"
+  ]
+}
