@@ -909,7 +909,16 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
         return $true
     }
 
-    $shortcutOutput = & powershell -NoProfile -Command $shortcutScript
+    # 用 -EncodedCommand 而不是 -Command 传递脚本。
+    #
+    # `powershell -Command <多行脚本>` 会让 PowerShell 把参数重新拼成命令行，
+    # 包含双引号与多行的 payload 会被拆坏：嵌套进程以退出码 -1 终止且不产生
+    # 任何输出，快捷方式静默地建不出来（实测同一段脚本 -Command 失败、
+    # -EncodedCommand 成功）。base64 编码后不经过参数解析，行为稳定。
+    $shortcutScriptBase64 = [Convert]::ToBase64String(
+        [System.Text.Encoding]::Unicode.GetBytes($shortcutScript)
+    )
+    $shortcutOutput = & powershell -NoProfile -EncodedCommand $shortcutScriptBase64
     if ($LASTEXITCODE -ne 0 -or -not ($shortcutOutput -match 'OK')) {
         Write-Warn "Created hotkey files, but could not create the Startup shortcut"
         return $false
@@ -918,7 +927,12 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
     $escapedExePath = $JcodeExePath.Replace("'", "''")
     $launchHotkeyCommand = "Start-Process -FilePath '$escapedExePath' -ArgumentList @('setup-hotkey', '--listen-windows-hotkey') -WindowStyle Hidden"
     if (-not $skipProcessLifecycle) {
-        & powershell -NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -Command $launchHotkeyCommand | Out-Null
+        # 同样用 -EncodedCommand：避免多行/带引号的命令被参数拼接破坏。
+        $launchHotkeyBase64 = [Convert]::ToBase64String(
+            [System.Text.Encoding]::Unicode.GetBytes($launchHotkeyCommand)
+        )
+        & powershell -NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden `
+            -EncodedCommand $launchHotkeyBase64 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Warn "Hotkey will start on next login, but could not be launched immediately"
         }
