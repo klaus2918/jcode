@@ -1,371 +1,68 @@
-# Auth Notes: OAuth + API-key Providers
+# 认证与凭据（本 fork）
 
-This document explains how authentication works in J-Code.
+本文件说明本仓库（`klaus2918/jcode`）里模型认证实际是怎么工作的。
 
-## Overview
+> **与 upstream 的根本差异**：本 fork **没有交互式登录**。upstream 的这份文档描述的是
+> `jcode login --provider <name>` 一族流程（含 Azure / Gemini / Google / Copilot / Cursor /
+> Antigravity 等内置 OAuth），**这些在本仓库中不存在**：`jcode auth` 只剩 `status` 与 `doctor`
+> 两个子命令，TUI 里也没有 `/login`、`/auth`、`/account`。
+>
+> 模型接入的完整说明见 [docs/模型接入.md](docs/模型接入.md)；本文只讲"凭据从哪来"。
 
-J-Code can detect existing local credentials and can also run built-in OAuth and API-key login flows.
+## 一、凭据的三条来源
 
-For auth files managed by other tools/CLIs, jcode asks before reading them. If you
-approve a source, jcode remembers that approval for that external auth file path
-for future sessions and still leaves the original file untouched (no move,
-rewrite, or permission mutation). Symlinked external auth files are rejected.
+| 来源 | 怎么做 | 落点 |
+|---|---|---|
+| **API 密钥（托管端点）** | `jcode provider add <name> --base-url <url> --model <id> --api-key-stdin`（或 `--api-key-env` 引用已有环境变量） | 统一密钥文件 `<jcode home>/.env` |
+| **已有的 OAuth 账户** | 直接用已存在的账户文件（例如从别的工具迁入后保留在 `<jcode home>/auth.json`） | 见下表 |
+| **从其它工具导入** | 首次运行会列出检测到的外部登录，逐个批准后**原地读取**（不复制、不改写原文件） | 外部文件本身 |
 
-Credentials are stored locally:
-- J-Code Claude OAuth (if logged in via `jcode login --provider claude`): `~/.jcode/auth.json`
-- Claude Code CLI: `~/.claude/.credentials.json` (Linux/Windows), or the **macOS login Keychain** item `Claude Code-credentials` (the default on macOS, where the JSON file usually does not exist), or the `CLAUDE_CODE_OAUTH_TOKEN` env var (set by `claude setup-token`)
-- OpenCode (optional provider/OAuth import source): `~/.local/share/opencode/auth.json`
-- pi (optional provider/OAuth import source): `~/.pi/agent/auth.json`
-- J-Code OpenAI/Codex OAuth: `~/.jcode/openai-auth.json`
-- Codex CLI auth source (read in place only after confirmation): `~/.codex/auth.json`
-- Gemini native OAuth: `~/.jcode/gemini_oauth.json`
-- Gemini CLI import fallback: `~/.gemini/oauth_creds.json`
-- Copilot CLI plaintext fallback: `~/.copilot/config.json`
-- Legacy Copilot JSON sources: `~/.config/github-copilot/hosts.json`, `~/.config/github-copilot/apps.json`
+`<jcode home>` 默认是 `~/.jcode`（设了 `JCODE_HOME` 时就是它本身）。
 
-Relevant code:
-- Claude provider: `src/provider/claude.rs`
-- OpenAI login + refresh: `src/auth/oauth.rs`
-- OpenAI credentials parsing: `src/auth/codex.rs`
-- OpenAI requests: `src/provider/openai.rs`
-- Azure OpenAI auth/config: `src/auth/azure.rs`
-- Azure OpenAI transport: `src/provider/openrouter.rs`
-- Gemini login + refresh: `src/auth/gemini.rs`
-- Gemini Code Assist provider: `src/provider/gemini.rs`
-- OpenAI-compatible provider metadata/login descriptors: `crates/jcode-provider-metadata/src/lib.rs`
+## 二、凭据文件位置
 
-## Claude (Claude Max)
+| 内容 | 路径 | 说明 |
+|---|---|---|
+| Anthropic OAuth 账户 | `<jcode home>/auth.json` | `anthropic_accounts[]`，当前账户在 `active_anthropic_account` |
+| OpenAI OAuth 账户 | `<jcode home>/openai-auth.json` | `openai_accounts[]`，当前账户在 `active_openai_account` |
+| API 密钥（统一） | `<jcode home>/.env` | `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、各 provider 的 `JCODE_PROVIDER_*` 等 |
+| jcode 订阅 | `<jcode home>/jcode-subscription.env` | `JCODE_API_KEY`；状态与层级见 TUI `/subscription` |
 
-### Login steps
-1. Run `jcode login --provider claude` (recommended), or `jcode login` and choose Claude.
-   - For headless / SSH use: `jcode login --provider claude --no-browser`
-   - For scriptable remote flows: `jcode login --provider claude --print-auth-url`, then later complete with `--callback-url` or `--auth-code`
-2. Alternative: run `claude` (or `claude setup-token`). jcode can detect Claude Code's credentials, ask before reading them, and remember that approval for future sessions. This works whether Claude Code stored them in `~/.claude/.credentials.json` (Linux/Windows), the macOS login Keychain (`Claude Code-credentials`), or the `CLAUDE_CODE_OAUTH_TOKEN` env var. On macOS, approving the Keychain source copies the credentials into `~/.jcode/auth.json` once so later sessions never re-prompt the Keychain.
-3. Verify with `jcode --provider claude run "Say hello from jcode"`.
+解析顺序：进程环境变量 → 统一 `.env` → profile 配置指定的 `env_file` → 启动时注册的 OAuth 回退解析器。
+`auth.json` 只存 OAuth 账户，**绝不存 API 密钥**。旧式分散密钥文件（`~/.config/jcode/*.env`）
+仍可读，启动时自动迁移到统一 `.env`。
 
-Credential discovery order is:
-1. `~/.jcode/auth.json`
-2. `~/.claude/.credentials.json`
-3. Claude Code native credentials (macOS Keychain `Claude Code-credentials`, or `CLAUDE_CODE_OAUTH_TOKEN` env var) once approved
-4. `~/.local/share/opencode/auth.json`
-5. `~/.pi/agent/auth.json`
+## 三、从其它工具导入（同意门控）
 
-### Direct Anthropic API (default)
-`--provider claude` uses the direct Anthropic Messages API by default.
-jcode owns the full runtime path itself: auth, refresh, request shaping, tool
-compatibility, and transport.
+首次运行会检测下列来源；**未经批准不会读取**，批准后按路径记住，并且始终原地读取：
 
-#### Claude OAuth direct API compatibility
-Claude Code OAuth tokens can be used directly against the Messages API, but only
-if the request matches the Claude Code "OAuth contract". jcode applies this
-automatically for the default Claude runtime path.
+| 工具 | 路径 |
+|---|---|
+| Claude Code | `~/.claude/.credentials.json`，或 macOS 钥匙串项 `Claude Code-credentials`，或 `CLAUDE_CODE_OAUTH_TOKEN` |
+| Codex | `~/.codex/auth.json` |
+| OpenCode | `~/.local/share/opencode/auth.json` |
+| pi | `~/.pi/agent/auth.json` |
+| OpenClaw | `~/.openclaw/agent/auth.json`、`~/.openclaw/agents/<id>/agent/auth-profiles.json`、`~/.openclaw/credentials/oauth.json` |
+| Hermes | `~/.hermes/auth.json` |
 
-Required behaviors (applied by the Anthropic provider):
-- Use the Messages endpoint with `?beta=true`.
-- Send `User-Agent: claude-cli/1.0.0`.
-- Send `anthropic-beta: oauth-2025-04-20,claude-code-20250219`.
-- Prepend the system blocks with the Claude Code identity line as the first
-  block:
-  - `You are Claude Code, Anthropic's official CLI for Claude.`
+约束：符号链接的外部凭据文件会被拒绝；以 `!`（shell 命令）开头的值**绝不执行**，直接跳过。
+Gemini / GitHub Copilot / Cursor 的专用导入器已随功能减法移除，这些厂商请用配置接入。
 
-Tool name allow-list:
-Claude OAuth requests reject certain tool names. jcode remaps a small set of
-builtin tool names on the wire to the Claude-Code builtin names and maps them
-back on responses so native tools continue to work. Every other tool is
-forwarded under its own name, so the full custom toolset (websearch, webfetch,
-browser, codesearch, memory, swarm, multiedit, open, ...) stays available on
-OAuth. The remapped names are:
-- `bash` → `Bash`
-- `read` → `Read`
-- `write` → `Write`
-- `edit` → `Edit`
-- `glob` → `Glob`
-- `grep` → `Grep`
-- `subagent` → `Agent`
-- `schedule` → `ScheduleWakeup`
-- `skill_manage` → `Skill`
-
-Notes:
-- If the OAuth token expires, refresh via the Claude OAuth refresh endpoint.
-- Without the identity line and allow-listed tool names, the API will reject
-  OAuth requests even if the token is otherwise valid.
-
-### Deprecated Claude CLI transport
-The old Claude CLI shell-out path is deprecated and should only be used for
-legacy compatibility.
-
-You can still force it temporarily with:
-- `JCODE_USE_CLAUDE_CLI=1`
-- or `--provider claude-subprocess` (deprecated hidden compatibility value)
-
-These environment variables control the deprecated Claude Code CLI transport:
-- `JCODE_CLAUDE_CLI_PATH` (default: `claude`)
-- `JCODE_CLAUDE_CLI_MODEL` (default: `claude-opus-4-5-20251101`)
-- `JCODE_CLAUDE_CLI_PERMISSION_MODE` (default: `bypassPermissions`)
-- `JCODE_CLAUDE_CLI_PARTIAL` (set to `0` to disable partial streaming)
-
-## OpenAI / Codex OAuth
-
-### Login steps
-1. Run `jcode login --provider openai`.
-   - For headless / SSH use: `jcode login --provider openai --no-browser`
-   - For scriptable remote flows: `jcode login --provider openai --print-auth-url`, then later complete with `--callback-url`
-2. Your browser opens to the OpenAI OAuth page unless you use `--no-browser`. The local callback listens on
-   `http://localhost:1455/auth/callback` by default.
-   If port `1455` is unavailable, jcode falls back to a manual paste flow where
-   you can paste the full callback URL or query string.
-3. After login, tokens are saved to `~/.jcode/openai-auth.json`.
-
-Credential discovery order is:
-1. `~/.jcode/openai-auth.json`
-2. `~/.codex/auth.json`
-3. trusted OpenCode/pi OAuth in `~/.local/share/opencode/auth.json` / `~/.pi/agent/auth.json`
-4. `OPENAI_API_KEY`
-
-If jcode finds existing credentials in `~/.codex/auth.json`, it asks before
-reading them. When approved, it remembers that trust decision for future jcode
-sessions and still does not move, delete, or rewrite the Codex file.
-
-### Request details
-J-Code uses the Responses API. If you have a ChatGPT subscription (refresh
-token or id_token present), requests go to:
-- `https://chatgpt.com/backend-api/codex/responses`
-with headers:
-- `originator: codex_cli_rs`
-- `chatgpt-account-id: <from token>`
-
-Otherwise it uses:
-- `https://api.openai.com/v1/responses`
-
-For **API-key** usage (no ChatGPT/Codex OAuth), the Responses API base URL is
-overridable so you can target a local or proxied Responses-API endpoint. Set one
-of (checked in this order) to an absolute `http(s)://` base that ends in the API
-version, e.g. `http://127.0.0.1:8317/v1`:
-- `JCODE_OPENAI_API_BASE`
-- `OPENAI_BASE_URL`
-- `OPENAI_API_BASE`
-
-jcode appends `/responses` itself, derives the WebSocket and `/compact`
-endpoints from the same base, and also points the `/models` catalog probe at it.
-The override is ignored in ChatGPT/Codex OAuth mode (that backend is fixed), and
-a malformed value is logged and ignored rather than breaking requests.
-
-### Troubleshooting
-- Claude 401/auth errors: run `jcode login --provider claude`.
-- 401/403: re-run `jcode login --provider openai`.
-- Callback issues: make sure port 1455 is free and the browser can reach
-  `http://localhost:1455/auth/callback`.
-
-## Azure OpenAI
-
-This was added after comparing J-Code to OpenCode/Crush. The meaningful auth gap
-was not another browser OAuth flow, but support for **Azure OpenAI** using either:
-- **Microsoft Entra ID** credentials (via Azure's `DefaultAzureCredential` chain), or
-- **Azure OpenAI API keys**.
-
-### Login/setup steps
-1. Run `jcode login --provider azure`.
-2. Enter your Azure OpenAI endpoint, for example:
-   - `https://your-resource.openai.azure.com`
-3. Enter your Azure deployment/model name.
-4. Choose one auth mode:
-   - **Entra ID** (recommended)
-   - **API key**
-5. jcode saves settings to `~/.config/jcode/azure-openai.env`.
-
-### Stored configuration
-The Azure env file may contain:
-- `AZURE_OPENAI_ENDPOINT`
-- `AZURE_OPENAI_MODEL`
-- `AZURE_OPENAI_USE_ENTRA`
-- `AZURE_OPENAI_API_KEY` (only when using key auth)
-
-### Runtime behavior
-- jcode normalizes the endpoint to the newer Azure OpenAI `/openai/v1` base.
-- In **Entra ID** mode, jcode obtains bearer tokens using `azure_identity::DefaultAzureCredential` with scope:
-  - `https://cognitiveservices.azure.com/.default`
-- In **API key** mode, jcode sends the credential in the Azure-style `api-key` header.
-- The Azure provider currently reuses J-Code's OpenAI-compatible transport layer under the hood.
-- Model catalog fetching is disabled for Azure by default, so you should configure a deployment/model explicitly.
-
-### Entra ID credential sources
-`DefaultAzureCredential` can resolve credentials from sources like:
-- `az login`
-- managed identity
-- Azure environment credentials
-
-### Troubleshooting
-- If Entra ID auth fails locally, try `az login` first.
-- Make sure your identity has access to the Azure OpenAI resource.
-- If requests fail with deployment/model errors, verify `AZURE_OPENAI_MODEL` matches your deployed model name.
-- If you prefer static credentials, re-run `jcode login --provider azure` and choose API key mode.
-
-## Gemini OAuth
-
-### Login steps
-1. Run `jcode login --provider gemini` or `/login gemini` inside the TUI.
-   - For headless / SSH use: `jcode login --provider gemini --no-browser`
-   - For scriptable remote flows: `jcode login --provider gemini --print-auth-url`, then later complete with `--auth-code`
-2. jcode opens a browser to the Google OAuth flow used for Gemini Code Assist unless you use `--no-browser`.
-3. If local callback binding is unavailable, jcode falls back to a manual paste flow using `https://codeassist.google.com/authcode`.
-4. Tokens are saved to `~/.jcode/gemini_oauth.json`.
-
-### Credential discovery order
-1. Native jcode Gemini tokens: `~/.jcode/gemini_oauth.json`
-2. Gemini CLI OAuth source (read only after approval): `~/.gemini/oauth_creds.json`
-3. trusted OpenCode/pi OAuth in `~/.local/share/opencode/auth.json` / `~/.pi/agent/auth.json`
-
-### Runtime notes
-- jcode uses native Google OAuth and talks to the Google Code Assist backend directly.
-- Expired tokens are refreshed automatically using the Google refresh token.
-- Some school / Workspace accounts may require `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` for Code Assist entitlement checks.
-
-### Troubleshooting
-- If browser launch fails, use `--no-browser` and the pasted callback/code flow.
-- If entitlement or onboarding fails for a Workspace account, set `GOOGLE_CLOUD_PROJECT` and retry.
-- If login succeeds but requests fail later, re-run `jcode login --provider gemini` to refresh the stored session.
-
-### Auth verification
-Use the built-in auth verifier to test the full local auth/runtime path after login:
+## 四、诊断
 
 ```bash
-# Run Gemini login now, then verify token refresh + provider smoke
-jcode --provider gemini auth-test --login
-
-# Verify existing Gemini auth without re-running login
-jcode --provider gemini auth-test
-
-# Check every currently configured supported auth provider
-jcode auth-test --all-configured
+jcode auth status --json          # 每个 provider 的凭据是否可用、来自哪里
+jcode auth doctor [PROVIDER]      # 凭据链路：有没有、从哪来、是否过期、能否刷新
+jcode auth doctor --validate      # 额外做一次联网校验
+jcode provider-test-coverage      # 每个 (provider, 模型) 对在 12 阶段流水线卡在哪一步
 ```
 
-For model providers, `auth-test` attempts:
-1. credential discovery
-2. refresh/auth probe
-3. a real provider smoke prompt expecting `AUTH_TEST_OK`
-4. a tool-enabled smoke prompt using the same tool-attached request path as normal chat
+`<jcode home>/auth-validation.json` 是**历史记录**而不是当前状态：已自动刷新的令牌仍可能
+显示几天前的失败条目，超过 7 天的记录会被标为 `stale`（当作"未知，重新检查"）。
 
-Use `--no-tool-smoke` if you only want the auth/simple-runtime checks.
+## 五、刷新与失效
 
-For Gmail/Google it verifies credential discovery and token refresh, but skips model smoke because it is not a model provider.
-
-## OpenAI-compatible API-key providers
-
-J-Code also ships first-class provider presets for many OpenAI-compatible APIs.
-These providers use the same built-in login flow pattern: `jcode login --provider <name>`.
-
-For arbitrary OpenAI-compatible APIs, especially when an agent is doing setup, prefer the named profile command instead of hand-editing config:
-
-```bash
-printf '%s' "$MY_API_KEY" | jcode provider add my-api \
-  --base-url https://llm.example.com/v1 \
-  --model my-model-id \
-  --api-key-stdin \
-  --set-default \
-  --json
-
-jcode --provider-profile my-api auth-test --no-tool-smoke
-```
-
-This writes `[providers.my-api]` in `~/.jcode/config.toml` and stores the key in jcode's private app config dir, for example `~/.config/jcode/provider-my-api.env`. For localhost servers, use `--no-api-key`.
-
-Two notable presets are:
-
-### Fireworks
-- Login: `jcode login --provider fireworks`
-- Stored env file: `~/.config/jcode/fireworks.env`
-- API key env var: `FIREWORKS_API_KEY`
-- Base URL: `https://api.fireworks.ai/inference/v1`
-- Default model hint: `accounts/fireworks/routers/kimi-k2p5-turbo`
-- Docs: <https://docs.fireworks.ai/tools-sdks/openai-compatibility>
-
-### MiniMax
-- Login: `jcode login --provider minimax`
-- Stored env file: `~/.config/jcode/minimax.env`
-- API key env var: `OPENAI_API_KEY`
-- Base URL: `https://api.minimax.io/v1`
-- Default model hint: `MiniMax-M2.7`
-- Docs: <https://platform.minimax.io/docs/guides/text-generation>
-
-These are first-class jcode provider presets, not just manual custom endpoint examples.
-You can still use `openai-compatible` for arbitrary custom providers when there is not a built-in preset.
-
-If jcode finds matching API keys in trusted OpenCode/pi auth files, it can reuse them for the corresponding provider preset without asking you to paste the key again.
-
-## Experimental CLI Providers
-
-J-Code also supports experimental CLI-backed providers, plus Antigravity with native OAuth login:
-- `--provider cursor`
-- `--provider copilot`
-- `--provider antigravity`
-
-Cursor uses jcode's native HTTPS transport. Copilot uses GitHub device-flow auth. Antigravity login/auth storage is handled natively by jcode.
-
-### Cursor
-- Login: `jcode login --provider cursor`
-  - saves `CURSOR_API_KEY` to `~/.config/jcode/cursor.env`
-- Runtime:
-  - jcode uses native HTTPS requests
-  - if a Cursor API key is configured, jcode exchanges/uses it directly
-- Env vars:
-  - `JCODE_CURSOR_MODEL` (default: `composer-1.5`)
-  - `CURSOR_API_KEY` (optional; overrides saved key)
-
-### GitHub Copilot
-- Login: `jcode login --provider copilot`
-  - Headless / SSH: `jcode login --provider copilot --no-browser`
-  - Scriptable remote flow: `jcode login --provider copilot --print-auth-url`, then later `jcode login --provider copilot --complete`
-  - jcode uses GitHub device code flow and can print the verification URL/QR without opening a local browser.
-- Credential discovery order:
-  1. `COPILOT_GITHUB_TOKEN`
-  2. `GH_TOKEN`
-  3. `GITHUB_TOKEN`
-  4. trusted `~/.copilot/config.json`
-  5. trusted legacy `~/.config/github-copilot/hosts.json`
-  6. trusted legacy `~/.config/github-copilot/apps.json`
-  7. trusted OpenCode/pi OAuth entries
-  8. `gh auth token`
-- Env vars:
-  - `JCODE_COPILOT_CLI_PATH` (optional override for CLI path)
-  - `JCODE_COPILOT_MODEL` (default: `claude-sonnet-4`)
-
-### Antigravity
-- Login: `jcode login --provider antigravity` (native Google OAuth flow; does **not** require Antigravity to be installed)
-  - Headless / SSH: `jcode login --provider antigravity --no-browser`
-  - Scriptable remote flow: `jcode login --provider antigravity --print-auth-url`, then later complete with `--callback-url`
-- Tokens: `~/.jcode/antigravity_oauth.json`
-- Credential discovery order:
-  1. native jcode tokens at `~/.jcode/antigravity_oauth.json`
-  2. trusted OpenCode/pi OAuth entries when present
-- Runtime:
-  - jcode authenticates directly and stores/refreshes Antigravity OAuth tokens itself
-  - the provider transport still shells out to the Antigravity CLI for completions if you choose `--provider antigravity`
-- Env vars:
-  - `JCODE_ANTIGRAVITY_CLIENT_ID` (optional override for OAuth client id)
-  - `JCODE_ANTIGRAVITY_CLIENT_SECRET` (optional override for OAuth client secret)
-  - `JCODE_ANTIGRAVITY_VERSION` (optional override for Antigravity request fingerprint/version)
-  - `JCODE_ANTIGRAVITY_CLI_PATH` (default: `antigravity`, runtime only)
-  - `JCODE_ANTIGRAVITY_MODEL` (default: `default`)
-  - `JCODE_ANTIGRAVITY_PROMPT_FLAG` (default: `-p`)
-  - `JCODE_ANTIGRAVITY_MODEL_FLAG` (default: `--model`)
-
-## Google / Gmail OAuth
-
-### Login steps
-1. Run `jcode login --provider google`.
-   - For headless / SSH use: `jcode login --provider google --no-browser`
-   - For scriptable remote flows after credentials are already configured: `jcode login --provider google --print-auth-url`
-2. If Google credentials are not configured yet, jcode first walks you through saving your client ID/client secret or importing the JSON credentials file.
-3. For scriptable Google flows, choose the Gmail scope with `--google-access-tier full|readonly` if you do not want the default full access tier.
-4. Complete the printed flow later with `jcode login --provider google --callback-url '<full callback url or query>'`.
-
-### Notes
-- Google/Gmail scriptable auth requires saved OAuth client credentials first.
-- The callback URL can come from a remote browser session that fails on the loopback redirect. Copy the final URL from the address bar and paste or pass it back to jcode.
-
-## Scriptable auth state lifecycle
-
-- jcode stores temporary scriptable login state in `~/.jcode/pending-login/*.json`
-- pending state expires automatically
-- stale pending entries are cleaned up when scriptable login flows start or resume
-- Copilot `--print-auth-url` stores the GitHub device code session and `--complete` resumes polling later
+- OAuth 令牌在请求时按需刷新；刷新失败会在错误信息里提示
+  `jcode auth doctor <provider>` 重新检查凭据，而不再提示已删除的 `/login`。
+- 切换多账户：本 fork 没有切换账户的界面入口。若确实需要切换，把上表里的
+  `active_anthropic_account` / `active_openai_account` 改成目标账户的 label。
