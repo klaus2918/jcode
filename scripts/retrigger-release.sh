@@ -17,6 +17,7 @@ set -euo pipefail
 
 DRY_RUN=false
 ASSUME_NO_RELEASE=false
+AT_REF=""
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --dry-run) DRY_RUN=true ;;
@@ -24,12 +25,16 @@ while [[ "${1:-}" == --* ]]; do
     # 使用前必须自己在 GitHub 上确认该 tag 没有 release，否则会违反
     # docs/发布流程.md §10.3（禁止重建已有 release 的同名 tag）。
     --assume-no-release) ASSUME_NO_RELEASE=true ;;
+    # 把 tag 重建到指定提交（默认重建在现有 tag 的提交上）。
+    # 用于“发布链路本身刚被修改”的场景：必须让 tag 指向含新 workflow 的提交，
+    # 否则重跑的还是旧流水线。
+    --at) shift; AT_REF="${1:-}"; [[ -n "$AT_REF" ]] || { echo "Error: --at needs a ref" >&2; exit 1; } ;;
     *) echo "Error: unknown option: $1" >&2; exit 1 ;;
   esac
   shift
 done
 
-TAG="${1:?Usage: $0 [--dry-run] vX.Y.Z}"
+TAG="${1:?Usage: $0 [--dry-run] [--assume-no-release] [--at <ref>] vX.Y.Z}"
 REPO_SLUG="${GITHUB_REPOSITORY:-klaus2918/jcode}"
 
 if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -41,22 +46,40 @@ cd "$(git rev-parse --show-toplevel)"
 
 fail() { echo "REFUSED: $*" >&2; exit 1; }
 
-# 抓取 GitHub API。依次尝试 curl / python3 / PowerShell：
-# 受限网络下 curl 可能被拦截（本机实测 curl 返回 000），但 python 或
-# PowerShell 可能仍通，因此不能只依赖 curl。
+# 抓取 GitHub API。依次尝试 curl / python3 / PowerShell；
+# 本机实测 curl 返回 000（被拦），python3 可用。
+#
+# 有 git 凭据时必须带上 Authorization：匿名请求每 IP 每小时只有 60 次，
+# 发布验证很容易把它用尽（实测就是这样吃到 403），而鉴权后是 5000 次。
+API_TOKEN=""
+tmp_cred="$(mktemp)"
+trap 'rm -f "$tmp_cred"' EXIT
+if printf 'protocol=https\nhost=github.com\n\n' | git credential fill > "$tmp_cred" 2>/dev/null; then
+  API_TOKEN="$(sed -n 's/^password=//p' "$tmp_cred" | head -1)"
+fi
+
 fetch_api() {
   local url="$1"
+  local auth_args=()
+  [[ -n "$API_TOKEN" ]] && auth_args=(-H "Authorization: Bearer $API_TOKEN")
 
   if command -v curl >/dev/null 2>&1; then
-    out="$(curl -fsS --max-time 20 "$url" 2>/dev/null || true)"
+    out="$(curl -fsS --max-time 20 "${auth_args[@]}" \
+      -H 'User-Agent: jcode-release' -H 'Accept: application/vnd.github+json' \
+      "$url" 2>/dev/null || true)"
     [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
   fi
 
   if command -v python3 >/dev/null 2>&1; then
-    out="$(python3 -c '
-import sys, urllib.request
+    out="$(JCODE_API_TOKEN="$API_TOKEN" python3 -c '
+import os, sys, urllib.request
+headers = {"User-Agent": "jcode-release", "Accept": "application/vnd.github+json"}
+token = os.environ.get("JCODE_API_TOKEN", "")
+if token:
+    headers["Authorization"] = "Bearer " + token
+req = urllib.request.Request(sys.argv[1], headers=headers)
 try:
-    with urllib.request.urlopen(sys.argv[1], timeout=20) as r:
+    with urllib.request.urlopen(req, timeout=25) as r:
         sys.stdout.write(r.read().decode())
 except Exception:
     pass
@@ -65,10 +88,11 @@ except Exception:
   fi
 
   if command -v powershell >/dev/null 2>&1; then
-    out="$(powershell -NoProfile -Command "
+    out="$(JCODE_API_TOKEN="$API_TOKEN" powershell -NoProfile -Command "
       try {
-        \$r = Invoke-RestMethod -Uri '$url' -TimeoutSec 20 -UseBasicParsing
-        \$r | ConvertTo-Json -Depth 6 -Compress
+        \$h = @{ 'User-Agent' = 'jcode-release'; Accept = 'application/vnd.github+json' }
+        if (\$env:JCODE_API_TOKEN) { \$h['Authorization'] = 'Bearer ' + \$env:JCODE_API_TOKEN }
+        Invoke-RestMethod -Uri '$url' -Headers \$h -TimeoutSec 25 -UseBasicParsing | ConvertTo-Json -Depth 6 -Compress
       } catch { }
     " 2>/dev/null || true)"
     [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
@@ -92,6 +116,18 @@ echo "  本地 tag commit: $LOCAL_COMMIT"
 echo "  远端 tag commit: $REMOTE_COMMIT"
 [[ "$LOCAL_COMMIT" == "$REMOTE_COMMIT" ]] \
   || fail "本地与远端 tag 指向不同 commit，需人工判断，脚本不处理"
+
+# 重建目标：--at 指定时用它（常用于“发布链路刚改完，需要 tag 指向新提交”），
+# 否则重建在现有 tag 的提交上。
+if [[ -n "$AT_REF" ]]; then
+  TARGET_COMMIT="$(git rev-parse -q --verify "${AT_REF}^{commit}" 2>/dev/null || true)"
+  [[ -n "$TARGET_COMMIT" ]] || fail "--at 指定的 ref 无法解析为提交：$AT_REF"
+  echo "  重建目标（--at）：$TARGET_COMMIT"
+  [[ "$TARGET_COMMIT" != "$LOCAL_COMMIT" ]] \
+    || echo "  [提示] 重建目标与现有 tag 相同，等价于普通重触发"
+else
+  TARGET_COMMIT="$LOCAL_COMMIT"
+fi
 
 # 2. 该 tag 还没有任何 release（否则绝不重建同名 tag）
 #
@@ -117,36 +153,41 @@ dirty="$(git status --porcelain -- Cargo.toml Cargo.lock changelog/ 2>/dev/null 
 [[ -z "$dirty" ]] || fail "release 元数据存在未提交改动：$dirty"
 echo "  release 元数据工作区干净"
 
-# 4. 该 commit 已是远端 master 的祖先（避免 tag 指向未推送的提交）
-git merge-base --is-ancestor "$LOCAL_COMMIT" origin/master \
-  || fail "tag 指向的 commit 未出现在 origin/master 上"
-echo "  tag 指向的 commit 已在 origin/master 上"
+# 4. 目标 commit 已是远端 master 的祖先（避免 tag 指向未推送的提交）
+git merge-base --is-ancestor "$TARGET_COMMIT" origin/master \
+  || fail "目标 commit 未出现在 origin/master 上（先推送再重打 tag）"
+echo "  目标 commit 已在 origin/master 上"
 
-# 5. tag 名与 tag 指向的提交里的 Cargo.toml 版本必须一致。
+# 5. tag 名与目标提交里的 Cargo.toml 版本必须一致。
 #
 # 否则会出现「tag 是 v0.65.0，但二进制报 0.64.x」的发布事故：
 # 发布流程要求在打 tag 前先单独提交版本元数据（§5.1），这一步很容易漏。
-manifest_version="$(git show "$LOCAL_COMMIT:Cargo.toml" 2>/dev/null \
+manifest_version="$(git show "$TARGET_COMMIT:Cargo.toml" 2>/dev/null \
   | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-[[ -n "$manifest_version" ]] || fail "无法从 $LOCAL_COMMIT 的 Cargo.toml 读取版本"
+[[ -n "$manifest_version" ]] || fail "无法从 $TARGET_COMMIT 的 Cargo.toml 读取版本"
 if [[ "v$manifest_version" != "$TAG" ]]; then
-  fail "tag 为 $TAG，但该提交的 Cargo.toml 版本为 $manifest_version。\
+  fail "tag 为 $TAG，但目标提交的 Cargo.toml 版本为 $manifest_version。\
 两者不一致，发布产物会报错误版本；先提交版本元数据再重打 tag（见 docs/发布流程.md §5.1）"
 fi
 echo "  Cargo.toml 版本与 tag 一致（$manifest_version）"
 
 # 6. changelog 条目存在，否则发行说明会退化成全量提交清单（§5.1）
 changelog_path="changelog/v${manifest_version}.json"
-git cat-file -e "$LOCAL_COMMIT:$changelog_path" 2>/dev/null \
-  || fail "$LOCAL_COMMIT 缺少 $changelog_path；发行说明会退化成提交清单，请先补上"
+git cat-file -e "$TARGET_COMMIT:$changelog_path" 2>/dev/null \
+  || fail "$TARGET_COMMIT 缺少 $changelog_path；发行说明会退化成提交清单，请先补上"
 echo "  changelog 条目存在（$changelog_path）"
+
+# 7. 目标提交的发布流水线必须存在，否则推了 tag 也不会有构建。
+git cat-file -e "$TARGET_COMMIT:.github/workflows/release.yml" 2>/dev/null \
+  || fail "目标提交缺少 .github/workflows/release.yml"
+echo "  发布流水线文件存在"
 
 echo
 if $DRY_RUN; then
   echo "=== dry-run：全部前置条件通过，未做任何修改 ==="
   echo "实际执行时将运行："
   echo "  git push origin :refs/tags/$TAG"
-  echo "  git tag -f -a $TAG -m \"$TAG\" $LOCAL_COMMIT"
+  echo "  git tag -f -a $TAG -m \"$TAG\" $TARGET_COMMIT"
   echo "  git push origin $TAG"
   exit 0
 fi
@@ -154,12 +195,12 @@ fi
 echo "=== 删除并重建 tag 以重新触发流水线 ==="
 echo "▸ 删除远端 tag..."
 git push origin ":refs/tags/$TAG"
-echo "▸ 在同一 commit 上重建 tag..."
-git tag -f -a "$TAG" -m "$TAG" "$LOCAL_COMMIT"
+echo "▸ 在目标 commit 上重建 tag..."
+git tag -f -a "$TAG" -m "$TAG" "$TARGET_COMMIT"
 echo "▸ 推送 tag..."
 git push origin "$TAG"
 
 echo
 echo "=== 已重新触发 ==="
-echo "  ✅ $TAG -> $LOCAL_COMMIT 已重新推送"
+echo "  ✅ $TAG -> $TARGET_COMMIT 已重新推送"
 echo "  ⏳ 请在 Actions 页确认 Release 流水线已启动"

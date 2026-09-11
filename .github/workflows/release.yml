@@ -17,6 +17,18 @@ env:
   SCCACHE_GHA_ENABLED: "true"
   CARGO_INCREMENTAL: "0"
 
+# fork 策略：本 fork 只发布 Windows x86_64。
+#
+# 上游会构建 7 个平台（Linux x86_64/aarch64、macOS aarch64/x86_64、Windows
+# x86_64/aarch64、FreeBSD x86_64）。对本 fork 来说那是纯浪费：FreeBSD 走 QEMU
+# 虚拟机（超时上限 180 分钟），而最终 release 作业必须等它结束才会把 release
+# 转正，于是"只要一个 Windows 包"也要等最坏 3 小时，还可能被无关平台的偶发
+# 失败拖成永久 draft。
+#
+# 因此这里只保留 Windows x86_64 一条链路：单一构建作业 + 签名 + 校验和 +
+# 发布。预期端到端约 15–20 分钟。
+#
+# 如需恢复某个平台，从上游 release.yml 取回对应作业并在 needs 里加回即可。
 jobs:
   create-release:
     name: Create release
@@ -27,14 +39,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Render a human-readable changelog for the release body (issue #435):
-      # changelog/v<version>.json when present, otherwise grouped commit
-      # subjects since the previous tag, always ending with the compare link.
+      # Render a human-readable changelog for the release body: changelog/v<version>.json
+      # when present, otherwise grouped commit subjects since the previous tag,
+      # always ending with the compare link.
       - name: Generate release notes
         run: scripts/generate_release_notes.sh "${GITHUB_REF_NAME}" > release_notes.md
 
-      # Stage platform assets on a draft. The final job publishes every
-      # successfully completed asset and records unavailable platforms.
       - name: Create draft release if missing
         shell: bash
         env:
@@ -42,8 +52,6 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            # quick-release.sh can race this job after pushing the tag. If it
-            # creates the draft first, verify that release and continue.
             if ! gh release create "${GITHUB_REF_NAME}" \
               --draft \
               --title "${GITHUB_REF_NAME}" \
@@ -54,183 +62,24 @@ jobs:
           fi
           gh release edit "${GITHUB_REF_NAME}" --notes-file release_notes.md
 
-  build-linux-macos:
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    needs: create-release
-    # Each matrix architecture is independent. A failed Linux or macOS target
-    # must not suppress assets produced by the other successful targets.
-    continue-on-error: true
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - # Build Linux x86_64 release assets on a CentOS 7 / manylinux2014
-            # glibc 2.17 baseline so they run on older distros as well as newer
-            # Debian/Ubuntu containers used by many TB tasks.
-            os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            artifact: jcode-linux-x86_64
-            compat_container: true
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact: jcode-linux-aarch64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: jcode-macos-aarch64
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            artifact: jcode-macos-x86_64
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # fork: 仅有两个 HTTPS 形态的 git 依赖（agentgrep、mermaid-rs-renderer），
-          # 无需 DEPLOY_KEY / ssh-agent。
-          submodules: recursive
-          fetch-depth: 0
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      # Termux (Android) kernels implement ELF TLS Variant 1 while glibc
-      # expects Variant 2, so native __thread variables are zero-initialized at
-      # runtime and Tokio's runtime detection false-positives and panics.
-      # Building the aarch64 glibc binary with emulated TLS
-      # (pthread_getspecific) sidesteps kernel TLS entirely. That needs
-      # nightly (-Z tls-model, -Z build-std) with rust-src.
-      - name: Install nightly for emulated TLS (aarch64 only)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: aarch64-unknown-linux-gnu
-          components: rust-src
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.7
-        continue-on-error: true
-        id: sccache
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-          cache-all-crates: "true"
-
-      - name: Install mold linker (Linux)
-        if: runner.os == 'Linux' && matrix.compat_container != true
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mold
-
-      - name: Build release binary
-        if: matrix.compat_container != true
-        shell: bash
-        run: |
-          mkdir -p .cargo
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            cat > .cargo/config.toml << 'EOF'
-          [target.x86_64-unknown-linux-gnu]
-          linker = "clang"
-          rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-          [target.aarch64-unknown-linux-gnu]
-          linker = "clang"
-          rustflags = ["-C", "link-arg=-fuse-ld=mold", "-Z", "tls-model=emulated"]
-          EOF
-          fi
-          if command -v sccache &>/dev/null && sccache --start-server 2>/dev/null; then
-            export RUSTC_WRAPPER=sccache
-          fi
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            # Rebuild std with emulated TLS too; see the nightly install step
-            # above for why Termux needs this.
-            cargo +nightly build -Z build-std=std,panic_abort --profile release-lto --target ${{ matrix.target }}
-          else
-            cargo build --profile release-lto --target ${{ matrix.target }}
-          fi
-        env:
-          JCODE_RELEASE_BUILD: "1"
-          JCODE_BUILD_SEMVER: ${{ github.ref_name }}
-
-      - name: Build portable Linux x86_64 release binary
-        if: matrix.compat_container == true
-        shell: bash
-        run: scripts/build_linux_compat.sh dist
-        env:
-          JCODE_RELEASE_BUILD: "1"
-          JCODE_BUILD_SEMVER: ${{ github.ref_name }}
-          JCODE_COMPAT_ARTIFACT: ${{ matrix.artifact }}
-
-      - name: Package binary
-        if: matrix.compat_container != true
-        run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release-lto/jcode dist/${{ matrix.artifact }}
-          chmod +x dist/${{ matrix.artifact }}
-          cd dist && tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.tar.gz
-
-      # Attach this platform's asset to the draft release. It remains hidden
-      # until the final job verifies the complete release set.
-      - name: Publish asset to release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${GITHUB_REF_NAME}" "dist/${{ matrix.artifact }}.tar.gz" --clobber
-
   build-windows:
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+    name: Build (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
     needs: create-release
-    # Windows is an optional release platform. Build failures stay visible, but
-    # must not prevent successful Linux/macOS artifacts from becoming public.
-    continue-on-error: true
-    # Windows x64 release smoke tests compile the e2e harness after the release
-    # binary. GitHub-hosted Windows runners sometimes exceed 25 minutes, which
-    # cancels otherwise healthy releases before artifacts can be uploaded.
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: jcode-windows-x86_64
-            unsigned_artifact: windows-unsigned-x86_64
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            artifact: jcode-windows-aarch64
-            unsigned_artifact: windows-unsigned-aarch64
-            # Embeddings stay disabled on ARM64 Windows: tract-linalg SIMD issue (8eb50ac15)
-            cargo_args: "--no-default-features"
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Configure MSVC build environment (x64)
-        if: matrix.target == 'x86_64-pc-windows-msvc'
+      - name: Configure MSVC build environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64
 
-      - name: Configure MSVC build environment (ARM64)
-        if: matrix.target == 'aarch64-pc-windows-msvc'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64_arm64
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.7
@@ -239,7 +88,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: x86_64-pc-windows-msvc
           cache-all-crates: "true"
 
       - name: Build release binary
@@ -252,13 +101,10 @@ jobs:
             }
           }
 
-          $cargoArgs = @("build", "--profile", "release-lto", "--target", "${{ matrix.target }}")
-          $extraArgs = "${{ matrix.cargo_args }}"
-          if (-not [string]::IsNullOrWhiteSpace($extraArgs)) {
-            $cargoArgs += $extraArgs -split ' '
+          & cargo build --locked --profile release-lto --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows release build failed"
           }
-
-          & cargo @cargoArgs
         env:
           JCODE_RELEASE_BUILD: "1"
           JCODE_BUILD_SEMVER: ${{ github.ref_name }}
@@ -266,58 +112,35 @@ jobs:
       - name: Verify built Windows binary launches
         shell: pwsh
         run: |
-          & "target/${{ matrix.target }}/release-lto/jcode.exe" --version
+          & "target/x86_64-pc-windows-msvc/release-lto/jcode.exe" --version
           if ($LASTEXITCODE -ne 0) {
             throw "Built Windows binary failed to run --version"
           }
 
-      - name: Verify Windows installer with local artifact
+      # 必达门禁：用真实产物跑一遍安装器全流程（隔离的文件系统 profile）。
+      - name: Verify Windows installer with the release artifact
         shell: pwsh
         run: |
           & ./.github/scripts/verify_windows_install.ps1 `
-            -ArtifactExePath "target/${{ matrix.target }}/release-lto/jcode.exe" `
+            -ArtifactExePath "target/x86_64-pc-windows-msvc/release-lto/jcode.exe" `
             -Version "${{ github.ref_name }}"
 
       - name: Stage unsigned binary for signing
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release-lto/jcode.exe" "dist/${{ matrix.artifact }}.exe"
+          Copy-Item "target/x86_64-pc-windows-msvc/release-lto/jcode.exe" "dist/jcode-windows-x86_64.exe"
 
       - name: Upload unsigned binary for signing
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.unsigned_artifact }}
-          path: dist/${{ matrix.artifact }}.exe
-
-      # These debug-harness tests provide extra signal, but they must not block
-      # publishing a release binary that already built, launched, and passed the
-      # installer verification. A transient server-test disconnect caused the
-      # Windows x64 asset to disappear from releases v0.44.0-v0.46.0 (#480).
-      - name: Run advisory Windows runtime smoke tests (x64)
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $tests = @(
-            'provider_behavior::test_socket_model_cycle_supported_models',
-            'provider_behavior::test_model_switch_resets_provider_session'
-          )
-
-          foreach ($testName in $tests) {
-            & cargo test --locked --target ${{ matrix.target }} --test e2e $testName -- --exact --nocapture
-            if ($LASTEXITCODE -ne 0) {
-              throw "Windows smoke test failed: $testName"
-            }
-          }
+          name: windows-unsigned-x86_64
+          path: dist/jcode-windows-x86_64.exe
 
   publish-windows:
-    name: Sign and publish Windows assets
+    name: Sign and publish Windows asset
     runs-on: windows-latest
     needs: [create-release, build-windows]
-    # Missing signing configuration or a signing outage suppresses Windows
-    # assets for this release without blocking Linux and macOS publication.
-    continue-on-error: true
     timeout-minutes: 30
     permissions:
       contents: write
@@ -329,12 +152,11 @@ jobs:
       WINDOWS_SIGNING_ENDPOINT: ${{ vars.WINDOWS_SIGNING_ENDPOINT }}
       WINDOWS_SIGNING_ACCOUNT: ${{ vars.WINDOWS_SIGNING_ACCOUNT }}
       WINDOWS_SIGNING_CERTIFICATE_PROFILE: ${{ vars.WINDOWS_SIGNING_CERTIFICATE_PROFILE }}
-      WINDOWS_SIGNING_REQUIRED: ${{ vars.WINDOWS_SIGNING_REQUIRED }}
     steps:
-      - name: Download unsigned Windows binaries
+      - name: Download unsigned Windows binary
         uses: actions/download-artifact@v4
         with:
-          pattern: windows-unsigned-*
+          name: windows-unsigned-x86_64
           path: artifacts
 
       - name: Determine signing mode
@@ -352,14 +174,14 @@ jobs:
           $configured = -not ($requiredValues | Where-Object { [string]::IsNullOrWhiteSpace($_) })
           "enabled=$($configured.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-          # fork 策略：签名是可选增强，不是发布门槛。未配置 Azure Artifact
-          # Signing 时发布未签名二进制，代价是首次运行出现 SmartScreen 警告；
-          # 日后配置齐全则自动变成签名发布，无需再改 workflow。
+          # fork 策略：签名是可选增强，不是发布门槛：未配置 Azure Artifact Signing 时发布
+          # 未签名二进制，代价是首次运行出现 SmartScreen 警告。日后配齐即自动
+          # 变成签名发布，无需再改 workflow。
           if ($configured) {
-            Write-Host 'Windows signing is configured; Windows assets will be Authenticode-signed.'
+            Write-Host 'Windows signing is configured; the asset will be Authenticode-signed.'
           } else {
-            Write-Warning 'Publishing unsigned Windows assets: Azure Artifact Signing is not configured for this repository. Windows SmartScreen will warn on first run. See docs/发布流程.md.'
-            "#### Windows assets are unsigned`n`nAzure Artifact Signing is not configured, so this release ships unsigned Windows binaries. Windows SmartScreen will warn on first run." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            Write-Warning 'Publishing an unsigned Windows asset: Azure Artifact Signing is not configured. Windows SmartScreen will warn on first run.'
+            "#### Windows asset is unsigned`n`nAzure Artifact Signing is not configured, so this release ships an unsigned Windows binary. Windows SmartScreen will warn on first run." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
 
       - name: Azure login with GitHub OIDC
@@ -370,43 +192,34 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Authenticode-sign Windows binaries
+      - name: Authenticode-sign the Windows binary
         if: steps.signing.outputs.enabled == 'true'
         uses: azure/artifact-signing-action@v2
         with:
           endpoint: ${{ vars.WINDOWS_SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.WINDOWS_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ vars.WINDOWS_SIGNING_CERTIFICATE_PROFILE }}
-          files: |
-            ${{ github.workspace }}\artifacts\windows-unsigned-x86_64\jcode-windows-x86_64.exe
-            ${{ github.workspace }}\artifacts\windows-unsigned-aarch64\jcode-windows-aarch64.exe
+          files: ${{ github.workspace }}\artifacts\jcode-windows-x86_64.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - name: Verify signatures and package Windows assets
+      - name: Verify signature and package the asset
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $assets = @(
-            @{ Name = 'jcode-windows-x86_64'; Path = 'artifacts/windows-unsigned-x86_64/jcode-windows-x86_64.exe' },
-            @{ Name = 'jcode-windows-aarch64'; Path = 'artifacts/windows-unsigned-aarch64/jcode-windows-aarch64.exe' }
-          )
+          $source = (Resolve-Path -LiteralPath 'artifacts/jcode-windows-x86_64.exe').Path
 
-          foreach ($asset in $assets) {
-            $source = (Resolve-Path -LiteralPath $asset.Path).Path
-            if ('${{ steps.signing.outputs.enabled }}' -eq 'true') {
-              $signature = Get-AuthenticodeSignature -LiteralPath $source
-              if ($signature.Status -ne 'Valid') {
-                throw "Authenticode verification failed for $($asset.Name): $($signature.Status) $($signature.StatusMessage)"
-              }
-              Write-Host "Signed by: $($signature.SignerCertificate.Subject)"
+          if ('${{ steps.signing.outputs.enabled }}' -eq 'true') {
+            $signature = Get-AuthenticodeSignature -LiteralPath $source
+            if ($signature.Status -ne 'Valid') {
+              throw "Authenticode verification failed: $($signature.Status) $($signature.StatusMessage)"
             }
-
-            $destination = Join-Path dist "$($asset.Name).exe"
-            Copy-Item -LiteralPath $source -Destination $destination -Force
-            tar -czf "dist/$($asset.Name).tar.gz" -C dist "$($asset.Name).exe"
+            Write-Host "Signed by: $($signature.SignerCertificate.Subject)"
           }
+
+          Copy-Item -LiteralPath $source -Destination 'dist/jcode-windows-x86_64.exe' -Force
+          tar -czf 'dist/jcode-windows-x86_64.tar.gz' -C dist 'jcode-windows-x86_64.exe'
 
       - name: Upload final Windows artifacts
         uses: actions/upload-artifact@v4
@@ -416,95 +229,20 @@ jobs:
             dist/jcode-windows-x86_64.exe
             dist/jcode-windows-x86_64.tar.gz
 
-      - name: Upload final Windows ARM64 artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: jcode-windows-aarch64
-          path: |
-            dist/jcode-windows-aarch64.exe
-            dist/jcode-windows-aarch64.tar.gz
-
       - name: Publish Windows assets to release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release upload "${env:GITHUB_REF_NAME}" dist/jcode-windows-x86_64.exe dist/jcode-windows-x86_64.tar.gz dist/jcode-windows-aarch64.exe dist/jcode-windows-aarch64.tar.gz --clobber
-
-  build-freebsd:
-    name: Build (x86_64-unknown-freebsd)
-    runs-on: ubuntu-latest
-    needs: create-release
-    # GitHub has no native FreeBSD runners, so build inside a FreeBSD VM
-    # (QEMU via vmactions), same approach as freebsd-smoke.yml (issues #416,
-    # #433). Best-effort: a flaky VM build must not block the rest of the
-    # release, so failures are surfaced but non-fatal.
-    continue-on-error: true
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Build release binary in FreeBSD VM
-        uses: vmactions/freebsd-vm@v1
-        with:
-          release: "15.1"
-          usesh: true
-          # Give the build VM enough room: aws-lc-sys + tract pull in heavy C/Rust.
-          mem: 6144
-          cpu: 4
-          # The project is OpenSSL-free (rustls + aws-lc-rs): only a C/C++
-          # toolchain, cmake, and rust are needed.
-          prepare: |
-            pkg install -y rust cmake gmake pkgconf bash git
-          run: |
-            set -e
-            echo "::group::Toolchain versions"
-            uname -a
-            cc --version | head -1
-            cargo --version
-            rustc --version
-            echo "::endgroup::"
-
-            export CARGO_TERM_COLOR=always
-            # CARGO_BUILD_JOBS keeps memory in check; aws-lc-sys is memory hungry.
-            export CARGO_BUILD_JOBS=3
-            export JCODE_RELEASE_BUILD=1
-            export JCODE_BUILD_SEMVER="${{ github.ref_name }}"
-
-            echo "::group::cargo build (jcode binary)"
-            cargo build --locked --profile release-lto -p jcode --bin jcode
-            echo "::endgroup::"
-
-            echo "::group::Verify binary launches"
-            ./target/release-lto/jcode --version
-            echo "::endgroup::"
-
-            mkdir -p dist
-            cp target/release-lto/jcode dist/jcode-freebsd-x86_64
-            chmod +x dist/jcode-freebsd-x86_64
-            cd dist && tar czf jcode-freebsd-x86_64.tar.gz jcode-freebsd-x86_64
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: jcode-freebsd-x86_64
-          path: dist/jcode-freebsd-x86_64.tar.gz
-
-      - name: Publish asset to release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${GITHUB_REF_NAME}" "dist/jcode-freebsd-x86_64.tar.gz" --clobber
+          gh release upload "${env:GITHUB_REF_NAME}" `
+            dist/jcode-windows-x86_64.exe `
+            dist/jcode-windows-x86_64.tar.gz `
+            --clobber
 
   release:
     name: Finalize release
-    needs: [create-release, build-linux-macos, publish-windows, build-freebsd]
-    # Every platform is independent. Wait until all jobs reach a terminal state,
-    # then publish whichever assets succeeded. Only draft creation is mandatory.
+    needs: [create-release, publish-windows]
     if: ${{ always() && needs.create-release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -522,27 +260,15 @@ jobs:
           path: artifacts
           pattern: jcode-*
 
-      - name: Validate required platform asset set
+      - name: Validate required asset set
         shell: bash
         run: |
           set -euo pipefail
 
-          # fork 策略：只把 Windows x86_64 当作必达平台（本机主用平台）。
-          # 其余平台 best-effort：缺失只告警并记入发行说明的 Platform availability，
-          # 不再把整个 release 永久卡在 draft。
+          # fork 策略：Windows x86_64 是唯一必达资产：缺失则保持 draft，不发布半成品。
           required=(
             artifacts/jcode-windows-x86_64/jcode-windows-x86_64.exe
             artifacts/jcode-windows-x86_64/jcode-windows-x86_64.tar.gz
-          )
-
-          optional=(
-            artifacts/jcode-linux-x86_64/jcode-linux-x86_64.tar.gz
-            artifacts/jcode-linux-aarch64/jcode-linux-aarch64.tar.gz
-            artifacts/jcode-macos-aarch64/jcode-macos-aarch64.tar.gz
-            artifacts/jcode-macos-x86_64/jcode-macos-x86_64.tar.gz
-            artifacts/jcode-windows-aarch64/jcode-windows-aarch64.exe
-            artifacts/jcode-windows-aarch64/jcode-windows-aarch64.tar.gz
-            artifacts/jcode-freebsd-x86_64/jcode-freebsd-x86_64.tar.gz
           )
 
           missing=()
@@ -556,84 +282,18 @@ jobs:
             echo "Keeping the release as a draft: the required Windows x86_64 asset is missing" >&2
             exit 1
           fi
+          printf 'Required assets present: %s\n' "${#required[@]}"
 
-          skipped=()
-          for asset in "${optional[@]}"; do
-            if [ ! -f "$asset" ]; then
-              skipped+=("$asset")
-            fi
-          done
-          if [ "${#skipped[@]}" -ne 0 ]; then
-            printf '::warning::Optional platform asset unavailable in this release: %s\n' "${skipped[@]}"
-          fi
-
-          printf 'Required platform assets present: %s\n' "${#required[@]}"
-
-      # Build jobs normally attach their own assets to the draft. Upload them
-      # again here so a late per-platform upload failure cannot leave a built
-      # artifact out of the public release.
-      - name: Attach all completed platform assets
+      - name: Attach the Windows asset to the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mapfile -d '' assets < <(
-            find artifacts -type f \( -name '*.tar.gz' -o -name '*.exe' \) -print0
-          )
-          if [ "${#assets[@]}" -eq 0 ]; then
-            echo "No completed release assets found" >&2
-            exit 1
-          fi
-          gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
-
-      - name: Record platform availability
-        shell: bash
-        run: |
-          set -euo pipefail
-          available() {
-            if [ -f "$1" ]; then printf true; else printf false; fi
-          }
-
-          linux_x86_64=$(available artifacts/jcode-linux-x86_64/jcode-linux-x86_64.tar.gz)
-          linux_aarch64=$(available artifacts/jcode-linux-aarch64/jcode-linux-aarch64.tar.gz)
-          macos_aarch64=$(available artifacts/jcode-macos-aarch64/jcode-macos-aarch64.tar.gz)
-          macos_x86_64=$(available artifacts/jcode-macos-x86_64/jcode-macos-x86_64.tar.gz)
-          windows_x86_64=$(available artifacts/jcode-windows-x86_64/jcode-windows-x86_64.exe)
-          windows_aarch64=$(available artifacts/jcode-windows-aarch64/jcode-windows-aarch64.exe)
-          freebsd_x86_64=$(available artifacts/jcode-freebsd-x86_64/jcode-freebsd-x86_64.tar.gz)
-
-          homebrew_ready=false
-          aur_ready=false
-          if [ "$linux_x86_64" = true ] && [ "$linux_aarch64" = true ] && \
-             [ "$macos_aarch64" = true ] && [ "$macos_x86_64" = true ]; then
-            homebrew_ready=true
-          fi
-          if [ "$linux_x86_64" = true ]; then
-            aur_ready=true
-          fi
-
-          {
-            echo "LINUX_X86_64_AVAILABLE=$linux_x86_64"
-            echo "LINUX_AARCH64_AVAILABLE=$linux_aarch64"
-            echo "MACOS_AARCH64_AVAILABLE=$macos_aarch64"
-            echo "MACOS_X86_64_AVAILABLE=$macos_x86_64"
-            echo "WINDOWS_X86_64_AVAILABLE=$windows_x86_64"
-            echo "WINDOWS_AARCH64_AVAILABLE=$windows_aarch64"
-            echo "FREEBSD_X86_64_AVAILABLE=$freebsd_x86_64"
-            echo "HOMEBREW_READY=$homebrew_ready"
-            echo "AUR_READY=$aur_ready"
-          } >> "$GITHUB_ENV"
-          {
-            echo "## Platform availability"
-            echo "- Linux x86_64: $linux_x86_64"
-            echo "- Linux aarch64: $linux_aarch64"
-            echo "- macOS Apple Silicon: $macos_aarch64"
-            echo "- macOS Intel: $macos_x86_64"
-            echo "- Windows x86_64: $windows_x86_64"
-            echo "- Windows ARM64: $windows_aarch64"
-            echo "- FreeBSD x86_64: $freebsd_x86_64"
-          } >> "$GITHUB_STEP_SUMMARY"
+          gh release upload "${GITHUB_REF_NAME}" \
+            artifacts/jcode-windows-x86_64/jcode-windows-x86_64.exe \
+            artifacts/jcode-windows-x86_64/jcode-windows-x86_64.tar.gz \
+            --clobber
 
       - name: Generate checksums
         shell: bash
@@ -641,8 +301,6 @@ jobs:
           bash scripts/generate_checksums.sh artifacts SHA256SUMS --recursive
           cat SHA256SUMS
 
-      # Per-platform assets were already attached to the draft by their build
-      # jobs. Add the cross-cutting checksum file before making it public.
       - name: Upload checksums to release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -657,9 +315,7 @@ jobs:
           set -euo pipefail
           gh release view "${GITHUB_REF_NAME}" --json body --jq .body > release_notes.md
           python3 - << 'PY'
-          import os
           import re
-          import textwrap
           from pathlib import Path
 
           path = Path("release_notes.md")
@@ -673,22 +329,17 @@ jobs:
               flags=re.DOTALL,
           ).rstrip()
 
-          def status(name: str) -> str:
-              return "available" if os.environ[name] == "true" else "not available in this release"
-
-          availability = textwrap.dedent(f"""
-              {start}
-              ## Platform availability
-
-              - Linux x86_64: {status('LINUX_X86_64_AVAILABLE')}
-              - Linux aarch64: {status('LINUX_AARCH64_AVAILABLE')}
-              - macOS Apple Silicon: {status('MACOS_AARCH64_AVAILABLE')}
-              - macOS Intel: {status('MACOS_X86_64_AVAILABLE')}
-              - Windows x86_64: {status('WINDOWS_X86_64_AVAILABLE')}
-              - Windows ARM64: {status('WINDOWS_AARCH64_AVAILABLE')}
-              - FreeBSD x86_64: {status('FREEBSD_X86_64_AVAILABLE')}
-              {end}
-          """).strip("\n")
+          availability = "\n".join(
+              [
+                  start,
+                  "## Platform availability",
+                  "",
+                  "- Windows x86_64: available",
+                  "",
+                  "This fork publishes the Windows x86_64 build only.",
+                  end,
+              ]
+          )
           path.write_text(f"{body}\n\n{availability}\n", encoding="utf-8")
           PY
           gh release edit "${GITHUB_REF_NAME}" --notes-file release_notes.md
@@ -703,28 +354,3 @@ jobs:
           else
             echo "Release ${GITHUB_REF_NAME} is already public; leaving it public."
           fi
-
-      # Releases created with GITHUB_TOKEN do not trigger other `release: published`
-      # workflows, but workflow_dispatch is allowed as needed by downstream jobs.
-
-      - name: Update Homebrew formula
-        env:
-          HOMEBREW_DEPLOY_KEY: ${{ secrets.HOMEBREW_DEPLOY_KEY }}
-        if: env.HOMEBREW_DEPLOY_KEY != '' && env.HOMEBREW_READY == 'true'
-        run: |
-          bash scripts/update_packages.sh \
-            --version "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --assets-dir artifacts \
-            --homebrew
-
-      - name: Update AUR package
-        env:
-          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-        if: env.AUR_SSH_KEY != '' && env.AUR_READY == 'true'
-        run: |
-          bash scripts/update_packages.sh \
-            --version "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --assets-dir artifacts \
-            --aur
