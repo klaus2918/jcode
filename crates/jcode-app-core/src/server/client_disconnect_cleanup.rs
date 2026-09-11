@@ -128,7 +128,10 @@ pub(super) async fn cleanup_client_connection(
                     .get(client_session_id)
                     .and_then(|m| m.friendly_name.clone())
             };
-            super::background_session::register_background_session(client_session_id, friendly_name);
+            super::background_session::register_background_session(
+                client_session_id,
+                friendly_name,
+            );
             // 仅清理连接相关资源，保留 session 和 Agent
             event_handle.abort();
             return Ok(());

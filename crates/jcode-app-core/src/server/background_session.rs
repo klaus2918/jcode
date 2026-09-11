@@ -55,7 +55,8 @@ impl BackgroundSessionTrackerInner {
 /// 初始化后台会话跟踪器，返回完成事件接收端。
 ///
 /// 应在 server 启动时调用一次。
-pub(super) fn init_background_session_tracker() -> mpsc::UnboundedReceiver<BackgroundCompletionEvent> {
+pub(super) fn init_background_session_tracker() -> mpsc::UnboundedReceiver<BackgroundCompletionEvent>
+{
     let (tx, rx) = mpsc::unbounded_channel();
     if let Ok(mut tracker) = TRACKER.lock() {
         tracker.completion_tx = Some(tx);
@@ -67,10 +68,7 @@ pub(super) fn init_background_session_tracker() -> mpsc::UnboundedReceiver<Backg
 ///
 /// 当 Agent 仍在执行 turn 时（Mutex 被锁定），切换 session 会调用此函数，
 /// 保留 session 在 `SessionAgents` 中不被清理。
-pub(super) fn register_background_session(
-    session_id: &str,
-    friendly_name: Option<String>,
-) {
+pub(super) fn register_background_session(session_id: &str, friendly_name: Option<String>) {
     if let Ok(mut tracker) = TRACKER.lock() {
         crate::logging::info(&format!(
             "BACKGROUND_SESSION: registered {} (name={:?})",
@@ -90,10 +88,7 @@ pub(super) fn unregister_background_session(session_id: &str) {
     if let Ok(mut tracker) = TRACKER.lock()
         && tracker.sessions.remove(session_id).is_some()
     {
-        crate::logging::info(&format!(
-            "BACKGROUND_SESSION: unregistered {}",
-            session_id
-        ));
+        crate::logging::info(&format!("BACKGROUND_SESSION: unregistered {}", session_id));
     }
 }
 
@@ -143,9 +138,7 @@ pub(super) fn clear_all_background_sessions() {
 ///
 /// 每 2 秒检查一次所有后台 session 的 Agent 是否已完成 turn。
 /// 当 Agent 的 Mutex 可以成功锁定时，说明 turn 已完成。
-pub(super) fn spawn_background_session_monitor(
-    sessions: crate::server::SessionAgents,
-) {
+pub(super) fn spawn_background_session_monitor(sessions: crate::server::SessionAgents) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -184,9 +177,7 @@ pub(super) fn spawn_background_session_monitor(
                             TRACKER
                                 .lock()
                                 .ok()
-                                .and_then(|mut tracker| {
-                                    tracker.sessions.remove(session_id)
-                                })
+                                .and_then(|mut tracker| tracker.sessions.remove(session_id))
                         };
 
                         if let Some(info) = info {
