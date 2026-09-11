@@ -2,6 +2,17 @@
 
 jcode has two release paths: a fast local path for hotfixes, and CI for full releases.
 
+> **注（2026-09-12，本 fork）**：本文描述的是 **upstream** 的发布假设（开发机 `xps13`、
+> osxcross 交叉编译、本地 `quick-release.sh --fast-local` 快速路径、Azure 签名等），
+> **不适用于本仓库**。
+>
+> 本仓库（`klaus2918/jcode`）的发布规范**以 [docs/发布流程.md](docs/发布流程.md) 为准**：
+> tag 驱动、构建全部在 CI、Windows x86_64 为必达平台、产物未做 Authenticode 签名、
+> 不支持在线自更新。两者冲突时以该文档为准。
+>
+> 下文的本地快速路径（`quick-release.sh --fast-local` / `--prepare-fast`）在本 fork 中
+> **不使用**，原因见 `docs/发布流程.md` §6。
+
 ## Quick Release (local, ~2.5 minutes)
 
 For hotfixes and urgent updates. Builds Linux + macOS locally and stages them on a draft release while CI completes the remaining platforms.

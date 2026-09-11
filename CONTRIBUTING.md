@@ -2,6 +2,15 @@
 
 Thanks for contributing.
 
+> **注（2026-09-12，本 fork）**：本文是 **upstream** 维护者撰写的贡献政策，描述的是
+> upstream 仓库（`1jehuang/jcode`）的流程，其中「优先开 issue」一节**不适用于本仓库**
+> ——本 fork 已关闭 GitHub Issues。
+>
+> 本仓库（`klaus2918/jcode`）是上游的功能减法 fork，改动以本仓库自身需求为主。
+> 提交前请确认改动与本仓库的能力边界一致（已移除的能力见
+> [README](README.md) 第一节与 [docs/文档索引.md](docs/文档索引.md)），
+> 并跑通 `scripts/check_guardrails.sh`。
+
 ## Issues vs pull requests
 
 If the problem is easy for me to reproduce, please prefer opening a GitHub issue. A clear issue with reproduction steps, expected behavior, actual behavior, logs, screenshots, or traces is usually the fastest path to a fix.

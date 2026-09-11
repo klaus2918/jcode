@@ -1,6 +1,14 @@
 # Windows 支持
 
-Jcode 把 Windows 作为一等平台支持。Windows 实现使用原生命名管道、Windows 进程管理、PowerShell 安装和平台特定的启动热键集成。
+Jcode 把 Windows 作为一等平台支持。Windows 实现使用原生命名管道、Windows 进程管理、PowerShell 安装和平台特定的启动集成。
+
+> **注（2026-09-12，本 fork）**：
+>
+> - **不要用在线安装脚本安装本 fork 的产物。** `scripts/install.sh` / `install.ps1` 仍指向 upstream 的仓库与 `jcode.sh` 元数据服务；本 fork 的发布产物请用 `jcode update --local <包>` 或 `.\install.ps1 -ArtifactExePath ...` 本地安装（见下方"使用本地安装包安装 / 更新"）。发布规范见 [发布流程](发布流程.md)。
+> - **发布产物未做 Authenticode 签名**（本仓库未配置 Azure Artifact Signing），因此首次运行会出现 SmartScreen 警告；CI 会把这个事实写进当次运行的 step summary。
+> - 启动热键（全局快捷键）设置已随功能减法移除，不再有 `-ConfigureHotkey` 之外的热键引导实现。
+>
+> 下文的在线安装段落保留用于说明安装器行为，对本 fork 请按"本地安装包"一节操作。
 
 ## 支持状态
 
@@ -12,7 +20,7 @@ Jcode 把 Windows 作为一等平台支持。Windows 实现使用原生命名管
 | 原生 IPC 与进程生命周期 | 由定向和端到端 Windows 测试覆盖 |
 | `jcode update` | 支持，带 SHA-256 校验 |
 | 发布资产 | x64 和 ARM64 `.exe` 与 `.tar.gz` 资产 |
-| Authenticode 签名 | 发布流水线已就绪；需要下面的一次性 Azure 配置 |
+| Authenticode 签名 | **本 fork 未启用**：无 Azure Artifact Signing 配置，产物未签名（见文首注） |
 
 安装器要求 PowerShell 5.1 或更高版本。x64 构建是 Intel 和 AMD Windows 电脑的默认选择。在 ARM64 Windows 上自动选择 ARM64 构建。
 
@@ -161,7 +169,7 @@ Get-AuthenticodeSignature (Get-Command jcode).Source | Format-List Status,Status
 
 两种不同的 Windows 警告常被混淆：
 
-- **Microsoft Defender SmartScreen** 在下载的应用未签名或尚未积累足够发布者声誉时显示"Windows 已保护你的电脑"之类的消息。使用受信任、带时间戳的证书进行 Authenticode 签名是主要修复手段。新的发布者身��仍会随时间积累声誉。
+- **Microsoft Defender SmartScreen** 在下载的应用未签名或尚未积累足够发布者声誉时显示"Windows 已保护你的电脑"之类的消息。使用受信任、带时间戳的证书进行 Authenticode 签名是主要修复手段。新的发布者身份仍会随时间积累声誉。
 - **Microsoft Defender 杀毒软件** 报告命名威胁或可疑行为。签名有助于确立来源，但启发式误报也必须连同精确的签名文件和 SHA-256 哈希提交给 Microsoft。
 
 不要告诉用户禁用 Defender、添加排除项或绕过命名的恶意软件检测。首先验证发布 URL、校验和与 Authenticode 签名。如果正确签名的官方构建仍被检测，通过 [Microsoft 安全情报文件提交门户](https://www.microsoft.com/wdsi/filesubmission) 作为软件开发人员误报提交。
@@ -227,7 +235,7 @@ Windows 由以下覆盖：
 
 Unix 域 socket 在 `crates/jcode-base/src/transport/windows.rs` 中被 Windows 命名管道替代。平台特定的文件系统、进程、更新和替换行为用 `#[cfg(windows)]` 在编译时选择，因此 Windows 支持不会给 Unix 构建增加运行时分支。
 
-Windows 启动热键设置实现在 `crates/jcode-setup-hints/src/windows_setup.rs`，只在用户明确同意后安装。
+启动热键（全局快捷键）集成已随功能减法移除；如需要，请自行在系统层配置，jcode 不再安装或引导。
 
 ## 报告 Windows 问题
 
