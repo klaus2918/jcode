@@ -1337,8 +1337,10 @@ impl App {
         } else if reports.is_empty() {
             lines.push("# No connected providers".to_string());
             lines.push(
-                "Use `/login claude` or `/login openai`, then run `/usage` again.".to_string(),
+                "Connect a provider with `jcode provider add <name> --base-url <url> ...`, "
+                    .to_string(),
             );
+            lines.push("then run `/usage` again.".to_string());
             return lines.join("\n");
         } else {
             lines.push(format!("# Usage updated · {} source(s)", reports.len()));
@@ -2424,9 +2426,12 @@ pub(super) fn no_models_available_message(is_remote: bool) -> String {
         "No models are available right now.".to_string(),
         String::new(),
         "Next steps:".to_string(),
-        "  - Run /login to connect or refresh a provider".to_string(),
-        "  - Run /account to inspect or switch credentials".to_string(),
-        "  - If you just logged in, wait a moment and try /model again".to_string(),
+        "  - Connect or refresh a provider: `jcode provider add <name> --base-url <url> ...`"
+            .to_string(),
+        "  - Inspect what is configured: `jcode provider list` / `jcode provider current`"
+            .to_string(),
+        "  - Diagnose credentials: `jcode auth doctor`".to_string(),
+        "  - If you just added a provider, wait a moment and try /model again".to_string(),
     ];
 
     if is_remote {
@@ -2444,9 +2449,10 @@ pub(super) fn model_switch_failure_message(error: &str, is_remote: bool) -> Stri
         format!("Failed to switch model: {}", error),
         String::new(),
         "Next steps:".to_string(),
-        "  - Use /model to choose another available route".to_string(),
-        "  - Run /login to add or refresh credentials".to_string(),
-        "  - Run /account to inspect or switch accounts".to_string(),
+        "  - Use /model or /provider to choose another available route".to_string(),
+        "  - Add or refresh credentials: `jcode provider add <name> --base-url <url> ...`"
+            .to_string(),
+        "  - Diagnose credentials: `jcode auth doctor`".to_string(),
     ];
 
     if is_remote {
@@ -2478,8 +2484,9 @@ pub(super) fn unavailable_model_route_message(
         String::new(),
         "Next steps:".to_string(),
         "  - Pick another available row in /model".to_string(),
-        "  - Run /login to add or refresh credentials".to_string(),
-        "  - Run /account to inspect or switch accounts".to_string(),
+        "  - Add or refresh credentials: `jcode provider add <name> --base-url <url> ...`"
+            .to_string(),
+        "  - Diagnose credentials: `jcode auth doctor`".to_string(),
     ];
 
     if is_remote {

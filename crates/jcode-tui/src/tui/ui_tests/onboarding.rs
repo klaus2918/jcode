@@ -30,7 +30,10 @@ fn onboarding_state() -> TestState {
     TestState {
         onboarding_preview: true,
         suggestions: vec![
-            ("Log in to get started".to_string(), "/login".to_string()),
+            (
+                "Configure a model provider".to_string(),
+                "/provider".to_string(),
+            ),
             (
                 "Build a small CLI tool".to_string(),
                 "build a CLI".to_string(),
@@ -50,8 +53,8 @@ fn onboarding_welcome_shows_title_and_suggestions() {
         "welcome title should be rendered:\n{text}"
     );
     assert!(
-        text.contains("Log in to get started"),
-        "login suggestion should be rendered:\n{text}"
+        text.contains("Configure a model provider"),
+        "provider suggestion should be rendered:\n{text}"
     );
     assert!(
         text.contains("Build a small CLI tool"),
@@ -64,12 +67,12 @@ fn onboarding_welcome_shows_title_and_suggestions() {
 }
 
 #[test]
-fn onboarding_welcome_login_suggestion_shows_typed_command() {
+fn onboarding_welcome_suggestion_shows_typed_command() {
     let state = onboarding_state();
     let text = render_onboarding(&state, 80, 30);
     assert!(
-        text.contains("(type /login)"),
-        "login suggestion should hint the slash command:\n{text}"
+        text.contains("(type /provider)"),
+        "suggestion should hint the slash command:\n{text}"
     );
 }
 

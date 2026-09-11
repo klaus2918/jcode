@@ -264,7 +264,7 @@ fn render_phase_screen(label: &'static str, phase: OnboardingPhase) -> ScreenMet
     let lower = text.to_ascii_lowercase();
     let has_escape_hatch = lower.contains("skip")
         || lower.contains("anytime")
-        || lower.contains("/login")
+        || lower.contains("/provider")
         || lower.contains("optional")
         || lower.contains("type anything");
     ScreenMetrics {
@@ -363,10 +363,10 @@ struct Tier4Metrics {
     narrow_options_survive: bool,
 }
 
-/// Detect whether the human-facing prose names the login concept consistently.
-/// The canonical phrasing is the two-word verb "log in". A drift to "sign in"
-/// or the one-word "login" *as a verb in prose* (the `/login` command is fine)
-/// is an inconsistency. Measured over the real rendered welcome screens.
+/// Detect whether the human-facing prose names the provider-setup concept
+/// consistently. This fork configures model access instead of logging in, so a
+/// drift to "sign in" / "log on" (or the bare verb "login") is an inconsistency.
+/// Measured over the real rendered welcome screens.
 fn terminology_is_consistent(screens: &[(&'static str, String)]) -> bool {
     for (_, text) in screens {
         let lower = text.to_ascii_lowercase();
@@ -374,11 +374,11 @@ fn terminology_is_consistent(screens: &[(&'static str, String)]) -> bool {
         if lower.contains("sign in") || lower.contains("sign-in") || lower.contains("log on") {
             return false;
         }
-        // "login" as a standalone prose word (not the `/login` command, the
-        // "Login N of M" progress label, or the legitimate NOUN) would compete
-        // with the verb "log in". English distinguishes the noun "a login" / "N
-        // logins" (a stored credential) from the verb "to log in"; only the verb
-        // spelling "login" is the drift we guard against.
+        // "login" as a standalone prose word (not the "Login N of M" progress
+        // label or the legitimate NOUN) would compete with the verb "log in".
+        // English distinguishes the noun "a login" / "N logins" (a stored
+        // credential) from the verb "to log in"; only the verb spelling "login"
+        // is the drift we guard against.
         let words: Vec<&str> = lower.split_whitespace().collect();
         for (i, raw) in words.iter().enumerate() {
             let w = raw.trim_matches(|c: char| !c.is_ascii_alphabetic());
@@ -387,8 +387,8 @@ fn terminology_is_consistent(screens: &[(&'static str, String)]) -> bool {
                 continue;
             }
             if w == "login" {
-                // Allowed: the `/login` command token and the "Login N of M"
-                // progress header. Both are recognizable by their surroundings.
+                // Allowed: the "Login N of M" progress header, recognizable by
+                // its surroundings.
                 let is_command = raw.contains('/');
                 let is_progress_header = lower.contains("login 1 of") || lower.contains("login 2 of");
                 // Allowed: the NOUN "login" (a credential), recognizable when
@@ -900,7 +900,7 @@ const JARGON_TERMS: &[&str] = &[
 
 /// Domain "concepts" the onboarding introduces, grouped by synonym so a single
 /// idea phrased two ways counts ONCE. The login concept in particular surfaces
-/// as both the prose verb "log in" and the `/login` command on the same screen;
+/// as both the prose verb "log in" and the noun "login" on the same screen;
 /// charging the user for two "new concepts" there double-counts one idea (the
 /// same class of inflation the Tier 3 donut fix removed). Used to count how many
 /// distinct new ideas a single screen puts in front of the user.
@@ -957,7 +957,7 @@ fn screen_load(label: &'static str, text: &str) -> ScreenLoad {
         .sum();
     let jargon_per_100w = (jargon_hits as f64) / word_count * 100.0;
 
-    // Count each distinct concept GROUP at most once, so "log in" + "/login"
+    // Count each distinct concept GROUP at most once, so "log in" + "login"
     // (one idea, two spellings) is a single new concept, not two.
     let new_concepts = CONCEPT_GROUPS
         .iter()
@@ -1109,8 +1109,8 @@ fn looks_like_instruction(line: &str) -> bool {
         || lower.starts_with("select ")
         || lower.starts_with("pick ")
         || lower.starts_with("run ")
-        // A "<command>" CTA: jcode phrases these as both "run /login" and
-        // "type /login", so recognize both spellings of the same directive.
+        // A "<command>" CTA: jcode phrases these as both "run <cmd>" and
+        // "type <cmd>", so recognize both spellings of the same directive.
         || lower.contains("run /")
         || lower.contains("type /")
 }
@@ -1223,8 +1223,8 @@ fn tier7_screen_score_w(m: &ScreenClarity, w: &Tier7Weights) -> f64 {
 // actually does when the user backs out, declines, or does nothing:
 //
 //   * back_navigation       - a declined choice still leaves a recovery route
-//     (e.g. decline OpenAI -> /login is offered; decline all imports -> manual
-//     provider picker), so a "no" is never a dead end.
+//     (e.g. declining the provider prompt still leaves the documented
+//     `jcode provider add` path), so a "no" is never a dead end.
 //   * error_recovery_depth  - keystrokes from a failed/declined branch back to a
 //     state where the user can authenticate (lower is better).
 //   * repeated_prompt       - the same decision is not re-asked after it is
@@ -1252,10 +1252,10 @@ struct Tier8Metrics {
 fn tier8_metrics() -> Tier8Metrics {
     use crossterm::event::KeyCode;
 
-    // ---- back_navigation + error_recovery_depth: decline OpenAI sign-in ----
+    // ---- back_navigation + error_recovery_depth: decline the provider prompt ----
     // Declining ('n') finishes onboarding but the status notice / recovery
-    // points the user at /login, so the route is not a dead end. The recovery
-    // depth is the single keystroke to re-open login from the recovery phase.
+    // points the user at `jcode provider add`, so the route is not a dead end.
+    // The recovery depth is the single keystroke back to the recovery phase.
     let back_navigation_ok = {
         let mut app = create_test_app();
         app.onboarding_flow = None;
@@ -1264,8 +1264,8 @@ fn tier8_metrics() -> Tier8Metrics {
             flow.phase = OnboardingPhase::ConfigureProvider { yes_highlighted: true };
         }
         let consumed = app.handle_onboarding_continue_prompt_key(KeyCode::Char('n'));
-        // Onboarding reaches a terminal, and the recovery affordance (/login) is
-        // documented on the last login screen the user saw.
+        // Onboarding reaches a terminal, and the recovery affordance
+        // (`jcode provider add`) is documented on the last screen the user saw.
         consumed && app.onboarding_phase().is_none()
     };
 
@@ -2623,7 +2623,7 @@ enum FeatureClass {
     Countdown,
     /// A numbered or multi-item list is shown.
     List,
-    /// A typed command (e.g. "/login") is shown.
+    /// A typed command (e.g. "/provider") is shown.
     Command,
     /// A free-text input / filter field is shown (e.g. the provider picker's
     /// type-to-filter box, or an API-key entry line).
@@ -2698,7 +2698,7 @@ fn signal_registry() -> Vec<SignalSpec> {
         // dimension is owned. They drive the REAL full-app render of the provider
         // picker, a surface the welcome card alone never shows.
         SignalSpec { name: "interactive_options", status: Scored, rationale: "owns the Yes/No selector class (also counted by Tier1.decisions)", owns_feature: InteractiveOptions },
-        SignalSpec { name: "command_affordance", status: Scored, rationale: "owns typed-command screens (/login, /model); also Tier3.escape_hatch", owns_feature: Command },
+        SignalSpec { name: "command_affordance", status: Scored, rationale: "owns typed-command screens (/provider, /model); also Tier3.escape_hatch", owns_feature: Command },
         SignalSpec { name: "input_field_present", status: Scored, rationale: "owns the provider picker's type-to-filter input surface (full-app render)", owns_feature: InputField },
         // ---- Scored (wired into Tier 10: accessibility & robustness) ----
         SignalSpec { name: "no_unicode_dependence", status: Scored, rationale: "Tier10.per_nonascii_prose_char (load-bearing prose is ASCII-legible; logo is decorative)", owns_feature: None },
@@ -2739,7 +2739,9 @@ fn detect_feature_classes(text: &str) -> Vec<FeatureClass> {
         found.push(FeatureClass::List);
     }
     // A typed command.
-    if text.contains('/') && (lower.contains("/login") || lower.contains("/model") || lower.contains("type /")) {
+    if text.contains('/')
+        && (lower.contains("/provider") || lower.contains("/model") || lower.contains("type /"))
+    {
         found.push(FeatureClass::Command);
     }
     // A free-text input / filter field: the provider picker shows a status line

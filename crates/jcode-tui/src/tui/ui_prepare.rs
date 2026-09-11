@@ -871,7 +871,7 @@ fn header_prep_cache() -> &'static std::sync::Mutex<Option<HeaderPrepCacheState>
 /// surfaces (auth inventory, skills, goal badge, update badges).
 ///
 /// The TTL alone is sized for background drift. Actions taken *inside* the TUI
-/// that change those surfaces - completing `/login`, adding an account,
+/// that change those surfaces - completing provider setup, adding an account,
 /// reloading skills - must be reflected immediately rather than up to a full
 /// TTL later, so they call this directly.
 pub(crate) fn invalidate_header_prep_cache() {
@@ -903,7 +903,7 @@ fn header_prep_signature(app: &dyn TuiState, width: u16) -> u64 {
     app.server_sessions().len().hash(&mut hasher);
     app.working_dir().hash(&mut hasher);
     // Credential changes alter the auth inventory lines. Hashing the auth
-    // generation (cheap atomic load) means `/login` and account edits repaint
+    // generation (cheap atomic load) means provider setup and account edits repaint
     // the header on the very next frame instead of waiting out the TTL, which
     // is what lets the TTL itself be sized for slow background drift.
     crate::auth::auth_status_generation().hash(&mut hasher);

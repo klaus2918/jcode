@@ -385,7 +385,7 @@ fn auth_full_specs(
 
 /// Vertical auth inventory: one line per provider. Configured providers get
 /// green/yellow dots; unconfigured ones get a dim hollow dot so they read as
-/// available-to-add without cluttering the `/login` heading.
+/// available-to-add without cluttering the provider heading.
 pub(super) fn build_auth_status_lines(
     auth: &AuthStatus,
     active: ActiveCredentialOverrides,

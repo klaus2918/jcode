@@ -246,7 +246,7 @@ fn configure_no_finishes_onboarding_with_provider_hint() {
         assert!(app.inline_interactive_state.is_none());
         let before = app.display_messages().len();
         // 'n' exits onboarding straight to the normal screen (no flaky inline
-        // provider picker) and tells the user to run /login when ready.
+        // provider picker) and points at `jcode provider add` when ready.
         assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('n')));
         // No inline picker is opened.
         assert!(app.inline_interactive_state.is_none());

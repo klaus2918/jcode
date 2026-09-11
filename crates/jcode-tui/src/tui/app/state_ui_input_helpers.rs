@@ -160,11 +160,6 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/config", "Show or edit configuration"),
     RegisteredCommand::public("/log", "Mark the current location in the jcode logs"),
     RegisteredCommand::public(
-        "/keys",
-        "Show keybinding conflicts with your terminal and OS (/keys refresh to rescan)",
-    ),
-    RegisteredCommand::hidden("/keybindings", "Alias for /keys"),
-    RegisteredCommand::public(
         "/diff",
         "Cycle or set diff display mode (off/inline/full/pinned/file)",
     ),
@@ -816,88 +811,6 @@ impl App {
             return self.rank_suggestions(input, suggestions);
         }
 
-        if prefix.starts_with("/login ") || prefix.starts_with("/auth ") {
-            let base = if prefix.starts_with("/auth ") {
-                "/auth"
-            } else {
-                "/login"
-            };
-            let mut suggestions: Vec<(String, &'static str)> = Vec::new();
-            if base == "/auth" {
-                suggestions.push(("/auth doctor".into(), "Diagnose provider auth issues"));
-            }
-            suggestions.extend(
-                crate::provider_catalog::tui_login_providers_filtered()
-                    .iter()
-                    .map(|provider| (format!("{} {}", base, provider.id), provider.menu_detail)),
-            );
-            return self.rank_suggestions(input, suggestions);
-        }
-
-        if prefix.starts_with("/account ") || prefix.starts_with("/accounts ") {
-            let mut suggestions = vec![
-                ("/account list".into(), "Open all provider/account actions"),
-                ("/account switch".into(), "Switch active account by label"),
-                (
-                    "/account default-provider".into(),
-                    "Set preferred default provider",
-                ),
-                (
-                    "/account default-model".into(),
-                    "Set preferred default model",
-                ),
-                (
-                    "/account openai-compatible settings".into(),
-                    "Inspect custom OpenAI-compatible settings",
-                ),
-                (
-                    "/account openai-compatible api-base".into(),
-                    "Set custom OpenAI-compatible API base",
-                ),
-            ];
-            for provider in crate::provider_catalog::login_providers() {
-                suggestions.push((
-                    format!("/account {}", provider.id),
-                    "Open this provider's account/settings actions",
-                ));
-                suggestions.push((
-                    format!("/account {} settings", provider.id),
-                    "Show provider-specific settings",
-                ));
-                suggestions.push((
-                    format!("/account {} login", provider.id),
-                    "Start or refresh login for this provider",
-                ));
-            }
-            suggestions.push(("/account claude add".into(), "Add a new Claude account"));
-            suggestions.push(("/account openai add".into(), "Add a new OpenAI account"));
-            suggestions.push((
-                "/account openai transport".into(),
-                "Set OpenAI transport preference",
-            ));
-            suggestions.push((
-                "/account openai effort".into(),
-                "Set OpenAI reasoning effort preference",
-            ));
-            if let Ok(accounts) = crate::auth::claude::list_accounts() {
-                for account in accounts {
-                    suggestions.push((
-                        format!("/account claude switch {}", account.label),
-                        "Switch to this Claude account",
-                    ));
-                }
-            }
-            if let Ok(accounts) = crate::auth::codex::list_accounts() {
-                for account in accounts {
-                    suggestions.push((
-                        format!("/account openai switch {}", account.label),
-                        "Switch to this OpenAI account",
-                    ));
-                }
-            }
-            return self.rank_suggestions(input, suggestions);
-        }
-
         if prefix.starts_with("/memory ") {
             return self.rank_suggestions(
                 input,
@@ -1523,19 +1436,6 @@ impl App {
                 | "/effort"
                 | "/fast"
                 | "/transport"
-                | "/login"
-                | "/auth"
-                | "/account"
-                | "/account claude"
-                | "/account switch"
-                | "/account openai"
-                | "/account openai-compatible"
-                | "/account default-provider"
-                | "/account default-model"
-                | "/account claude switch"
-                | "/account claude remove"
-                | "/account openai switch"
-                | "/account openai remove"
                 | "/usage"
                 | "/subscription"
                 | "/poke"
@@ -1595,13 +1495,7 @@ mod registered_commands_tests {
     fn known_aliases_are_registered() {
         let names: std::collections::HashSet<&str> =
             REGISTERED_COMMANDS.iter().map(|c| c.name).collect();
-        for alias in [
-            "/keybindings",
-            "/commit-and-push",
-            "/resume-all",
-            "/hotkeys",
-            "/keys",
-        ] {
+        for alias in ["/commit-and-push", "/resume-all", "/hotkeys"] {
             assert!(names.contains(alias), "{alias} is not registered");
         }
     }

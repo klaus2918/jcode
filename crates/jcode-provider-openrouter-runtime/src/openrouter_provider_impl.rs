@@ -567,7 +567,7 @@ impl Provider for OpenRouterProvider {
         }
 
         // No memory or disk catalog yet. This commonly happens immediately after
-        // adding a new OpenAI-compatible endpoint from `/login`: the provider is
+        // adding a new OpenAI-compatible endpoint: the provider is
         // hot-initialized, but the picker may render before the post-auth
         // prefetch has completed. Make the picker path self-healing by starting
         // the first `/models` fetch here, then return the best immediate

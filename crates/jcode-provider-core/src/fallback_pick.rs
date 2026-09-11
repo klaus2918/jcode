@@ -68,7 +68,7 @@ pub fn error_looks_like_credential_failure(error: &str) -> bool {
         "no refresh token",
         "credentials have been revoked",
         "please log in again",
-        "run /login",
+        "run jcode provider add",
     ];
     markers.iter().any(|marker| lower.contains(marker))
 }
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn classifies_credential_failures() {
         assert!(error_looks_like_credential_failure(
-            "OpenAI token refresh failed; run /login to re-authenticate: refresh_token_invalidated"
+            "OpenAI token refresh failed; refresh the credentials with `jcode auth doctor openai`: refresh_token_invalidated"
         ));
         assert!(error_looks_like_credential_failure(
             "Your session has ended. Please log in again."

@@ -1039,9 +1039,9 @@ pub fn configured_picker_provider_allowlist() -> Option<Vec<String>> {
 /// In the config-driven (Reasonix-aligned) model, the allowlist (explicit
 /// `provider.model_picker_providers`, or automatically the configured named
 /// providers) declares the only providers the user works with. When one is
-/// active, `/login` should not advertise unrelated built-in providers
-/// (Anthropic/OpenRouter/OpenAI/OAuth accounts the user never configured) --
-/// it should offer only:
+/// active, the login/provider surfaces should not advertise unrelated built-in
+/// providers (Anthropic/OpenRouter/OpenAI/OAuth accounts the user never
+/// configured) -- they should offer only:
 /// - the generic `openai-compatible` entry (how a named profile gets its API
 ///   key configured), and
 /// - any built-in login provider that the allowlist explicitly names.
@@ -1083,11 +1083,6 @@ pub fn filter_login_providers_by_allowlist(
         .collect()
 }
 
-/// TUI `/login` list filtered by `model_picker_providers`.
-pub fn tui_login_providers_filtered() -> Vec<LoginProviderDescriptor> {
-    filter_login_providers_by_allowlist(tui_login_providers())
-}
-
 /// CLI `login --provider auto` list filtered by `model_picker_providers`.
 pub fn cli_login_providers_filtered() -> Vec<LoginProviderDescriptor> {
     filter_login_providers_by_allowlist(cli_login_providers())
@@ -1096,8 +1091,8 @@ pub fn cli_login_providers_filtered() -> Vec<LoginProviderDescriptor> {
 /// Auth-status/diagnostic provider list filtered by `model_picker_providers`.
 ///
 /// In config-driven mode only the configured provider (plus the generic
-/// openai-compatible entry) is relevant, so `/auth` / `auth doctor` /
-/// provider reports do not advertise unconfigured built-in providers.
+/// openai-compatible entry) is relevant, so `jcode auth status` / `auth doctor`
+/// and provider reports do not advertise unconfigured built-in providers.
 pub fn auth_status_login_providers_filtered() -> Vec<LoginProviderDescriptor> {
     filter_login_providers_by_allowlist(auth_status_login_providers())
 }

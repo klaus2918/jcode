@@ -113,7 +113,7 @@ fn matching_suffix_len_detects_prepended_history() {
 /// measured ~22ms for the auth probe alone. Its TTL is therefore sized for slow
 /// background drift, which is only safe because credential changes are caught
 /// by the signature instead. Guard that: a generation bump must be visible to
-/// the signature so `/login` repaints on the next frame.
+/// the signature so provider setup repaints on the next frame.
 #[test]
 fn auth_generation_change_invalidates_the_header_signature() {
     let before = crate::auth::auth_status_generation();

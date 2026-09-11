@@ -962,7 +962,7 @@ fn test_remote_model_switch_failure_shows_actionable_guidance() {
     assert_eq!(last.role, "error");
     assert!(last.content.contains("credentials expired"));
     assert!(last.content.contains("/model"));
-    assert!(last.content.contains("/login"));
+    assert!(last.content.contains("jcode provider add"));
     assert!(last.content.contains("reconnect"));
 }
 

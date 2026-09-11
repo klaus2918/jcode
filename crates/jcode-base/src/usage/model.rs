@@ -256,10 +256,16 @@ impl MultiAccountProviderKind {
         }
     }
 
-    pub fn switch_command(self, label: &str) -> String {
+    /// How to make `label` the active account. This fork has no interactive
+    /// account command, so the instruction names the file the label lives in.
+    pub fn switch_hint(self, label: &str) -> String {
         match self {
-            Self::Anthropic => format!("/account switch {}", label),
-            Self::OpenAI => format!("/account openai switch {}", label),
+            Self::Anthropic => {
+                format!("set \"active_anthropic_account\": \"{label}\" in ~/.jcode/auth.json")
+            }
+            Self::OpenAI => {
+                format!("set \"active_openai_account\": \"{label}\" in ~/.jcode/openai-auth.json")
+            }
         }
     }
 }
@@ -367,11 +373,11 @@ impl AccountUsageProbe {
     pub fn switch_guidance(&self) -> Option<String> {
         let alternative = self.best_available_alternative()?;
         Some(format!(
-            "Another {} account has headroom: `{}` ({}). Use `{}`.",
+            "Another {} account has headroom: `{}` ({}). To use it, {}.",
             self.provider.display_name(),
             alternative.label,
             alternative.summary(),
-            self.provider.switch_command(&alternative.label)
+            self.provider.switch_hint(&alternative.label)
         ))
     }
 }

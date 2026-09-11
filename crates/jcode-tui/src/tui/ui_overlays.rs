@@ -237,10 +237,6 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Re-read skills from disk and load them into this session",
     ));
     lines.push(help_entry("/info", "Show session info and token usage"));
-    lines.push(help_entry(
-        "/keys",
-        "Show keybinding conflicts with your terminal/OS",
-    ));
     lines.push(help_entry("/usage", "Show connected provider usage limits"));
     lines.push(help_entry(
         "/support",

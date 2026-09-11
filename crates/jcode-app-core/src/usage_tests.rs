@@ -555,7 +555,10 @@ fn test_account_usage_probe_prefers_best_available_alternative() {
 
     let guidance = probe.switch_guidance().expect("expected switch guidance");
     assert!(guidance.contains("`backup`"));
-    assert!(guidance.contains("/account openai switch backup"));
+    assert!(
+        guidance.contains("active_openai_account"),
+        "guidance should name the file field to change: {guidance}"
+    );
 }
 
 #[test]

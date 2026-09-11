@@ -21,7 +21,7 @@ impl App {
             if configured_key {
                 "configured"
             } else {
-                "not configured (/login jcode)"
+                "not configured (set JCODE_API_KEY)"
             }
         ));
         message.push_str(&format!(
@@ -84,7 +84,9 @@ impl App {
         if configured_key {
             message.push_str("\nFetching account status...");
         } else {
-            message.push_str("\nLog in with /login jcode to see account usage and tier.");
+            message.push_str(
+                "\nSet JCODE_API_KEY in the jcode subscription env file to see account usage and tier.",
+            );
         }
 
         self.push_display_message(DisplayMessage::system(message));
@@ -130,11 +132,11 @@ impl App {
                                 == Some(&crate::subscription_api::AccountApiError::Unauthorized)
                             {
                                 let _ = crate::subscription_catalog::clear_account_credentials();
-                                "Jcode Account Status\n\nThe saved account key was revoked or expired. Local credentials were cleared. Use /account jcode login to sign in again."
+                                "Jcode Account Status\n\nThe saved account key was revoked or expired. Local credentials were cleared. Set JCODE_API_KEY again to sign in."
                                     .to_string()
                             } else {
                                 format!(
-                                    "Jcode Account Status\n\nCould not load /v1/me: {}\n\nThe local credential was retained. Retry /account jcode status, open /account jcode manage, or use /account jcode logout.",
+                                    "Jcode Account Status\n\nCould not load /v1/me: {}\n\nThe local credential was retained. Check network access to the router, manage the account at https://jcode.sh/account, or clear JCODE_API_KEY to sign out.",
                                     error
                                 )
                             };

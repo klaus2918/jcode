@@ -807,7 +807,7 @@ struct CostState {
     cached_price_model: Option<String>,
 }
 
-/// State for an in-progress OAuth/API-key login flow triggered by `/login`.
+/// State for an in-progress OAuth/API-key credential flow.
 /// TUI Application state
 pub struct App {
     provider: Arc<dyn Provider>,

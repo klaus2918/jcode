@@ -678,9 +678,8 @@ impl App {
     /// Handle the `/hotkeys` command: list every known chord with a
     /// description and the user's personal usage counts.
     pub(super) fn handle_hotkeys_command(&mut self, trimmed: &str) -> bool {
-        // `/keys` belongs to the keymap-conflict diagnostics command, which is
-        // dispatched earlier; claiming it here was dead code that only made the
-        // alias ambiguous.
+        // Only `/hotkeys` reaches here. This fork removed the keymap-conflict
+        // diagnostics command, so nothing else claims the name.
         if trimmed != "/hotkeys" {
             return false;
         }

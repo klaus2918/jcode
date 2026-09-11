@@ -178,7 +178,7 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
             // Rounded Yes/No lozenge pills; the selection is shown visually (the
             // filled capsule), so no instruction sentence is needed.
             lines.push(yes_no_pill_line(yes_highlighted, align));
-            // The Esc hint below already says you can log in later with /login,
+            // The Esc hint below already says you can connect a provider later,
             // so we don't repeat a "choose No to skip" line here.
             push_esc_skip_hint(&mut lines, align);
             return lines;

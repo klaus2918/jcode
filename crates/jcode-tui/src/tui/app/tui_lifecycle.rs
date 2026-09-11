@@ -323,8 +323,8 @@ impl App {
         self.push_display_message(DisplayMessage::error(format!(
             "🛑 Stopped automatic retries: {failures} consecutive credential/auth failures. \
              The current login or API key for {provider} is not working, so resending the same \
-             request cannot succeed.{} Run /login to re-authenticate (or /model to switch to a \
-             working route), then send again.",
+             request cannot succeed.{} Add or refresh credentials with `jcode provider add` \
+             (or /model to switch to a working route), then send again.",
             if cleared_pokes == 0 {
                 String::new()
             } else {

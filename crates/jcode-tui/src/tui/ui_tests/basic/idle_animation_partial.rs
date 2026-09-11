@@ -344,7 +344,10 @@ fn animation_cadence_implies_the_renderer_published_animated_rows() {
             TestState {
                 onboarding_preview: true,
                 suggestions: vec![
-                    ("Log in to get started".to_string(), "/login".to_string()),
+                    (
+                        "Configure a model provider".to_string(),
+                        "/provider".to_string(),
+                    ),
                     ("Build a CLI".to_string(), "build a CLI".to_string()),
                 ],
                 anim_elapsed: 1.0,

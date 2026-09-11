@@ -1325,7 +1325,7 @@ pub(in crate::tui::app) fn handle_server_event(
             // the login/API key is dead. Resending the identical request can
             // never succeed and (before this breaker) produced runaway retry
             // loops logging thousands of 401s per session. Stop every
-            // automatic resend path and tell the user to /login or /model.
+            // automatic resend path and tell the user to configure a provider or /model.
             if !is_connectivity_error && app.note_error_for_credential_breaker(&message) {
                 app.trip_credential_failure_breaker(&message);
                 app.offer_fallback_after_error_with_payload(
@@ -1387,7 +1387,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 // Offer a one-keypress switch to the next best model/auth-method
                 // and resend (e.g. expired OpenAI OAuth session -> a provider
                 // that is known to work), instead of leaving the user to run
-                // /login or /model manually.
+                // provider setup or /model manually.
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
                 return app.schedule_turn_end_followups();
             }

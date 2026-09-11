@@ -799,7 +799,7 @@ fn api_key_env_bindings_for_provider(provider_id: &str) -> Vec<(String, String)>
 /// Make freshly saved credentials win over stale env vars inherited by this
 /// process (issue #453).
 ///
-/// `/login` persists API keys to the per-provider env file under the jcode
+/// Provider setup persists API keys to the per-provider env file under the jcode
 /// config dir, but credential resolution
 /// ([`crate::provider_catalog::load_api_key_from_env_or_config`]) prefers the
 /// process env var. A long-lived server that inherited a stale
@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn api_key_login_replaces_stale_process_env_with_saved_file_key() {
         // Issue #453: a server process that inherited a stale OPENAI_COMPAT_API_KEY
-        // must start using the key that /login just wrote to openai-compatible.env.
+        // must start using the key that provider setup just wrote to openai-compatible.env.
         let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
         crate::env::set_var("OPENAI_COMPAT_API_KEY", "stale-inherited-key");
         sandbox

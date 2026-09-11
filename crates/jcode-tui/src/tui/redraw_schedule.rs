@@ -35,7 +35,7 @@ fn idle_donut_active_with_policy(
     }
 
     // The onboarding welcome screen draws the same live donut, but it also
-    // shows a welcome/login card so `display_messages()` is not empty.  Keep the
+    // shows a welcome/provider card so `display_messages()` is not empty.  Keep the
     // animation loop running smoothly while that screen is up (even past the
     // deep-idle threshold) so the donut spins as an attention grab instead of
     // only repainting on input events.
@@ -67,7 +67,7 @@ fn idle_donut_active_with_policy(
 
 /// Whether the transcript contains any real conversation yet (a user prompt or
 /// an assistant/tool/reasoning reply). A fresh screen that only holds
-/// non-conversational notices (e.g. the "run /login when you're ready" system
+/// non-conversational notices (e.g. the "connect a provider when you're ready" system
 /// message left after onboarding is declined) is still "idle", so the decorative
 /// donut should keep spinning until the user actually starts chatting.
 fn has_started_conversation(state: &dyn TuiState) -> bool {
@@ -85,7 +85,7 @@ fn has_started_conversation(state: &dyn TuiState) -> bool {
 /// can differ, because layout can drop the animation after the fact:
 ///
 /// * `ui::draw_inner` returns early for full-screen overlays (`/resume` picker,
-///   help, changelog, model status, login/account pickers) long before the donut
+///   help, changelog, model status, provider pickers) long before the donut
 ///   chunk is laid out.
 /// * The donut reservation shrinks as the composer grows, and on a short
 ///   terminal it reaches zero rows.

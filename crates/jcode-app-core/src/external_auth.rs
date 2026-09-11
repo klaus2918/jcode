@@ -373,7 +373,7 @@ fn revoke_external_auth_review_candidate(candidate: &ExternalAuthReviewCandidate
 fn token_freshness_note(expires_at_ms: i64) -> String {
     let now_ms = chrono::Utc::now().timestamp_millis();
     if expires_at_ms <= now_ms {
-        " The access token is expired; jcode will refresh it on first use, or run /login if that fails.".to_string()
+        " The access token is expired; jcode will refresh it on first use, or refresh the credentials with `jcode auth doctor` if that fails.".to_string()
     } else {
         String::new()
     }
@@ -385,7 +385,7 @@ fn token_freshness_note(expires_at_ms: i64) -> String {
 // refreshing here would rotate (and thus burn) the source's refresh token and
 // then discard the rotated result, breaking both jcode and the original tool.
 // Expired tokens are still imported: they get refreshed lazily (and persisted)
-// at request time, or the user is prompted to /login.
+// at request time, or the user is prompted to refresh credentials.
 
 async fn validate_claude_import() -> Result<String> {
     let creds = auth::claude::load_credentials()?;

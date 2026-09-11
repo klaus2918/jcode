@@ -99,7 +99,7 @@ struct LegacyAnthropicAuth {
 const ACCOUNT_LABEL_PREFIX: &str = "claude";
 
 /// Set the runtime override for the active account label.
-/// This allows `/account switch <label>` to take effect without rewriting the file.
+/// This allows an active-account switch to take effect without rewriting the file.
 pub fn set_active_account_override(label: Option<String>) {
     crate::auth::account_store::set_runtime_active_override(ACCOUNT_LABEL_PREFIX, label);
 }
