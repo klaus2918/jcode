@@ -51,12 +51,16 @@ fail() { echo "REFUSED: $*" >&2; exit 1; }
 #
 # 有 git 凭据时必须带上 Authorization：匿名请求每 IP 每小时只有 60 次，
 # 发布验证很容易把它用尽（实测就是这样吃到 403），而鉴权后是 5000 次。
-API_TOKEN=""
-tmp_cred="$(mktemp)"
-trap 'rm -f "$tmp_cred"' EXIT
-# 取凭据；加 timeout 保护：无凭据且需交互时 credential fill 可能阻塞。
-if printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$tmp_cred" 2>/dev/null; then
-  API_TOKEN="$(sed -n 's/^password=//p' "$tmp_cred" | head -1)"
+# 令牌来源优先级：环境变量 → git 凭据（与 verify-release.sh 一致）。
+# 匿名请求每 IP 每小时只有 60 次，发布验证很容易把它用尽（实测就是这样吃到 403），
+# 鉴权后是 5000 次。credential fill 加 timeout 防阻塞。
+API_TOKEN="${JCODE_API_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+if [ -z "$API_TOKEN" ]; then
+  tmp_cred="$(mktemp)"
+  trap 'rm -f "$tmp_cred"' EXIT
+  if printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$tmp_cred" 2>/dev/null; then
+    API_TOKEN="$(sed -n 's/^password=//p' "$tmp_cred" | head -1)"
+  fi
 fi
 
 fetch_api() {

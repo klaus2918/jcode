@@ -24,12 +24,16 @@ cd "$(git rev-parse --show-toplevel)"
 
 fail() { echo "REFUSED: $*" >&2; exit 1; }
 
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
-# 取凭据；加 timeout 保护：无凭据且需交互时 credential fill 可能阻塞。
-printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$tmp" 2>/dev/null || true
-TOKEN="$(sed -n 's/^password=//p' "$tmp" | head -1)"
-[[ -n "$TOKEN" ]] || fail "git 中没有 github.com 的凭据，无法调用 API"
+# 令牌来源优先级：环境变量 → git 凭据（与 verify-release.sh 一致）。
+# credential fill 加 timeout 保护：无凭据且需交互时可能阻塞。
+TOKEN="${JCODE_API_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+if [ -z "$TOKEN" ]; then
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp"' EXIT
+  printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$tmp" 2>/dev/null || true
+  TOKEN="$(sed -n 's/^password=//p' "$tmp" | head -1)"
+fi
+[[ -n "$TOKEN" ]] || fail "未取到 GitHub 令牌（可设 GH_TOKEN 环境变量，或配置 git 凭据）"
 
 TAG="$TAG" REPO_SLUG="$REPO_SLUG" DRY_RUN="$DRY_RUN" GH_TOKEN_FOR_API="$TOKEN" \
 PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python3 - <<'PY'

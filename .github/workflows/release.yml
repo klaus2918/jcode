@@ -354,3 +354,15 @@ jobs:
           else
             echo "Release ${GITHUB_REF_NAME} is already public; leaving it public."
           fi
+
+      # fork: 发布后自检。重新下载已公开的产物、核对 SHA256SUMS 与实际内容，
+      # 捕捉“上传阶段损坏”这类在生成校验和时还看不出来的问题。
+      # 用 continue-on-error：自检失败不应把已公开的 release 变成红卡，
+      # 但它会在日志里留下明确信号（步骤失败 + 逐项输出的断言）。
+      - name: Verify the published release (self-check)
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/verify-release.sh "${GITHUB_REF_NAME}"

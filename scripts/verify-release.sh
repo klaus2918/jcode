@@ -27,12 +27,18 @@ TAG="${1:-}"
 
 cd "$(git rev-parse --show-toplevel)"
 
-# 有 git 凭据时带上 Authorization：匿名请求每 IP 每小时仅 60 次，核对很容易把它用尽。
-# 加 timeout 保护：无凭据且需交互的环境中 credential fill 可能阻塞。
-cred="$(mktemp)"
-trap 'rm -f "$cred"' EXIT
-printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$cred" 2>/dev/null || true
-JCODE_API_TOKEN="$(sed -n 's/^password=//p' "$cred" | head -1)"
+# 令牌来源优先级：环境变量 → git 凭据。
+#   - CI（如 GitHub Actions）用 GH_TOKEN / GITHUB_TOKEN，无需 git 凭据；
+#   - 本地开发机回退到 git credential fill（匿名请求每 IP 每小时仅 60 次，容易用尽）。
+# credential fill 加 timeout：无凭据且需交互的环境中可能阻塞。
+TOKEN="${JCODE_API_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+if [ -z "$TOKEN" ]; then
+  cred="$(mktemp)"
+  trap 'rm -f "$cred"' EXIT
+  printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$cred" 2>/dev/null || true
+  TOKEN="$(sed -n 's/^password=//p' "$cred" | head -1)"
+fi
+JCODE_API_TOKEN="$TOKEN" \
 JCODE_REPO="$REPO_SLUG" JCODE_TAG="$TAG" JCODE_API_TOKEN="$JCODE_API_TOKEN" \
 JCODE_SKIP_DOWNLOAD="$SKIP_DOWNLOAD" \
 PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python3 - <<'PY'
