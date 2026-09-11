@@ -325,6 +325,7 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
         }
         "opencode-go" => {
             push("deepseek-v4-flash");
+            push("deepseek-v4.1-flash");
             // push("minimax-m2.7");
             // push("kimi-k2.5");
             // push("glm-5");
