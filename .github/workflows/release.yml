@@ -86,14 +86,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          # fork: 仅有两个 HTTPS 形态的 git 依赖（agentgrep、mermaid-rs-renderer），
+          # 无需 DEPLOY_KEY / ssh-agent。
           submodules: recursive
           fetch-depth: 0
-
-      - name: Configure SSH for cargo git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -356,12 +352,14 @@ jobs:
           $configured = -not ($requiredValues | Where-Object { [string]::IsNullOrWhiteSpace($_) })
           "enabled=$($configured.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-          $signingRequired = $env:WINDOWS_SIGNING_REQUIRED -ne 'false'
-          if (-not $configured -and $signingRequired) {
-            throw 'Windows signing is required, but Azure Artifact Signing configuration is incomplete. See docs/WINDOWS.md.'
-          }
-          if (-not $configured) {
-            Write-Warning 'Publishing unsigned Windows assets because WINDOWS_SIGNING_REQUIRED=false. This override is not suitable for an official Windows release.'
+          # fork 策略：签名是可选增强，不是发布门槛。未配置 Azure Artifact
+          # Signing 时发布未签名二进制，代价是首次运行出现 SmartScreen 警告；
+          # 日后配置齐全则自动变成签名发布，无需再改 workflow。
+          if ($configured) {
+            Write-Host 'Windows signing is configured; Windows assets will be Authenticode-signed.'
+          } else {
+            Write-Warning 'Publishing unsigned Windows assets: Azure Artifact Signing is not configured for this repository. Windows SmartScreen will warn on first run. See docs/发布流程.md.'
+            "#### Windows assets are unsigned`n`nAzure Artifact Signing is not configured, so this release ships unsigned Windows binaries. Windows SmartScreen will warn on first run." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
 
       - name: Azure login with GitHub OIDC
@@ -524,33 +522,52 @@ jobs:
           path: artifacts
           pattern: jcode-*
 
-      - name: Validate complete platform asset set
+      - name: Validate required platform asset set
         shell: bash
         run: |
           set -euo pipefail
-          expected=(
+
+          # fork 策略：只把 Windows x86_64 当作必达平台（本机主用平台）。
+          # 其余平台 best-effort：缺失只告警并记入发行说明的 Platform availability，
+          # 不再把整个 release 永久卡在 draft。
+          required=(
+            artifacts/jcode-windows-x86_64/jcode-windows-x86_64.exe
+            artifacts/jcode-windows-x86_64/jcode-windows-x86_64.tar.gz
+          )
+
+          optional=(
             artifacts/jcode-linux-x86_64/jcode-linux-x86_64.tar.gz
             artifacts/jcode-linux-aarch64/jcode-linux-aarch64.tar.gz
             artifacts/jcode-macos-aarch64/jcode-macos-aarch64.tar.gz
             artifacts/jcode-macos-x86_64/jcode-macos-x86_64.tar.gz
-            artifacts/jcode-windows-x86_64/jcode-windows-x86_64.exe
-            artifacts/jcode-windows-x86_64/jcode-windows-x86_64.tar.gz
             artifacts/jcode-windows-aarch64/jcode-windows-aarch64.exe
             artifacts/jcode-windows-aarch64/jcode-windows-aarch64.tar.gz
             artifacts/jcode-freebsd-x86_64/jcode-freebsd-x86_64.tar.gz
           )
 
           missing=()
-          for asset in "${expected[@]}"; do
+          for asset in "${required[@]}"; do
             if [ ! -f "$asset" ]; then
               missing+=("$asset")
             fi
           done
           if [ "${#missing[@]}" -ne 0 ]; then
             printf 'Missing required release asset: %s\n' "${missing[@]}" >&2
-            echo "Keeping the release as a draft until every platform succeeds" >&2
+            echo "Keeping the release as a draft: the required Windows x86_64 asset is missing" >&2
             exit 1
           fi
+
+          skipped=()
+          for asset in "${optional[@]}"; do
+            if [ ! -f "$asset" ]; then
+              skipped+=("$asset")
+            fi
+          done
+          if [ "${#skipped[@]}" -ne 0 ]; then
+            printf '::warning::Optional platform asset unavailable in this release: %s\n' "${skipped[@]}"
+          fi
+
+          printf 'Required platform assets present: %s\n' "${#required[@]}"
 
       # Build jobs normally attach their own assets to the draft. Upload them
       # again here so a late per-platform upload failure cannot leave a built
@@ -711,18 +728,3 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --assets-dir artifacts \
             --aur
-
-      - name: Close issues included in the published release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          label='triage: fixed-pending-release'
-          repo="${GITHUB_REPOSITORY}"
-          gh issue list --label "$label" --state open --json number --jq '.[].number' | while read -r issue; do
-            [ -n "$issue" ] || continue
-            gh issue close "$issue" \
-              --comment "Released in [${GITHUB_REF_NAME}](https://github.com/${repo}/releases/tag/${GITHUB_REF_NAME}). Run \`jcode update\` to get it." \
-              --reason completed
-            gh issue edit "$issue" --remove-label "$label" || true
-          done

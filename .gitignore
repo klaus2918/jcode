@@ -28,3 +28,5 @@ target-check/
 target-msvc/
 .build-tools/
 .tmp-*/
+# 本地临时脚本/输出目录（含各 agent 的审计中间产物，不提交）
+/.jcode-tmp/

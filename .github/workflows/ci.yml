@@ -1,10 +1,11 @@
 name: CI
 
 on:
-  push:
-    branches: [main, master]
+  # fork: 上游在每次 push 都跑 9 个重型 job。本 fork 只在 PR 与手动触发时运行，
+  # 日常 push 的回归以本地 scripts/check_guardrails.sh 为准。
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -22,13 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          # fork: 仅有两个 HTTPS 形态的 git 依赖（agentgrep、mermaid-rs-renderer），
+          # 无需 DEPLOY_KEY / ssh-agent。
           submodules: recursive
-
-      - name: Configure SSH for cargo git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -119,13 +116,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          # fork: 仅有两个 HTTPS 形态的 git 依赖（agentgrep、mermaid-rs-renderer），
+          # 无需 DEPLOY_KEY / ssh-agent。
           submodules: recursive
-
-      - name: Configure SSH for cargo git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -344,13 +337,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          # fork: 仅有两个 HTTPS 形态的 git 依赖（agentgrep、mermaid-rs-renderer），
+          # 无需 DEPLOY_KEY / ssh-agent。
           submodules: recursive
-
-      - name: Configure SSH for cargo git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -423,14 +412,12 @@ jobs:
               -CargoArgs @('test', '--locked', '--target', 'x86_64-pc-windows-msvc', '--lib', $testName, '--', '--nocapture')
           }
 
-      - name: Run Windows hotkey and power tests
+      - name: Run Windows power tests
         shell: pwsh
         run: |
-          & ./scripts/invoke_cargo_with_timeout.ps1 `
-            -Name 'Windows setup-hints tests' `
-            -TimeoutSeconds 300 `
-            -CargoArgs @('test', '--locked', '--target', 'x86_64-pc-windows-msvc', '-p', 'jcode-setup-hints', '--lib', '--', '--nocapture')
-
+          # fork: 上游在此还会跑 `-p jcode-setup-hints` 的测试，但该 crate 已随
+          # macOS 菜单栏与全局热键功能一起被删除（863cc9b04），上游引用会让本
+          # job 直接失败，故移除。
           & ./scripts/invoke_cargo_with_timeout.ps1 `
             -Name 'Windows power-inhibit tests' `
             -TimeoutSeconds 900 `
@@ -558,13 +545,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          # fork: 仅有两个 HTTPS 形态的 git 依赖（agentgrep、mermaid-rs-renderer），
+          # 无需 DEPLOY_KEY / ssh-agent。
           submodules: recursive
-
-      - name: Configure SSH for cargo git dependencies
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
