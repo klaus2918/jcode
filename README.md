@@ -57,7 +57,7 @@
 
 ### 1.3 发布与安装
 
-- 发布走**本仓库自己的** tag 驱动流水线，Windows x86_64 为必达平台，其余 best-effort；
+- 发布走**本仓库自己的** tag 驱动流水线，**只发布 Windows x86_64**（唯一构建作业）；
   **产物未做 Authenticode 签名**（首次运行会有 SmartScreen 提示）。规范见 [发布流程](docs/发布流程.md)。
 - **不要用 upstream 的在线安装脚本安装本 fork 的产物**：`scripts/install.sh` / `install.ps1` 仍指向
   upstream 的仓库与 `jcode.sh` 元数据服务。请用本仓库的本地安装方式（见 [安装](#二安装)）。
@@ -122,16 +122,17 @@ jcode update --local C:\dist\jcode-windows-x86_64.exe
 
 ### 2.4 平台支持
 
-| 平台 | 状态 |
-|---|---|
-| **Windows** x86_64 | 必达平台（发布缺它则不上线） |
-| **Windows** aarch64 | best-effort |
-| **Linux** x86_64 / aarch64 | best-effort |
-| **macOS** Apple Silicon / Intel | best-effort |
-| **FreeBSD** x86_64 | best-effort |
+| 平台 | 从源码构建 | 发布二进制 |
+|---|---|---|
+| **Windows** x86_64 | 支持 | **唯一发布产物**（缺失则发布停留在 draft） |
+| **Windows** aarch64 | 支持 | 不发布；只有 `windows-smoke.yml` 冒烟构建 |
+| **Linux** x86_64 / aarch64 | 支持 | 不发布 |
+| **macOS** Apple Silicon / Intel | 支持 | 不发布 |
+| **FreeBSD** x86_64 | 支持 | 不发布 |
 
-best-effort 平台失败不阻塞发布，但会在 CI 日志与发行说明的 `Platform availability`
-段落中显式记录，不会静默丢失。
+本 fork 只发布 Windows x86_64：其他平台仍可从源码构建与运行，但不再产出发布资产，
+因此在 GitHub release 的 `Platform availability` 里会明写「仅发布 Windows x86_64」，
+避免被误读成构建失败。
 
 ### 2.5 卸载
 
