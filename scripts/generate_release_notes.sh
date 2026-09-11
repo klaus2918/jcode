@@ -39,7 +39,12 @@ repo_slug() {
 REPO="$(repo_slug)"
 
 # Determine the previous tag if not supplied: nearest ancestor tag first,
-# falling back to the next entry in version-sorted tag order.
+# falling back to the next entry in version-sorted tag order, and finally to the
+# newest existing tag.
+#
+# 最后那条回退是给“发布前预览”用的：TAG 尚未创建时（本地先跑一遍看正文），
+# 前两条都会失败，而旧版本会把下界当成“仓库开头”，列出全部历史提交
+# （实测 v0.65.1 预览曾输出 6542 行）。用一个合理下界代替空值。
 if [[ -z "$PREV_TAG" ]]; then
     if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
         PREV_TAG="$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)"
@@ -47,6 +52,10 @@ if [[ -z "$PREV_TAG" ]]; then
     if [[ -z "$PREV_TAG" ]]; then
         PREV_TAG="$(git tag -l 'v*' --sort=-v:refname \
             | grep -A1 -Fx "$TAG" | tail -n +2 | head -1 || true)"
+    fi
+    if [[ -z "$PREV_TAG" ]] && ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+        # TAG 尚不存在：以当前最新 tag 作为下界，供发布前预览
+        PREV_TAG="$(git tag -l 'v*' --sort=-v:refname | head -1 || true)"
     fi
 fi
 
