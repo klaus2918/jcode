@@ -6,16 +6,16 @@
 
 ## 一、`TuiState` 特质拆分
 
-**现状**：`pub trait TuiState`（`crates/jcode-tui/src/tui/mod.rs`）暴露 **114 个方法**；
-2 个实现者（`App`、测试用 `TestState`）；约 29 个文件、95 处使用，且绝大多数是 `&dyn TuiState`
-（50 个渲染函数签名接受 `app: &dyn TuiState`）。它是 `App` 上帝对象在展示层的对应物。
+**现状**（本 revision 实测）：`pub trait TuiState`（`crates/jcode-tui/src/tui/mod.rs`）暴露
+**117 个方法**；2 个实现者（`App`、测试用 `TestState`）；18 个文件、88 处使用 `dyn TuiState`，
+其中 65 处是渲染函数签名里的 `app: &dyn TuiState`。它是 `App` 上帝对象在展示层的对应物。
 
 ### 为什么朴素拆分收益有限
 
 1. `App` 无论如何都要实现整个表面——拆分不会减少它必须实现的东西，
    也不改变 crate 级编译耦合（该特质只是展示层数据访问）。收益是意图/可导航性，不是解耦。
 2. `&dyn TuiState` **不可组合**：Rust 没有稳定的 `&dyn (A + B)`，需要多个领域方法的消费者
-   必须接受超特质。实测约 28 个 `&dyn TuiState` 渲染模块中只有 **2** 个是多类别
+   必须接受超特质。实测 18 个使用 `dyn TuiState` 的文件里只有 **2** 个是多领域
    （`ui.rs`、`ui_viewport.rs`），其余各用单一领域——因此叶子模块的声明面确实能收窄，
    但由这 2 个中央渲染器驱动的头号上帝接口仍宽。
 
@@ -27,7 +27,7 @@
 trait TuiState:
     TuiTranscriptState + TuiInputState + TuiScrollState + TuiStreamStatusState
     + TuiProviderState + TuiSessionServerState + TuiWorkspaceState
-    + TuiDiagramPaneState + TuiDiffPaneState + TuiSidePanelState
+    + TuiDiffPaneState + TuiSidePanelState
     + TuiInlineState + TuiOverlayState + TuiCopySelectionState
     + TuiOnboardingState + TuiMiscState
 {}
@@ -37,7 +37,10 @@ trait TuiState:
 叶子渲染模块收窄到所需子特质。
 
 方法归类（按职责域）：会话记录/输入/滚动/流状态/Provider/会话-服务器/工作区/
-图窗格/差异窗格/侧栏/内联交互/覆盖层/复制选择/入职/杂项。
+差异窗格/侧栏/内联交互/覆盖层/复制选择/入职/杂项。
+
+（原方案里还有一个 `TuiDiagramPaneState`，随图窗格 `ui_diagram_pane.rs` 一起在
+feature-simplification 中被删除，不再需要。）
 
 ### 增量迁移顺序
 
@@ -56,15 +59,15 @@ ring/aws-lc-sys 构建脚本报 "Disk quota exceeded"）；结束时跑一次 `c
 ## 二、`jcode-tui` 测试不稳定的根因
 
 **现象**：`cargo test -p jcode-tui --lib` 每次运行失败 1–4 个测试，且失败集合每次不同；
-`--test-threads=1` 时全绿（2006/2006，16 个忽略）；单独运行任一失败测试都能过。
+`--test-threads=1` 时全绿；单独运行任一失败测试都能过。
 这是**进程全局状态上的并行竞争**，不是逻辑错误。
 
-**根因**：`create_test_app()`（及其兄弟 `create_named_provider_test_app`，
-位于 `crates/jcode-tui/src/tui/app/tests/support_failover/part_01.rs`）会调用
-`crate::tui::ui::clear_test_render_state_for_tests()`，清空**进程全局**渲染状态
-（闪烁帧历史、布局快照、状态区快照、复制目标、滚动位置）。
+**根因**：`create_test_app()`（以及兄弟构造函数 `create_named_provider_test_app`；定义分别在
+`crates/jcode-tui/src/tui/app/tests/support_failover/part_01.rs`、`ui_header.rs`、
+`remote_tests.rs`）会调用 `crate::tui::ui::clear_test_render_state_for_tests()`，清空
+**进程全局**渲染状态（闪烁帧历史、布局快照、状态区快照、复制目标、滚动位置）。
 渲染测试用 `render_state_test_lock()` 保护该状态，但 `create_test_app` **不加锁**就清空它，
-因此它约 810 个调用点中任何一个都能在断言中途重置并发运行的渲染测试状态。
+因此它约 620 个调用点中任何一个都能在断言中途重置并发运行的渲染测试状态。
 
 最常见的受害者是 `test_changelog_overlay_repeated_renders_are_stable`：记录到的闪烁事件会给
 后续渲染追加一行"⚠ 检测到闪烁"通知，使每个布局敏感断言偏移一行。
@@ -216,5 +219,5 @@ Markdown/事件源 → 图提取 → DiagramRegistry 更新 → RenderScheduler
 
 ## 五、相关缓存上限
 
-Mermaid 侧的内存与磁盘上限（渲染缓存 64、图像状态 12、解码源 8、活动图 128、
-磁盘 PNG 50 MiB / 3 天）见 [记忆系统](记忆系统.md) 的"回归预算与护栏"一节。
+Mermaid 侧的内存与磁盘上限（渲染缓存 512、图像状态 24、解码源 16、活动图 128、
+磁盘缓存 50 MiB / 3 天）见 [记忆系统](记忆系统.md) 的"回归预算与护栏"一节。

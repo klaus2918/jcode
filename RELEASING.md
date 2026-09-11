@@ -1,198 +1,72 @@
-# Releasing jcode
+# 发布（本 fork）
 
-jcode has two release paths: a fast local path for hotfixes, and CI for full releases.
+本仓库 `klaus2918/jcode` 是 `1jehuang/jcode` 的 fork。发布链路已按本 fork 的条件改造过，
+**完整规范以 [docs/发布流程.md](docs/发布流程.md) 为准**；本文只给差异速查与最短可操作路径。
 
-> **注（2026-09-12，本 fork）**：本文描述的是 **upstream** 的发布假设（开发机 `xps13`、
-> osxcross 交叉编译、本地 `quick-release.sh --fast-local` 快速路径、Azure 签名等），
-> **不适用于本仓库**。
->
-> 本仓库（`klaus2918/jcode`）的发布规范**以 [docs/发布流程.md](docs/发布流程.md) 为准**：
-> tag 驱动、构建全部在 CI、Windows x86_64 为必达平台、产物未做 Authenticode 签名、
-> 不支持在线自更新。两者冲突时以该文档为准。
->
-> 下文的本地快速路径（`quick-release.sh --fast-local` / `--prepare-fast`）在本 fork 中
-> **不使用**，原因见 `docs/发布流程.md` §6。
+## 一、与 upstream 的差异
 
-## Quick Release (local, ~2.5 minutes)
+| 维度 | upstream | 本 fork |
+|---|---|---|
+| 发布平台 | 7 个（Linux x86_64/aarch64、macOS aarch64/x86_64、Windows x86_64/aarch64、FreeBSD x86_64） | **仅 Windows x86_64** |
+| 触发方式 | 推送 `v*` tag | 同上（`.github/workflows/release.yml`，且**没有** `workflow_dispatch`，只能靠 tag 触发） |
+| 构建位置 | 本地 `scripts/quick-release.sh --fast-local`（Linux x86_64 主机）＋ CI 补其余平台 | 全部在 CI；本地只用 `--remote` 推 tag |
+| 代码签名 | Azure Artifact Signing 为必达步骤 | 本仓库未配置签名账号，签名步骤自动跳过；二进制未签名，首次运行会有 SmartScreen 警告 |
+| 包管理器 | 结束时更新 Homebrew 与 AUR（`scripts/update_packages.sh`） | 相关步骤已从 workflow 移除（它们依赖 Linux/macOS 资产）；脚本仍在仓库里，但 CI 不再调用 |
+| 跨平台工具链 | osxcross 交叉编译 macOS | 不使用（无 macOS 产物） |
+| 在线自更新 | 支持在线自更新 | 已移除，只支持 `jcode update --local <包>` 与 git 源码重建 |
 
-For hotfixes and urgent updates. Builds Linux + macOS locally and stages them on a draft release while CI completes the remaining platforms.
-
-```bash
-scripts/quick-release.sh v0.5.5                # Build + tag + release
-scripts/quick-release.sh v0.5.5 "Fix bug"      # With custom title
-scripts/quick-release.sh --dry-run v0.5.5       # Build only, don't publish
-```
-
-### How it works
-
-1. Builds Linux x86_64 natively and macOS aarch64 via osxcross **in parallel**
-2. Verifies both binaries (ELF and Mach-O checks)
-3. Creates a git tag and pushes it (this also triggers CI for the Windows build and signing job)
-4. Uploads both binaries to a draft GitHub Release
-5. CI publishes every successfully built platform independently and lists unavailable targets in the release notes
-
-### Prerequisites
-
-Already set up on the dev laptop (xps13):
-
-- **osxcross** at `~/.osxcross` with macOS 14.5 SDK (darwin triple: `aarch64-apple-darwin23.5`)
-- **rustup** with `aarch64-apple-darwin` target installed
-- **`~/.cargo/config.toml`** has the osxcross linker configured
-- **`gh` CLI** authenticated with GitHub
-
-### Timeline
-
-```
-0s     Start parallel builds (Linux native + macOS cross-compile)
-~90s   Linux build finishes
-~150s  macOS build finishes
-~153s  Linux + macOS binaries attached to the draft release
-~16m   CI finishes platform jobs and checksums
-         ✅ Every successful platform becomes public independently
-```
-
-## CI Release (automated, ~11 min Linux+macOS, ~16 min Windows)
-
-Triggered automatically when a `v*` tag is pushed to GitHub.
-
-### Workflow: `.github/workflows/release.yml`
-
-```
-Tag push (v*)
-    │
-    ├─► create-release
-    │     └─► Create or update a hidden draft release
-    │
-    ├─► build-linux-macos (parallel)
-    │     ├─► Linux x86_64   (ubuntu-latest)     ~8 min
-    │     └─► macOS aarch64  (macos-latest)       ~11 min
-    │
-    ├─► build-windows (parallel)
-    │     ├─► Windows x86_64 (windows-latest)     ~16 min
-    │     └─► Windows ARM64 (windows-11-arm)      ~16 min
-    │
-    ├─► publish-windows (after both Windows builds)
-    │     ├─► Sign x86_64 + ARM64 with Azure Artifact Signing
-    │     ├─► Verify Authenticode signatures
-    │     └─► Package and upload final Windows assets
-    │
-    └─► release (after platform jobs finish)
-          ├─► Collect every successful architecture independently
-          ├─► Keep failed architectures unavailable without blocking others
-          ├─► Generate and upload SHA256SUMS (scripts/generate_checksums.sh)
-          ├─► Publish the available release assets
-          ├─► Update Homebrew formula (scripts/update_packages.sh --homebrew)
-          └─► Update AUR package (scripts/update_packages.sh --aur)
-```
-
-Key design decisions:
-- **Every platform and architecture is independent.** A failure remains visible in CI and release notes but cannot suppress another target's successful asset.
-- **At least one platform asset must succeed.** If every build fails, the release remains a draft.
-- **Windows executables must be signed before public upload.** Signing is required for Windows assets. `WINDOWS_SIGNING_REQUIRED=false` remains an explicit emergency override and is not suitable for an official Windows build.
-- **Checksums describe exactly the assets published in that release.** Late or failed optional platforms are omitted instead of blocking unrelated platforms.
-- **Release builds use the `release-lto` profile** (`opt-level=1` + thin LTO, `incremental = false`). This is the stable distribution profile shared with local installs (`scripts/install_release.sh`, `scripts/update_local_install.ps1`) and the portable Linux build (`scripts/build_linux_compat.sh`). CI passes `--profile release-lto` to every cargo build (Linux/macOS, Windows, FreeBSD).
-- **SHA256SUMS is generated by `scripts/generate_checksums.sh`** (recursive over the downloaded artifacts), so the file always matches exactly what the release job uploaded.
-- **Shallow clones** (`fetch-depth: 1`) to minimize checkout time.
-- **`CARGO_INCREMENTAL=0`** for CI (incremental adds overhead on clean CI builds).
-- **sccache + rust-cache** for dependency caching across runs.
-- **mold linker** on Linux for faster linking.
-
-### Package manager updates
-
-Homebrew and AUR updates are handled by a single script, `scripts/update_packages.sh`, shared between CI and local maintainers. CI invokes it from the `release` job with the downloaded artifacts and the deploy-key secrets; local runs omit `--assets-dir` and the script downloads the release tarballs itself:
+## 二、最短发布路径
 
 ```bash
-scripts/update_packages.sh --version v0.5.5              # local: both taps
-scripts/update_packages.sh --version v0.5.5 --homebrew   # Homebrew only
-scripts/update_packages.sh --version v0.5.5 --aur        # AUR only
+# 0. 工作区干净且与远端同步
+git status --short
+git pull --ff-only origin master
+
+# 1. 只提交版本元数据（Cargo.toml / Cargo.lock / changelog/ 三类文件）
+git add Cargo.toml Cargo.lock changelog/
+git commit -m "release: vX.Y.Z"
+git push origin master
+
+# 2. 打 tag 并推送，触发 CI 发布（Windows 下用 Git Bash 执行）
+bash scripts/quick-release.sh --remote vX.Y.Z
 ```
 
-- **Homebrew**: Updates `Formula/jcode.rb` in `1jehuang/homebrew-jcode` with new SHA256 hashes
-- **AUR**: Updates `PKGBUILD` and `.SRCINFO` in the `jcode-bin` AUR repo
+- 版本唯一真源是 `Cargo.toml` 的 `version`，tag 必须与其一致。
+- 必须同时准备 `changelog/vX.Y.Z.json` 与 `changelog/index.json` 里的对应条目，
+  否则发行说明会退化成一份提交清单。
+- CI 先建 draft release，只有 Windows 双资产（`.exe` + `.tar.gz`）齐全才转为 public。
 
-Both are triggered conditionally by the final `release` job. Homebrew updates only when all four Linux/macOS formula assets exist; AUR updates whenever Linux x86_64 exists. CI injects `HOMEBREW_DEPLOY_KEY` / `AUR_SSH_KEY` via env and passes `--assets-dir artifacts` (SHA-256 sums computed from the already-downloaded build artifacts, no extra network fetch).
+## 三、发布后核对
 
-### Windows signing prerequisites
+- [ ] release 已由 draft 变为 public 并标记 latest；
+- [ ] 资产恰好为 `jcode-windows-x86_64.exe`、`jcode-windows-x86_64.tar.gz` 与 `SHA256SUMS`；
+- [ ] 下载 `.exe` 执行 `--version`，输出与 tag 一致。
 
-The full one-time setup is documented in [docs/Windows平台.md](docs/Windows平台.md#enable-authenticode-signing). The release repository needs:
+## 四、不再适用的 upstream 做法
 
-- Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
-- Variables: `WINDOWS_SIGNING_ENDPOINT`, `WINDOWS_SIGNING_ACCOUNT`, `WINDOWS_SIGNING_CERTIFICATE_PROFILE`
-- Optional emergency override only: `WINDOWS_SIGNING_REQUIRED=false`
+以下内容来自 upstream 的发布流程，在本仓库**不要照做**：
 
-Before announcing Defender or SmartScreen remediation, download both Windows executables from the public release and confirm `Get-AuthenticodeSignature` reports `Valid`.
+- `scripts/quick-release.sh --fast-local` / `--prepare-fast`：要求 Linux x86_64 主机，
+  与本 fork“构建只在 CI”的取向冲突（原因见 [docs/发布流程.md](docs/发布流程.md) §6）。
+- osxcross 交叉编译（`~/.osxcross`、`aarch64-apple-darwin`、`~/.cargo/config.toml` 的
+  Darwin linker 配置）：本 fork 不含 macOS 产物。
+- Homebrew / AUR 发布：workflow 已移除对应步骤。
+- upstream 的在线安装脚本：`scripts/install.sh` 与 `scripts/install.ps1` 仍指向 upstream 仓库与
+  其元数据服务，本 fork 的产物请用 `jcode update --local <包>`（或
+  `scripts/update_local_install.ps1`）安装。
 
-## Which to use
+## 五、仓库内相关文件
 
-| Scenario | Method | Time to Linux+macOS | Time to Windows |
-|----------|--------|-------------------|-----------------|
-| Hotfix / urgent bug | `scripts/quick-release.sh` | ~16 min | ~16 min when Windows succeeds |
-| Regular release | Push `v*` tag | ~11 min | ~16 min |
-| Need Homebrew/AUR | Push `v*` tag | ~11 min | ~16 min |
+| 文件 | 作用 |
+|---|---|
+| `.github/workflows/release.yml` | 唯一的正式发布流水线（Windows x86_64） |
+| `scripts/quick-release.sh` | 本地入口；本 fork 只用 `--remote` |
+| `scripts/retrigger-release.sh` | tag 事件被丢弃后重新触发（先查前提再删建 tag） |
+| `scripts/delete-draft-release.sh` | 清理异常中止留下的草稿 release |
+| `scripts/generate_release_notes.sh` | 生成发行说明（CI 与本地共用） |
+| `scripts/generate_checksums.sh` | 生成 `SHA256SUMS` |
+| `changelog/` | 版本发行说明数据与 schema（见 `changelog/README.md`） |
+| `scripts/update_packages.sh` | Homebrew / AUR 更新脚本；本 fork 的 CI 已不再调用 |
 
-The quick-release script reduces local build latency, but it deliberately leaves the release as a draft. The tag-triggered workflow publishes every successful architecture after checksum generation. Package managers update only when their own required assets exist.
-
-## Cross-Compilation Setup
-
-macOS binaries are cross-compiled from Linux using [osxcross](https://github.com/tpoechtrager/osxcross).
-
-### Current configuration
-
-| Component | Value |
-|-----------|-------|
-| SDK | macOS 14.5 |
-| SDK source | [joseluisq/macosx-sdks](https://github.com/joseluisq/macosx-sdks) |
-| Install location | `~/.osxcross/` |
-| Darwin triple | `aarch64-apple-darwin23.5` |
-| Linker | `aarch64-apple-darwin23.5-clang` |
-
-### Cargo config (`~/.cargo/config.toml`)
-
-```toml
-[target.aarch64-apple-darwin]
-linker = "aarch64-apple-darwin23.5-clang"
-
-[env]
-CC_aarch64_apple_darwin = "aarch64-apple-darwin23.5-clang"
-CXX_aarch64_apple_darwin = "aarch64-apple-darwin23.5-clang++"
-```
-
-### Rebuilding osxcross from scratch
-
-```bash
-git clone https://github.com/tpoechtrager/osxcross /tmp/osxcross
-curl -L -o /tmp/osxcross/tarballs/MacOSX14.5.sdk.tar.xz \
-  https://github.com/joseluisq/macosx-sdks/releases/download/14.5/MacOSX14.5.sdk.tar.xz
-cd /tmp/osxcross && UNATTENDED=1 TARGET_DIR=~/.osxcross ./build.sh
-rustup target add aarch64-apple-darwin
-```
-
-Build takes ~5 minutes. Requires `clang`, `cmake`, `libxml2` (all available via pacman on Arch).
-
-### Why osxcross (not zigbuild)
-
-`cargo-zigbuild` can cross-compile pure Rust code to macOS, but jcode depends on crates that link against macOS system frameworks:
-- `arboard` (clipboard) - links `AppKit`, `Foundation`
-- `native-tls` / `security-framework` - links `Security`, `SystemConfiguration`
-- `objc2` - links Objective-C runtime
-
-These require actual macOS SDK headers and framework stubs, which osxcross provides.
-
-## Build Performance
-
-### Current timing (laptop, 8-core Intel Ultra 7 256V)
-
-| Build | Clean | Cached deps |
-|-------|-------|-------------|
-| Linux x86_64 (native) | ~90s | ~90s |
-| macOS aarch64 (cross) | ~3 min | ~2.5 min |
-| Both in parallel | ~3 min | ~2.5 min |
-
-The bottleneck is compiling jcode itself (120k lines of Rust). Dependencies are cached and don't need recompilation. The `build.rs` timestamp causes a full recompile of the main crate on every build.
-
-### Why not faster
-
-- `opt-level = 1`, `codegen-units = 256`, `incremental = true` are already set in `[profile.release]`
-- 8 cores is the hardware limit
-- Splitting into workspace crates would allow partial recompilation (~1 min for small changes)
-- A 20+ core machine on LAN (not Tailscale) would cut build time to ~40-50s
+上游版本的 `RELEASING.md`（英文、约 198 行，含 osxcross 与包管理器章节）已随本文件重写删除；
+需要查阅时用 git 历史。

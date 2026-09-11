@@ -5,8 +5,9 @@
 ## 一、颜色与调色板
 
 jcode TUI 渲染的每种颜色都可配置，且配色质量可被客观度量（而不是靠肉眼）。
-**内置默认调色板是手工调校并冻结的**（`crates/jcode-tui-style/src/palette.rs` 的
-`default_palette_is_frozen` 持有每个值的冗余副本，任何改动都会让测试失败）。
+**内置默认调色板是手工调校并冻结的**：`crates/jcode-tui-style/src/palette.rs` 的
+`every_role_keeps_its_hand_tuned_default` 与 `default_palette_matches_historical_values`
+持有每个角色的期望值副本，改默认值会让测试失败。
 默认值和谐分偏低**不是**改它的理由。
 
 ### 配置
@@ -21,16 +22,20 @@ error = "#ff6464"
 
 | 命令 | 效果 |
 |---|---|
-| `/colors` | 列出每个可配置角色 |
+| `/colors`（或 `/colors list`） | 列出每个可配置角色及其当前值 |
 | `/colors <role> <#rrggbb>` | 设置一个角色（写入配置，立即生效） |
-| `/colors generate <#rrggbb>` | 从一个种子派生整套和谐调色板 |
-| `/colors harmony` | 打分并列出具体违规项 |
-| `/colors export` | 把调色板打印为配置 TOML |
 | `/colors reset [role]` | 重置某个角色或全部 |
+
+`/colors generate`、`/colors harmony`、`/colors export` 三个子命令已随
+feature-simplification（S-3，2026-08-16）移除，TUI 不再暴露入口；打分与生成能力仍在
+`jcode-tui-style` 库里供程序调用（`jcode_tui_style::analyze_harmony`、
+`jcode_tui_style::harmony::generate_from_seed`），目前的使用者是该 crate 的测试与示例
+`crates/jcode-tui-style/examples/light_bench.rs`。
 
 ### 替换点：渲染后的帧缓冲
 
-TUI 有约 22 个命名语义角色，加上散布各处的约 250 个临时 `rgb(...)` 字面量。
+TUI 有 22 个命名语义角色（`ALL_ROLES`），加上散布各处的 222 个不同 `rgb(...)` 字面量
+（`palette_literals.rs` 实测值）。
 逐个调用点改会永久脆弱，因此替换发生在颜色到达终端的唯一必经点——帧缓冲：
 
 ```
@@ -54,38 +59,49 @@ TUI 有约 22 个命名语义角色，加上散布各处的约 250 个临时 `rg
 ### 覆盖完整性由测试保证
 
 - `palette_literals.rs` 记录 TUI crates 渲染的每个不同 `rgb(...)` 字面量（222 个），
-  测试要求**全部**能从某个角色可达（无人认领 = 用户改不了的颜色）。
-- 第二个测试要求 22 个角色每个至少认领一个真实字面量（不留死重角色），
-  且没有角色认领超过一半（保证族半径仍能区分角色）。当前分布 2~28 个。
-- ratatui 命名颜色单独覆盖（它们不带可匹配的 RGB）：测试枚举实际用到的每个命名颜色并要求映射到角色；
-  `Color::Reset` 刻意从不替换（它是终端自身背景透出的方式）。
+  测试 `most_tui_literals_are_reachable_from_some_role` 要求**全部**能从某个角色可达
+  （无人认领 = 用户改不了的颜色），阈值就是 100% 而不是某个宽松比例。
+- `no_single_role_dominates_the_literal_space` 要求 22 个角色每个至少认领一个真实字面量
+  （不留死重角色），且没有角色认领超过一半（保证族半径仍能区分角色）。
+- ratatui 命名颜色单独覆盖（它们不带可匹配的 RGB）：`every_named_color_used_by_the_tui_is_configurable`
+  枚举实际用到的每个命名颜色并要求映射到角色；`reset_is_never_substituted` 固定 `Color::Reset`
+  刻意从不替换（它是终端自身背景透出的方式）。
 - 引入新色调部件时要重新生成 `palette_literals.rs`。
 
 ### 和谐度量
 
-`/colors harmony` 用 Oklab 感知均匀空间给调色板打 0–100 分：
+和谐度由 `jcode-tui-style` 的 `harmony::analyze(palette, background)` 在 Oklab 感知均匀
+空间里算出 0–100 分（**TUI 已无 `/colors harmony` 入口**）。共 7 条准则：
 
 | 标准 | 权重 | 关键 | 度量 |
 |---|---:|:--:|---|
-| 可读性 | 3.0 | 是 | 前景角色相对真实终端背景的亮度对比 |
-| 区分度 | 2.0 | 是 | 绝不能混淆的角色对之间的感知距离 |
-| 色相和谐 | 2.0 | 否 | 对公认配色方案（类似/互补/三角/四角/分裂互补）的拟合 |
-| 彩度连贯 | 1.5 | 是 | 饱和度一致性与舒适阅读带 |
-| 色盲安全 | 1.0 | 否 | 模拟红绿色盲与红色盲下重新度量的区分度 |
+| 可读性 | 3.0 | 是 | APCA 式亮度对比，逐前景角色对真实终端背景（背景亮暗不同则结论不同） |
+| 区分度 | 2.0 | 是 | `MUST_DISTINGUISH` 列出的角色对（success/error、user/ai 等）的最小 Oklab 距离 |
+| 视觉多样性 | 2.0 | 是 | 屏幕主导区域是否是一团低饱和的“灰糊”（色度带不出信息） |
+| 色相和谐 | 1.5 | 否 | 对公认配色方案（单色/类似/互补/三角/四角/分裂互补）的最佳拟合，45° 均值偏差记 0 分 |
+| 彩度连贯 | 1.5 | 是 | 饱和度离散度与舒适阅读带（相对该调色板自身饱和度水平判定） |
+| 相邻分离 | 1.5 | 否 | 渲染时真正相邻出现的角色对之间的感知距离（补充手列清单的区分度） |
+| 色盲安全 | 1.0 | 否 | 在红绿色盲（deuteranopia / protanopia）模拟下重测区分度 |
 
-两条关键设计：
+调色板里带色相的角色不足 2 个时，色相和谐直接记满分 100（退化场景不作惩罚）。
 
-- **只有关键标准能拉低总分**：总分 = 加权平均与**最差关键标准**的混合。
-  不可读文本是缺陷；非常规色相是风格选择（Solarized 刻意打破色相教科书规则仍极受欢迎）。
+两条关键设计（`harmony.rs` 里可逐行核对）：
+
+- **只有关键标准能拉低总分**：`总分 = 0.75 × 加权平均 + 0.25 × 最差关键标准`。
+  可读性、区分度、视觉多样性、彩度连贯是关键；色相和谐、相邻分离、色盲安全只通过加权平均影响
+  总分。不可读文本是缺陷；非常规色相是风格选择（Solarized 刻意打破色相教科书规则仍极受欢迎）。
 - **标准内聚合是 `0.4 * 均值 + 0.6 * 最差`**：一个坏角色不能躲在二十个好角色后面。
 
-**校准**：分数必须与人眼判断一致，因此用被数千人选择的真实调色板钉住排序——
-Dracula 76、Solarized Dark 70、Nord 69、Gruvbox Dark 67、对抗样本 Neon chaos 56 /
-Unreadable mud 38。排序被颠倒即说明度量已偏离人的"和谐"认知。
+**校准**：用被数千人选择的真实调色板钉住排序，断言写在 `harmony.rs` 的测试里——
+`respected_community_palettes_all_score_well` 要求 Solarized Dark、Gruvbox Dark、Dracula、
+Nord 在暗色背景下全部 ≥60 分；`hostile_palettes_score_far_below_good_ones` 要求
+"全灰"与"霓虹混乱"两个对抗样本至少比最差的好调色板低 10 分；
+`an_unreadable_palette_is_ranked_below_a_merely_garish_one` 要求不可读的排在刺眼的之后。
+测试钉住的是**排序与间距**，不钉具体分数（准则调整后分数会变，排序不该变）。
 
 ### 生成调色板
 
-`/colors generate <#rrggbb>` 从一个种子派生整套调色板：
+`generate_from_seed(seed, background)` 从一个种子派生整套调色板（库 API，无 TUI 入口）：
 
 - 角色按**分裂互补**布局放在种子的色相环上；
 - 彩度拉入舒适阅读带（霓虹种子也能产生可用结果）；
@@ -97,7 +113,9 @@ Unreadable mud 38。排序被颠倒即说明度量已偏离人的"和谐"认知�
   贪心成对修复会循环），且候选被约束保持对比度、彩度与传统色相。
 
 诚实的限制：在可读亮度带与"红=错误"色相预算内，琥珀警告与红色错误在红色盲下
-无法被推到目标区分度以上。测试要求每个种子（含纯红、纯灰、近黑）在亮色与暗色背景上至少 70 分。
+无法被推到目标区分度以上。测试 `generated_palettes_score_well_from_any_seed` 要求 7 个种子
+（jcode 蓝、纯红、纯绿、近黑、近白、纯灰、品红）在亮色与暗色背景上**都**≥74 分；
+`generated_palettes_beat_hand_made_classics` 还要求生成结果不低于四个手调经典中的最高分。
 
 ### 添加角色
 
@@ -108,7 +126,8 @@ Unreadable mud 38。排序被颠倒即说明度量已偏离人的"和谐"认知�
    （不要加入好调色板里本就相似的组合，如 `dim`/`tool`）；
 4. 在 `theme.rs` 加访问器并在调用点使用。
 
-`ALL_ROLES` 驱动 `/colors` 列表、补全、导出与和谐分析，新角色自动被覆盖。
+`ALL_ROLES` 驱动 `/colors` 列表与补全，同时也是字面量覆盖测试与和谐分析的遍历来源，
+因此新角色会自动被这些检查覆盖。
 
 ## 二、终端能力与适配
 

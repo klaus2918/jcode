@@ -14,15 +14,18 @@ Jcode 把 Windows 作为一等平台支持。Windows 实现使用原生命名管
 
 | 领域 | 状态 |
 |---|---|
-| Windows 11 x64 | 已支持并手动验证 |
-| Windows 11 ARM64 | 发布构建与自动化安装检查 |
+| Windows 11 x64 | **本 fork 唯一发布平台**，已在 CI 构建、签名（可选）与安装验证 |
+| Windows 11 ARM64 | 仅 `windows-smoke.yml` 编译并跑 `--version` 冒烟（`--no-default-features`），**不发布资产** |
 | PowerShell 安装器 | 已在 Windows CI 测试 |
 | 原生 IPC 与进程生命周期 | 由定向和端到端 Windows 测试覆盖 |
-| `jcode update` | 支持，带 SHA-256 校验 |
-| 发布资产 | x64 和 ARM64 `.exe` 与 `.tar.gz` 资产 |
+| `jcode update` | `--local <包>` 离线安装（版本号取自包内二进制）；不带 `--local` 时从 git 源码 `pull + cargo build --release` 重建。**没有在线自更新** |
+| 发布资产 | 仅 `jcode-windows-x86_64.exe` 与 `jcode-windows-x86_64.tar.gz`，外加 `SHA256SUMS`（见 [发布流程](发布流程.md)） |
 | Authenticode 签名 | **本 fork 未启用**：无 Azure Artifact Signing 配置，产物未签名（见文首注） |
 
-安装器要求 PowerShell 5.1 或更高版本。x64 构建是 Intel 和 AMD Windows 电脑的默认选择。在 ARM64 Windows 上自动选择 ARM64 构建。
+安装器要求 PowerShell 5.1 或更高版本。x64 构建是 Intel 和 AMD Windows 电脑的默认选择。
+安装器脚本仍保留 ARM64 分支（`scripts/install.ps1`），但**本 fork 不发布 ARM64 资产**，
+因此在 ARM64 Windows 上走在线/资产安装会以可操作的错误结束；请改用 x64 资产
+（在 Windows 11 ARM64 上通过 x64 仿真运行），或按 `-BuildFromSource` 自行源码构建。
 
 ## 安装
 
@@ -110,7 +113,8 @@ Get-Command jcode
 Get-FileHash (Get-Command jcode).Source -Algorithm SHA256
 ```
 
-把哈希与匹配 [GitHub 发布](https://github.com/1jehuang/jcode/releases/latest) 上的 `SHA256SUMS` 对比。
+把哈希与 release（本 fork 为 [klaus2918/jcode releases](https://github.com/klaus2918/jcode/releases)，上游为 [1jehuang/jcode releases](https://github.com/1jehuang/jcode/releases)）上的 `SHA256SUMS` 对比。
+注意 `scripts/install.sh` / `install.ps1` 仍指向 upstream 仓库，本 fork 的产物请用本地包安装（见文首注）。
 
 启用 Authenticode 签名后，以下命令必须报告 `Valid`：
 
@@ -214,9 +218,10 @@ Windows 设置被刻意设计为避免不必要的行为可疑：
 
 - [ ] Windows x64 CI 构建和定向测试通过。
 - [ ] Windows 生命周期端到端测试通过。
-- [ ] x64 和 ARM64 安装器验证通过。
-- [ ] 两个 `.exe` 文件都有有效、带时间戳的 Authenticode 签名。
-- [ ] `SHA256SUMS` 包含两个 Windows 可执行文件和归档。
+- [ ] x64 安装器验证通过（`windows-smoke.yml` 的 ARM64 冒烟可选，且不发布资产）。
+- [ ] 若已配置 Azure Artifact Signing：`.exe` 带有效、带时间戳的 Authenticode 签名；未配置时确认
+      CI step summary 已写明未签名（签名在本 fork 是可选项，不是必达项）。
+- [ ] `SHA256SUMS` 覆盖当次发布的两个 Windows 资产（`.exe` 与 `.tar.gz`）。
 - [ ] 干净的 Windows 11 机器能成功安装、启动、更新和卸载。
 - [ ] Defender 杀毒软件对签名发布不报告命名检测。
 - [ ] SmartScreen 识别预期发布者。任何低声誉警告与恶意软件检测分开跟踪。
@@ -229,7 +234,8 @@ Windows 由以下覆盖：
 
 - `.github/workflows/ci.yml`：发布构建、测试编译、定向平台测试、运行时冒烟测试、生命周期端到端测试、安装器验证和 PowerShell 语法检查。
 - `.github/workflows/windows-smoke.yml`：可手动触发的 x64 和 ARM64 冒烟验证。
-- `.github/workflows/release.yml`：x64 和 ARM64 构建、Windows 发布所需的托管签名、签名验证、打包和校验和。每个平台和架构独立发布，因此 Windows 失败不会阻塞任何成功的 Unix 资产。
+- `.github/workflows/release.yml`：**仅 Windows x86_64** 一条链路（构建 → 可选签名 → 校验和 → 发布），
+  没有 ARM64 作业；只发布 Windows x86_64 资产，缺资产则发布停留在 draft（详见 [发布流程](发布流程.md)）。
 
 ## 架构说明
 
