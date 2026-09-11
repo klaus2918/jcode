@@ -54,7 +54,8 @@ fail() { echo "REFUSED: $*" >&2; exit 1; }
 API_TOKEN=""
 tmp_cred="$(mktemp)"
 trap 'rm -f "$tmp_cred"' EXIT
-if printf 'protocol=https\nhost=github.com\n\n' | git credential fill > "$tmp_cred" 2>/dev/null; then
+# 取凭据；加 timeout 保护：无凭据且需交互时 credential fill 可能阻塞。
+if printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$tmp_cred" 2>/dev/null; then
   API_TOKEN="$(sed -n 's/^password=//p' "$tmp_cred" | head -1)"
 fi
 

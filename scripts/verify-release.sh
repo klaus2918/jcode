@@ -13,7 +13,14 @@
 # 用法：
 #   scripts/verify-release.sh                # 核对 latest
 #   scripts/verify-release.sh v0.65.0        # 核对指定 tag
+#   scripts/verify-release.sh --skip-download v0.65.0   # 跳过大文件（只看元数据与发行说明）
 set -euo pipefail
+
+SKIP_DOWNLOAD=0
+if [[ "${1:-}" == "--skip-download" ]]; then
+  SKIP_DOWNLOAD=1
+  shift
+fi
 
 REPO_SLUG="${GITHUB_REPOSITORY:-klaus2918/jcode}"
 TAG="${1:-}"
@@ -21,11 +28,13 @@ TAG="${1:-}"
 cd "$(git rev-parse --show-toplevel)"
 
 # 有 git 凭据时带上 Authorization：匿名请求每 IP 每小时仅 60 次，核对很容易把它用尽。
+# 加 timeout 保护：无凭据且需交互的环境中 credential fill 可能阻塞。
 cred="$(mktemp)"
 trap 'rm -f "$cred"' EXIT
-printf 'protocol=https\nhost=github.com\n\n' | git credential fill > "$cred" 2>/dev/null || true
+printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$cred" 2>/dev/null || true
 JCODE_API_TOKEN="$(sed -n 's/^password=//p' "$cred" | head -1)"
 JCODE_REPO="$REPO_SLUG" JCODE_TAG="$TAG" JCODE_API_TOKEN="$JCODE_API_TOKEN" \
+JCODE_SKIP_DOWNLOAD="$SKIP_DOWNLOAD" \
 PYTHONUTF8=1 PYTHONIOENCODING=utf-8 python3 - <<'PY'
 import hashlib
 import json
@@ -95,16 +104,26 @@ if set(names) != set(expected):
     print(f"FAILURES: {len(failures)}")
     sys.exit(1)
 
-# --- 下载并校验哈希 ---
+# --- 下载并校验哈希（--skip-download 时跳过）---
+if os.environ.get("JCODE_SKIP_DOWNLOAD") == "1":
+    print("\n[SKIP] --skip-download：跳过资产下载、哈希、运行与解包检查")
+    print("       （元数据与发行说明的检查已完成）")
+    print(f"\nFAILURES: {len(failures)}")
+    sys.exit(1 if failures else 0)
+
 work = pathlib.Path(tempfile.mkdtemp(prefix="jcode-verify-"))
 print(f"\n下载目录：{work}")
+print("  说明：exe 约 86MB、tar.gz 约 30MB，在慢链路上可能需要数分钟；每件下载完会立即输出一行。")
+print("  只要看到下一行的「已下载」就不会是卡死。若只想看元数据与说明，用 --skip-download。")
 downloaded = {}
 for name in expected:
+    size = assets[name].get("size") or 0
+    print(f"  下载中 {name}（{size / 1048576:.1f} MB）...", flush=True)
     data = get(assets[name]["browser_download_url"])
     path = work / name
     path.write_bytes(data)
     downloaded[name] = path
-    print(f"  已下载 {name}：{len(data)} bytes")
+    print(f"  已下载 {name}：{len(data)} bytes", flush=True)
 
 sums = {}
 for line in downloaded["SHA256SUMS"].read_text(encoding="utf-8").splitlines():

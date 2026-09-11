@@ -26,7 +26,8 @@ fail() { echo "REFUSED: $*" >&2; exit 1; }
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-printf 'protocol=https\nhost=github.com\n\n' | git credential fill > "$tmp" 2>/dev/null || true
+# 取凭据；加 timeout 保护：无凭据且需交互时 credential fill 可能阻塞。
+printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$tmp" 2>/dev/null || true
 TOKEN="$(sed -n 's/^password=//p' "$tmp" | head -1)"
 [[ -n "$TOKEN" ]] || fail "git 中没有 github.com 的凭据，无法调用 API"
 
