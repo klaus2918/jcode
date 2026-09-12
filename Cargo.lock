@@ -2025,9 +2025,6 @@ dependencies = [
 [[package]]
 name = "jcode-command-risk"
 version = "0.1.0"
-dependencies = [
- "tempfile",
-]
 
 [[package]]
 name = "jcode-compaction-core"
