@@ -177,13 +177,16 @@ fn swarm_effort_display_labels_are_marked_beta() {
 fn detected_resume_terminal_recognizes_handterm_term_program() {
     let _env_lock = crate::storage::lock_test_env();
     let _guard = EnvVarGuard::set_value("TERM_PROGRAM", "handterm");
-    assert_eq!(detected_resume_terminal().as_deref(), Some("handterm"));
+    assert_eq!(
+        crate::terminal_launch::detected_resume_terminal().as_deref(),
+        Some("handterm")
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn shell_command_quotes_single_quotes_for_handterm_exec() {
-    let command = shell_command(&[
+    let command = crate::terminal_launch::shell_command(&[
         "/tmp/jcode binary".to_string(),
         "--resume".to_string(),
         "session'quote".to_string(),
