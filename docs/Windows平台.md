@@ -10,13 +10,16 @@ Jcode 把 Windows 作为一等平台支持。Windows 实现使用原生命名管
 >   参数均不存在，安装器也不再创建任何开机启动快捷方式（卸载器仍会清理旧版本留下的
 >   快捷方式与 `%JCODE_HOME%\hotkey` 目录）。
 >
+> - **CI 只构建与验证 Windows**：上游的 ubuntu + macOS 构建矩阵与 FreeBSD 冒烟已删除
+>   （2026-09-12），非 Windows 平台不再进入本 fork 的 CI。
+>
 > 下文的在线安装段落保留用于说明安装器行为，对本 fork 请按"本地安装包"一节操作。
 
 ## 支持状态
 
 | 领域 | 状态 |
 |---|---|
-| Windows 11 x64 | **本 fork 唯一发布平台**，已在 CI 构建、签名（可选）与安装验证 |
+| Windows 11 x64 | **本 fork 唯一发布平台**，已在 CI 构建、签名（可选）与安装验证。CI 本身也已收敛为 Windows-only（2026-09-12 删除 ubuntu/macOS 构建作业与 FreeBSD 冒烟），仅保留在 ubuntu 上做跨平台静态检查与 Windows 目标的交叉编译 |
 | Windows 11 ARM64 | 仅 `windows-smoke.yml` 编译并跑 `--version` 冒烟（`--no-default-features`），**不发布资产** |
 | PowerShell 安装器 | 已在 Windows CI 测试 |
 | 原生 IPC 与进程生命周期 | 由定向和端到端 Windows 测试覆盖 |

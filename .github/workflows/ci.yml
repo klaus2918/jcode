@@ -1,5 +1,17 @@
 name: CI
 
+# fork: 本 fork 只发布与支持 Windows（x86_64-pc-windows-msvc），因此 CI 也只构建
+# 与验证 Windows 目标。上游的 build 作业（ubuntu + macos 矩阵）跑的是其他平台
+# **自身**的代码与测试，与本 fork 的交付物无关，已删除；freebsd-smoke.yml 同理。
+#
+# 保留的 ubuntu runner 作业只做「跨平台静态检查」或「在 Linux 上交叉编译验证
+# Windows 目标」，不构建也不测试非 Windows 平台的运行时行为：
+#   - quick-check / quality / fmt  源码质量（fmt/clippy/ratchet/依赖边界）
+#   - windows-cross-check          用 cargo-xwin 在 Linux 上 check Windows 目标
+#
+# 平台无关的业务门禁（retention_readiness、provider_matrix）已从被删的 build
+# 作业迁到 windows-build-test，避免随作业删除一起丢失覆盖。
+
 on:
   # fork: 上游在每次 push 都跑 9 个重型 job。本 fork 把重型作业限制在 PR 与
   # 手动触发，push 只跑轻量的 quick-check 作业。
@@ -118,245 +130,12 @@ jobs:
           cargo install cargo-machete --locked
           cargo machete
 
-  build:
-    name: Build & Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    if: github.event_name != 'push'
-    timeout-minutes: 35
-    # Some dependencies (e.g. convert_case 0.10.0 via derive_more/crossterm, and
-    # proc-macro2/quote) accidentally ship a `rust-toolchain.toml` *inside their
-    # published crate*. When cargo builds such a crate its CWD is that crate dir,
-    # so the rustup proxy honours the file: convert_case pins `channel = "1.83.0"`
-    # and proc-macro2 requests `components = ["rust-src"]`. That made every
-    # Build & Test job (a) race two parallel `rust-src` downloads and (b) later
-    # try to compile convert_case with rustc 1.83.0, failing with E0514/E0599.
-    # RUSTUP_TOOLCHAIN takes precedence over any rust-toolchain.toml override, so
-    # pinning it here makes every step use this job's installed stable toolchain.
-    env:
-      RUSTUP_TOOLCHAIN: stable
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
 
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # fork: 仅有两个 HTTPS 形态的 git 依赖（agentgrep、mermaid-rs-renderer），
-          # 无需 DEPLOY_KEY / ssh-agent。
-          submodules: recursive
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-          # Pre-install rust-src in the (serial) toolchain step. Some build-script
-          # / proc-macro units trigger an on-demand `rustup component add rust-src`,
-          # and when several parallel cargo/rustc processes request it at once they
-          # race on the shared `~/.rustup/downloads/*.partial` file and fail with
-          # "could not rename ... No such file or directory". Fetching it once here
-          # removes the race. (Was failing every Build & Test job.)
-          components: rust-src
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Suffix bumped to evict caches that held 1.83.0 / <unknown rustc>
-          # artifacts produced before RUSTUP_TOOLCHAIN=stable pinned the job.
-          key: ${{ matrix.os }}-stablepin
-
-      - name: Install mold linker (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mold
-
-      - name: Build
+      - name: Security preflight
         shell: bash
-        run: |
-          mkdir -p .cargo
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            cat > .cargo/config.toml << 'EOF'
-          [target.x86_64-unknown-linux-gnu]
-          linker = "clang"
-          rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-          EOF
-          fi
-          # NOTE: intentionally NOT exporting RUSTC_WRAPPER=sccache here. Only this
-          # step used sccache while the later `cargo test --no-run` steps did not,
-          # so sccache emitted rlibs/rmetas stamped `<unknown rustc version>` that
-          # the non-sccache test compile then rejected with E0514
-          # ("compiled by an incompatible version of rustc"). rust-cache already
-          # caches target/ across runs, so a clean, wrapper-consistent build is
-          # both correct and fast enough.
-          export RUSTC="$(rustup which rustc)"
-          CARGO_BIN="$(rustup which cargo)"
-          "$CARGO_BIN" build --release --target ${{ matrix.target }}
-
-      - name: Compile library and binary tests
-        shell: bash
-        run: |
-          python3 .github/scripts/run_with_timeout.py 900 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} --lib --bins --no-run
-
-      - name: Run deterministic retention-readiness cohort
-        shell: bash
-        run: |
-          # A cold jcode-app-core test harness compiles heavy optional provider
-          # dependencies and can exceed three minutes on hosted runners. The
-          # cohort itself runs in under a second once the lib test is built.
-          python3 .github/scripts/run_with_timeout.py 600 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} \
-            -p jcode-app-core --lib retention_readiness -- --nocapture
-
-      - name: Run secret-input pty cohort (all platforms with a pty)
-        if: runner.os != 'Windows'
-        shell: bash
-        # `jcode-base --lib` is never executed on Linux CI: the only jcode-base
-        # test invocation anywhere in this workflow is a Windows-only
-        # `power_inhibit::tests::windows_` filter. So the masking fix for #660 had
-        # a test that was compiled and never run, which is the same
-        # looks-green-but-never-ran shape as the warning budget and the stdin
-        # detector (#651). These tests fork a pty, so they cannot run on the
-        # Windows runner; everywhere else they take about a second.
-        run: |
-          python3 .github/scripts/run_with_timeout.py 300 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} \
-            -p jcode-base --lib secret_input -- --nocapture
-
-      - name: Run embedding numeric-stability cohort (Linux only)
-        if: runner.os == 'Linux'
-        shell: bash
-        # `minilm_embedding_is_numerically_stable_across_inference_engines` pins
-        # the model's actual output, which is the only thing that can catch an
-        # inference-engine upgrade silently changing embeddings: persisted
-        # memories are keyed by model_id, which does not change across a tract
-        # bump, so the stale-embedding filter cannot notice (#657).
-        #
-        # That test skips itself when the model is absent, and jcode-embedding
-        # tests are not otherwise run here at all, so without this step it would
-        # never execute. Fetch the model first (~87MB) so the cohort is real
-        # rather than a silent skip.
-        run: |
-          set -euo pipefail
-          model_dir="$HOME/.jcode/models/all-MiniLM-L6-v2"
-          mkdir -p "$model_dir"
-          base="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main"
-          curl -sSfL --retry 3 -o "$model_dir/model.onnx" "$base/onnx/model.onnx"
-          curl -sSfL --retry 3 -o "$model_dir/tokenizer.json" "$base/tokenizer.json"
-          # Fail loudly if the fetch produced something unusable, so this cannot
-          # degrade back into a silent skip.
-          test -s "$model_dir/model.onnx"
-          test -s "$model_dir/tokenizer.json"
-          python3 .github/scripts/run_with_timeout.py 600 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} \
-            -p jcode-embedding --lib -- --nocapture \
-            | tee /tmp/embedding-cohort.log
-          # The test is present and the harness ran it (rather than the binary
-          # failing to build).
-          grep -q "minilm_embedding_is_numerically_stable_across_inference_engines ... ok" \
-            /tmp/embedding-cohort.log
-          # This is the check that matters. A skipped test still reports "ok",
-          # so the reported result alone cannot distinguish "verified" from
-          # "silently did nothing"; only the skip message can.
-          if grep -q "skip: MiniLM model not present" /tmp/embedding-cohort.log; then
-            echo "::error::embedding cohort skipped despite fetching the model"
-            exit 1
-          fi
-
-      - name: Run stdin-forwarding cohort (all platforms)
-        shell: bash
-        # These tests exercise the per-platform stdin detector, whose
-        # implementations are entirely separate (`/proc/PID/syscall` on Linux,
-        # `proc_pidinfo` + thread state on macOS). They were never gated: the
-        # only `jcode-app-core --lib` run above is filtered to
-        # `retention_readiness`, and the broader suite is Linux-only, so the
-        # macOS detector had no coverage at all. `TH_STATE_WAITING` was defined
-        # as 2 (`TH_STATE_STOPPED`) rather than 3, which silently disabled
-        # macOS stdin forwarding entirely until #651.
-        #
-        # Deliberately not Linux-gated: running this on both Unix platforms is
-        # the whole point. Windows is a separate job and is not covered here,
-        # because these tests drive `head -n1`, which stock Windows does not
-        # provide; the Windows detector still has no test coverage.
-        run: |
-          python3 .github/scripts/run_with_timeout.py 600 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} \
-            -p jcode-app-core --lib tool::bash::tests::test_stdin_forwarding -- --nocapture
-
-      - name: Run TUI library tests (Linux only)
-        if: runner.os == 'Linux'
-        shell: bash
-        # These were previously only compiled (`--no-run` above), so test-only
-        # breakage reached master with CI green: three `ServerEvent::MessageEnd`
-        # call sites stayed unit variants after the enum gained a field, and the
-        # whole target failed to compile unnoticed (see #592).
-        #
-        # Run serially. Many of these tests share process-global state (model
-        # catalog, ambient cache, render state) and fail on ordering under
-        # parallelism, while passing reliably one-at-a-time: 1977 pass serially
-        # versus 2-4 varying failures in parallel. Scoping that state is tracked
-        # in #592; until then serial execution is the honest signal, and costs
-        # ~30s once the target is already built above.
-        #
-        # Two render tests depend on terminal color support and are still
-        # skipped. The copy-badge cohort no longer is: every one of those tests
-        # now installs the in-process `CapturedClipboard` sink and asserts the
-        # copied text through it, so they never touch the OS clipboard and pass
-        # on a headless runner (verified with DISPLAY/WAYLAND_DISPLAY unset).
-        # They were the tests most worth running, since they cover the copy path
-        # end to end. Tracked in #592.
-        run: |
-          python3 .github/scripts/run_with_timeout.py 600 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} \
-            -p jcode-tui --lib -- --test-threads=1 \
-            --skip test_prompt_entry_shimmer_color_moves_across_positions \
-            --skip right_fact_stack_uses_neutral_gray_except_for_context_usage
-
-      - name: Compile integration test binaries
-        shell: bash
-        # Build the integration-test binaries up front (not counted against the
-        # run steps' execution budgets). The e2e suite in particular is heavy
-        # (burst-spawn concurrency), and folding compilation into its 900s run
-        # budget was pushing slower hosted ubuntu/macos runners over the limit.
-        run: |
-          python3 .github/scripts/run_with_timeout.py 900 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} \
-            --test provider_matrix --test e2e --no-run
-
-      - name: Run provider matrix tests
-        shell: bash
-        run: |
-          python3 .github/scripts/run_with_timeout.py 600 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} --test provider_matrix
-
-      - name: Run e2e tests
-        shell: bash
-        run: |
-          # e2e is fast (~1-2 min of execution); the generous budget only guards
-          # against an occasional slow hosted runner. Compilation is already done
-          # in the dedicated compile step above.
-          python3 .github/scripts/run_with_timeout.py 600 \
-            "$(rustup which cargo)" test --target ${{ matrix.target }} --test e2e
-
-      - name: Check PowerShell script syntax (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          ./scripts/check_powershell_syntax.ps1
-
-      - name: Enforce warning budget (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          scripts/check_warning_budget.sh
-
-      - name: Security preflight (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
+        # fork: 原在 Build & Test 作业里以 Linux 为条件运行。本 fork 的 CI 只构建
+        # Windows 目标，故迁到 quality 作业（本就在 ubuntu 上跑 bash 静态门禁）。
+        # 检查内容与平台无关：硬编码密钥扫描、脚本文件权限、依赖公告（cargo-audit）。
         run: |
           cargo install cargo-audit --locked
           scripts/security_preflight.sh --strict
@@ -486,6 +265,37 @@ jobs:
               -TimeoutSeconds 420 `
               -CargoArgs @('test', '--locked', '--target', 'x86_64-pc-windows-msvc', '--test', 'e2e', $testName, '--', '--exact', '--nocapture')
           }
+      - name: Compile integration test binaries
+        shell: pwsh
+        # fork: 原 Build & Test 作业在编译步骤里一并 --no-run 了 provider_matrix/e2e。
+        # 本 fork 只构建 Windows，故在 Windows 作业里单独编译这两个集成测试二进制。
+        run: |
+          & ./scripts/invoke_cargo_with_timeout.ps1 `
+            -Name 'Compile integration test binaries' `
+            -TimeoutSeconds 900 `
+            -CargoArgs @('test', '--locked', '--target', 'x86_64-pc-windows-msvc', '--test', 'provider_matrix', '--test', 'e2e', '--no-run')
+
+      - name: Run deterministic retention-readiness cohort
+        shell: pwsh
+        # fork: 原在 Build & Test 作业（Linux/macOS）里运行。该测试用 JCODE_HOME
+        # 隔离状态、无 cfg(unix) 分支，平台无关，故迁到 Windows 作业保留覆盖。
+        run: |
+          # 冷启动的 jcode-app-core 测试 harness 会编译较重的可选 provider 依赖，
+          # 在托管 runner 上可能超过三分钟；cohort 本身在构建完成后不到一秒。
+          & ./scripts/invoke_cargo_with_timeout.ps1 `
+            -Name 'Retention readiness cohort' `
+            -TimeoutSeconds 600 `
+            -CargoArgs @('test', '--locked', '--target', 'x86_64-pc-windows-msvc', '-p', 'jcode-app-core', '--lib', 'retention_readiness', '--', '--nocapture')
+
+      - name: Run provider matrix tests
+        shell: pwsh
+        # fork: 同 retention cohort，原属 Build & Test 作业，平台无关，迁到此处。
+        run: |
+          & ./scripts/invoke_cargo_with_timeout.ps1 `
+            -Name 'Provider matrix tests' `
+            -TimeoutSeconds 600 `
+            -CargoArgs @('test', '--locked', '--target', 'x86_64-pc-windows-msvc', '--test', 'provider_matrix')
+
 
       - name: Upload Windows e2e diagnostics
         if: failure()
@@ -540,19 +350,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  setup-friction:
-    name: Setup Friction Eval (Linux installer)
-    runs-on: ubuntu-latest
-    if: github.event_name != 'push'
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install probe shells
-        run: sudo apt-get update && sudo apt-get install -y fish zsh
-
-      - name: Installer conversion telemetry tests
-        run: bash scripts/test_install_conversion.sh
 
 
   powershell-syntax:
