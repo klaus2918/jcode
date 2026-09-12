@@ -1,8 +1,12 @@
 name: CI
 
 on:
-  # fork: 上游在每次 push 都跑 9 个重型 job。本 fork 只在 PR 与手动触发时运行，
-  # 日常 push 的回归以本地 scripts/check_guardrails.sh 为准。
+  # fork: 上游在每次 push 都跑 9 个重型 job。本 fork 把重型作业限制在 PR 与
+  # 手动触发，push 只跑轻量的 quick-check 作业。
+  # 这是有意留下的一道 push 门禁：2026-09-12 曾有一个 `&str + &str` 被推入
+  # master，让整个 workspace 无法编译，而当时没有任何门禁能拦住它。
+  push:
+    branches: [main, master]
   pull_request:
     branches: [main, master]
   workflow_dispatch:
@@ -16,9 +20,35 @@ env:
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
+  # fork: push 的唯一门禁（见文件顶部描述）。
+  # 刻意带 `--workspace`：不带它时 cargo 不编译成员 crate 的测试目标，
+  # 而那正是本 fork 长期最关键的空档（jcode-tui 的 295 个测试编译错误
+  # 与 master 上的编译中断都因此无人发现）。
+  quick-check:
+    name: Quick Check (workspace, all targets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # fork: 仅有两个 HTTPS 形态的 git 依赖（agentgrep、mermaid-rs-renderer），
+          # 无需 DEPLOY_KEY / ssh-agent。
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: quick-check
+          cache-all-crates: "true"
+
+      - name: Check the whole workspace including every test target
+        run: cargo check --workspace --all-targets
+
   quality:
     name: Quality Guardrails
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +121,7 @@ jobs:
   build:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    if: github.event_name != 'push'
     timeout-minutes: 35
     # Some dependencies (e.g. convert_case 0.10.0 via derive_more/crossterm, and
     # proc-macro2/quote) accidentally ship a `rust-toolchain.toml` *inside their
@@ -333,6 +364,7 @@ jobs:
   windows-build-test:
     name: Build & Test (windows-latest)
     runs-on: windows-latest
+    if: github.event_name != 'push'
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -496,6 +528,7 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -510,6 +543,7 @@ jobs:
   setup-friction:
     name: Setup Friction Eval (Linux installer)
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -524,6 +558,7 @@ jobs:
   powershell-syntax:
     name: PowerShell Syntax
     runs-on: windows-latest
+    if: github.event_name != 'push'
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -541,6 +576,7 @@ jobs:
   windows-cross-check:
     name: Windows Cross-Target Check (Linux)
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
