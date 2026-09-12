@@ -905,7 +905,7 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
 
     if ($env:JCODE_WINDOWS_SETUP_SKIP_EXTERNALS -eq "1") {
         Set-Content -Path (Join-Path $HotkeyDir "jcode-hotkey-shortcut.ps1") -Value $shortcutScript -Encoding UTF8
-        Write-Info "Configured Alt+; and the Copilot key to launch jcode"
+        Write-Info "Created hotkey startup shortcut, but the hotkey cannot work in this fork (setup-hotkey was removed)"
         return $true
     }
 
@@ -938,7 +938,7 @@ function Install-JcodeHotkey([string]$JcodeExePath) {
         }
     }
 
-    Write-Info "Configured Alt+; and the Copilot key to launch jcode"
+    Write-Info "Created hotkey startup shortcut, but the hotkey cannot work in this fork (setup-hotkey was removed)"
     return $true
 }
 function Resolve-JcodeWindowsArtifact([string[]]$ArchitectureCandidates) {
@@ -1233,10 +1233,14 @@ if (Test-AlacrittyInstalled) {
 }
 
 if ($configuredHotkey) {
-    Write-Info "Global launch keys ready: Alt+; and the Copilot key open jcode"
+    # fork: 全局热键已在 863cc9b04 移除（setup-hotkey 子命令与 windows_hotkeys.rs 均不存在）。
+    # 快捷方式仍按上游逻辑创建，以免动到 .github/scripts/verify_windows_install.ps1 的断言；
+    # 但不能再宣称热键可用。
+    Write-Info "Hotkey listener is unavailable in this fork (setup-hotkey was removed)"
     Write-Host ""
 } elseif (-not $ConfigureHotkey) {
-    Write-Info "Optional: run 'jcode setup-hotkey' to configure global launch hotkeys and terminal preferences."
+    # fork: 不再推荐已移除的 setup-hotkey，避免让用户去执行一条不存在的命令。
+    Write-Info "Global launch hotkeys are not available in this fork (setup-hotkey was removed)."
     Write-Host ""
 }
 

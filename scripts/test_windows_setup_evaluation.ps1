@@ -341,7 +341,8 @@ try {
         Assert-Contains $shortcutScript $jcodeExe 'Startup shortcut should preserve spaces and non-ASCII characters in the jcode path'
         Assert-PathMissing (Join-Path $profile.HotkeyDir 'jcode-hotkey.ps1') 'hotkey upgrade should remove the legacy PowerShell listener'
         $scriptText = Get-Content -LiteralPath $installScript -Raw
-        Assert-Contains $scriptText 'Configured Alt+; and the Copilot key' 'installer should document both Windows launch-key mappings'
+        # fork: 全局热键已移除，安装器改为如实说明；此处断言的意图（必须记录启动键状况）不变。
+        Assert-Contains $scriptText 'but the hotkey cannot work in this fork' 'installer should document the launch-key situation after hotkey removal'
         $script:coveredScenarios.copilot_key_mapping = $true
         $script:coveredScenarios.spaces_non_ascii_paths = $true
     }
