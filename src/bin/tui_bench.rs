@@ -1061,9 +1061,10 @@ fn main() -> Result<()> {
     for frame in 0..args.frames {
         if args.scroll_cycle > 0 {
             state.scroll_offset = frame % args.scroll_cycle;
-            if matches!(args.mode, BenchMode::FileDiff) {
-                state.diff_pane_scroll = (frame * 3) % args.scroll_cycle.max(1);
-            } else if matches!(args.mode, BenchMode::SidePanel) {
+            // fork: CI 的 clippy 1.98 起，两个分支体相同的 if/else-if 会触发
+            // if_same_then_else（本机 1.95 不报）；合并为 `||` 后语义不变。
+            if matches!(args.mode, BenchMode::FileDiff) || matches!(args.mode, BenchMode::SidePanel)
+            {
                 state.diff_pane_scroll = (frame * 3) % args.scroll_cycle.max(1);
             }
         }
