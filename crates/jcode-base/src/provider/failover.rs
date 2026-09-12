@@ -73,8 +73,7 @@ impl MultiProvider {
             msg.push_str(&extra_guidance.join(" "));
         }
         msg.push_str(
-            " Use `/usage` to check limits; refresh credentials with `jcode provider add` or "
-                + "`jcode auth doctor` (see docs/模型接入.md).",
+            " Use `/usage` to check limits; refresh credentials with `jcode provider add` or `jcode auth doctor` (see docs/模型接入.md).",
         );
         anyhow::anyhow!(msg)
     }
