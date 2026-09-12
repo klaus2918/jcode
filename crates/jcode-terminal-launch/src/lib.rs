@@ -751,7 +751,7 @@ fn command_parts(command: &TerminalCommand) -> Vec<String> {
 /// directory and `exec` the target command (optionally injecting the fresh-spawn
 /// env var, which would otherwise be lost because the spawned shell does not
 /// inherit the env of the `osascript` process).
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn macos_terminal_inner_script(command: &TerminalCommand, cwd: &Path) -> String {
     let shell = shell_command(&command_parts(command));
     format!(
@@ -767,7 +767,7 @@ fn macos_terminal_inner_script(command: &TerminalCommand, cwd: &Path) -> String 
 }
 
 /// Build the full AppleScript passed to `osascript -e` for Apple Terminal.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn macos_terminal_applescript(command: &TerminalCommand, cwd: &Path) -> String {
     let inner = macos_terminal_inner_script(command, cwd);
     // AppleScript string literals are double-quoted, so backslashes and double
@@ -779,8 +779,10 @@ fn macos_terminal_applescript(command: &TerminalCommand, cwd: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::sync::Mutex;
 
+    #[cfg(unix)]
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -1004,9 +1006,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn shell_command_quotes_arguments() {
         let shell = shell_command(&["jcode".to_string(), "it's ok".to_string()]);
-        #[cfg(unix)]
         assert_eq!(shell, "'jcode' 'it'\"'\"'s ok'");
     }
 

@@ -1,6 +1,11 @@
 //! Regression tests for static-model / live-catalog merge behavior
 //! across built-in and user-declared OpenAI-compatible provider profiles.
 
+// The async tests below intentionally hold `ENV_LOCK` (a std Mutex) across
+// await points to serialize process-wide environment mutations, matching the
+// convention used elsewhere in this workspace.
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
 use crate::tests::{ENV_LOCK, EnvVarGuard};
 
 /// Minimal one-shot `/models` endpoint: serves `body` to the first request.

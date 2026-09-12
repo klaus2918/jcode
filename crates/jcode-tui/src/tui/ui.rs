@@ -1,12 +1,9 @@
 #![cfg_attr(
     test,
     expect(
-        clippy::items_after_test_module,
-        clippy::let_and_return,
         clippy::missing_const_for_thread_local,
         clippy::needless_borrow,
         clippy::needless_return,
-        clippy::too_many_arguments
     )
 )]
 
