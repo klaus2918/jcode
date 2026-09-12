@@ -1840,7 +1840,6 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
- "dirs",
  "futures",
  "hex",
  "jcode-build-meta",
@@ -1852,9 +1851,7 @@ dependencies = [
  "jcode-tui-session-picker",
  "jcode-tui-style",
  "libc",
- "open",
  "ratatui",
- "reqwest",
  "rustls",
  "serde",
  "serde_json",
@@ -1865,7 +1862,6 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "toml",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1917,7 +1913,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "similar",
  "tar",
  "tempfile",
@@ -1928,7 +1923,6 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2397,14 +2391,12 @@ dependencies = [
  "crossterm",
  "dirs",
  "futures",
- "hex",
  "image",
  "jcode-app-core",
  "jcode-build-meta",
  "jcode-config-types",
  "jcode-core",
  "jcode-fuzzy",
- "jcode-logging",
  "jcode-provider-core",
  "jcode-selfdev-types",
  "jcode-session-types",
@@ -2423,12 +2415,10 @@ dependencies = [
  "jcode-tui-workspace",
  "libc",
  "open",
- "rand 0.9.3",
  "ratatui",
  "regex",
  "serde",
  "serde_json",
- "sha2",
  "similar",
  "tempfile",
  "terminal-colorsaurus",
@@ -2583,7 +2573,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
- "serde_json",
 ]
 
 [[package]]

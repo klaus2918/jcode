@@ -51,9 +51,7 @@ uuid = { version = "1", features = ["v4", "v5"] }
 # `embeddings` feature to jcode-base rather than depending on jcode-embedding.
 jcode-import-core = { path = "../jcode-import-core" }
 
-# OAuth
 base64 = "0.22"
-sha2 = "0.10"
 rand = "0.9.3"
 url = "2"
 open = "5"               # Open URLs in browser
@@ -121,4 +119,3 @@ async-stream = "0.3"
 jcode-base = { path = "../jcode-base", default-features = false, features = ["test-support"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

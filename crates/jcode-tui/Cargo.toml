@@ -46,11 +46,7 @@ similar = "2"
 tempfile = "3"
 open = "5"
 
-# OAuth / hashing helpers used by the login + account UI
 base64 = "0.22"
-sha2 = "0.10"
-rand = "0.9.3"
-hex = "0.4"
 url = "2"
 urlencoding = "2"
 
@@ -63,7 +59,6 @@ unicode-width = "0.2"
 
 # Presentation-layer workspace crates
 jcode-build-meta = { path = "../jcode-build-meta" }
-jcode-logging = { path = "../jcode-logging" }
 jcode-core = { path = "../jcode-core" }
 jcode-fuzzy = { path = "../jcode-fuzzy" }
 jcode-config-types = { path = "../jcode-config-types" }
