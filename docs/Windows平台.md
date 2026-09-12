@@ -6,7 +6,9 @@ Jcode 把 Windows 作为一等平台支持。Windows 实现使用原生命名管
 >
 > - **不要用在线安装脚本安装本 fork 的产物。** `scripts/install.sh` / `install.ps1` 仍指向 upstream 的仓库与 `jcode.sh` 元数据服务；本 fork 的发布产物请用 `jcode update --local <包>` 或 `.\install.ps1 -ArtifactExePath ...` 本地安装（见下方"使用本地安装包安装 / 更新"）。发布规范见 [发布流程](发布流程.md)。
 > - **发布产物未做 Authenticode 签名**（本仓库未配置 Azure Artifact Signing），因此首次运行会出现 SmartScreen 警告；CI 会把这个事实写进当次运行的 step summary。
-> - 启动热键（全局快捷键）设置已随功能减法移除，不再有 `-ConfigureHotkey` 之外的热键引导实现。
+> - **启动热键（全局快捷键）支持已彻底移除**：`setup-hotkey` 子命令、`-ConfigureHotkey`
+>   参数均不存在，安装器也不再创建任何开机启动快捷方式（卸载器仍会清理旧版本留下的
+>   快捷方式与 `%JCODE_HOME%\hotkey` 目录）。
 >
 > 下文的在线安装段落保留用于说明安装器行为，对本 fork 请按"本地安装包"一节操作。
 
@@ -43,14 +45,16 @@ irm https://jcode.sh/install.ps1 | iex
 4. 在 `%LOCALAPPDATA%\jcode` 下安装不可变、稳定和启动器副本。
 5. 把 `%LOCALAPPDATA%\jcode\bin` 添加到用户 `PATH`。
 
-Alacritty 安装和全局启动热键是可选的，不再自动安装。要显式请求两者：
+Alacritty 安装是可选的，不再自动安装。要显式请求：
 
 ```powershell
 $script = [scriptblock]::Create((irm https://jcode.sh/install.ps1))
-& $script -ConfigureAlacritty -ConfigureHotkey
+& $script -ConfigureAlacritty
 ```
 
-Jcode 也可以在启动后交互式提供这些选项。
+Jcode 也可以在启动后交互式提供该选项。
+
+> 本 fork 说明：全局启动热键不可用（见文首注），因此安装器没有对应开关。
 
 ### 使用本地安装包安装 / 更新（离线）
 
@@ -183,9 +187,9 @@ Get-AuthenticodeSignature (Get-Command jcode).Source | Format-List Status,Status
 Windows 设置被刻意设计为避免不必要的行为可疑：
 
 - 发布下载对照 `SHA256SUMS` 校验。
-- 可选的终端与全局热键设置要求明确同意。
-- 旧的隐藏 VBScript 启动跳板已移除。
-- 热键监听器使用带 `RemoteSigned`（而非 `ExecutionPolicy Bypass`）的直接 PowerShell 快捷方式。
+- 可选的终端设置要求明确同意。
+- 安装器不创建任何开机启动项；旧的隐藏 VBScript 启动跳板已被移除。
+- 全局热键支持已彻底移除（不再安装监听器，也不再有对应的安装开关）。
 - 发布二进制在 GitHub 托管的 Windows 运行器上构建，并在发布前测试。
 
 ## 启用 Authenticode 签名

@@ -22,12 +22,8 @@
     Source builds require Git, Rust, and the Visual Studio C++ Build Tools.
 .PARAMETER ConfigureAlacritty
     Install Alacritty through winget when it is not already available.
-.PARAMETER ConfigureHotkey
-    Configure the optional global launch hotkey.
 .PARAMETER SkipAlacrittySetup
     Deprecated compatibility switch. Alacritty setup is opt-in by default.
-.PARAMETER SkipHotkeySetup
-    Deprecated compatibility switch. Hotkey setup is opt-in by default.
 #>
 param(
     [string]$InstallDir,
@@ -36,9 +32,7 @@ param(
     [string]$ArtifactTgzPath,
     [switch]$BuildFromSource,
     [switch]$ConfigureAlacritty,
-    [switch]$ConfigureHotkey,
-    [switch]$SkipAlacrittySetup,
-    [switch]$SkipHotkeySetup
+    [switch]$SkipAlacrittySetup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,7 +63,6 @@ $JcodeHome = if ($env:JCODE_HOME) {
     Join-Path ([Environment]::GetFolderPath("UserProfile")) ".jcode"
 }
 
-$HotkeyDir = Join-Path $JcodeHome "hotkey"
 $SetupHintsPath = Join-Path $JcodeHome "setup_hints.json"
 
 function Write-Info($msg) { Write-Host $msg -ForegroundColor Blue }
@@ -705,21 +698,6 @@ function Install-Alacritty {
     return $true
 }
 
-function Stop-JcodeHotkeyListeners {
-    try {
-        Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'pwsh.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -like '*jcode-hotkey*' } |
-            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    } catch {}
-
-    try {
-        $currentPid = $PID
-        Get-CimInstance Win32_Process -Filter "Name = 'jcode.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.ProcessId -ne $currentPid -and $_.CommandLine -like '*--listen-windows-hotkey*' } |
-            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    } catch {}
-}
-
 function ConvertFrom-JcodeVersionOutput([string]$Output) {
     if (-not $Output) {
         return $null
@@ -826,13 +804,14 @@ function Assert-JcodeSourceBuildPrerequisites {
     }
 }
 
-function Set-SetupHintsState([bool]$AlacrittyConfigured, [bool]$HotkeyConfigured) {
+function Set-SetupHintsState([bool]$AlacrittyConfigured) {
     New-Item -ItemType Directory -Path $JcodeHome -Force | Out-Null
 
     $state = @{
         launch_count = 0
-        hotkey_configured = $HotkeyConfigured
-        hotkey_dismissed = $HotkeyConfigured
+        # fork: 全局热键已移除；保留这两个键为 false，维持 setup_hints.json 形状兼容。
+        hotkey_configured = $false
+        hotkey_dismissed = $false
         alacritty_configured = $AlacrittyConfigured
         alacritty_dismissed = $AlacrittyConfigured
         desktop_shortcut_created = $false
@@ -856,91 +835,9 @@ function Set-SetupHintsState([bool]$AlacrittyConfigured, [bool]$HotkeyConfigured
         $state.alacritty_dismissed = $true
     }
 
-    if ($HotkeyConfigured) {
-        $state.hotkey_configured = $true
-        $state.hotkey_dismissed = $true
-    }
-
     $state | ConvertTo-Json | Set-Content -Path $SetupHintsPath -Encoding UTF8
 }
 
-function Get-JcodeHotkeyShortcutScript([string]$StartupShortcutPath, [string]$JcodeExePath) {
-    $escapedShortcutPath = $StartupShortcutPath.Replace("'", "''")
-    $escapedExePath = $JcodeExePath.Replace("'", "''")
-    $listenerArguments = "-NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -Command `"& '$escapedExePath' setup-hotkey --listen-windows-hotkey`""
-    $escapedListenerArguments = $listenerArguments.Replace("'", "''")
-    $shortcutLines = @(
-        '$ErrorActionPreference = ''Stop''',
-        '$shell = New-Object -ComObject WScript.Shell',
-        "`$shortcut = `$shell.CreateShortcut('$escapedShortcutPath')",
-        "`$shortcut.TargetPath = 'powershell.exe'",
-        "`$shortcut.Arguments = '$escapedListenerArguments'",
-        "`$shortcut.Description = 'jcode global launch hotkey listener'",
-        '$shortcut.WindowStyle = 7',
-        '$shortcut.Save()',
-        "Write-Output 'OK'"
-    )
-    return ($shortcutLines -join "`r`n")
-}
-
-function Install-JcodeHotkey([string]$JcodeExePath) {
-    New-Item -ItemType Directory -Path $HotkeyDir -Force | Out-Null
-    $skipProcessLifecycle = (
-        $env:JCODE_WINDOWS_SETUP_SKIP_EXTERNALS -eq "1" -or
-        $env:JCODE_WINDOWS_SETUP_SKIP_PROCESS_LIFECYCLE -eq "1"
-    )
-    if (-not $skipProcessLifecycle) {
-        Stop-JcodeHotkeyListeners
-    }
-
-    # Upgrade cleanup: v0.47 and earlier wrote a generated PowerShell listener.
-    # The first-party listener now lives in jcode.exe itself and is launched via
-    # `jcode setup-hotkey --listen-windows-hotkey` from a login shortcut.
-    Remove-Item -Path (Join-Path $HotkeyDir "jcode-hotkey.ps1") -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path (Join-Path $HotkeyDir "jcode-hotkey-launcher.vbs") -Force -ErrorAction SilentlyContinue
-    $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
-    New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
-    $startupShortcutPath = Join-Path $startupDir "jcode-hotkey.lnk"
-    $shortcutScript = Get-JcodeHotkeyShortcutScript -StartupShortcutPath $startupShortcutPath -JcodeExePath $JcodeExePath
-
-    if ($env:JCODE_WINDOWS_SETUP_SKIP_EXTERNALS -eq "1") {
-        Set-Content -Path (Join-Path $HotkeyDir "jcode-hotkey-shortcut.ps1") -Value $shortcutScript -Encoding UTF8
-        Write-Info "Created hotkey startup shortcut, but the hotkey cannot work in this fork (setup-hotkey was removed)"
-        return $true
-    }
-
-    # 用 -EncodedCommand 而不是 -Command 传递脚本。
-    #
-    # `powershell -Command <多行脚本>` 会让 PowerShell 把参数重新拼成命令行，
-    # 包含双引号与多行的 payload 会被拆坏：嵌套进程以退出码 -1 终止且不产生
-    # 任何输出，快捷方式静默地建不出来（实测同一段脚本 -Command 失败、
-    # -EncodedCommand 成功）。base64 编码后不经过参数解析，行为稳定。
-    $shortcutScriptBase64 = [Convert]::ToBase64String(
-        [System.Text.Encoding]::Unicode.GetBytes($shortcutScript)
-    )
-    $shortcutOutput = & powershell -NoProfile -EncodedCommand $shortcutScriptBase64
-    if ($LASTEXITCODE -ne 0 -or -not ($shortcutOutput -match 'OK')) {
-        Write-Warn "Created hotkey files, but could not create the Startup shortcut"
-        return $false
-    }
-
-    $escapedExePath = $JcodeExePath.Replace("'", "''")
-    $launchHotkeyCommand = "Start-Process -FilePath '$escapedExePath' -ArgumentList @('setup-hotkey', '--listen-windows-hotkey') -WindowStyle Hidden"
-    if (-not $skipProcessLifecycle) {
-        # 同样用 -EncodedCommand：避免多行/带引号的命令被参数拼接破坏。
-        $launchHotkeyBase64 = [Convert]::ToBase64String(
-            [System.Text.Encoding]::Unicode.GetBytes($launchHotkeyCommand)
-        )
-        & powershell -NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden `
-            -EncodedCommand $launchHotkeyBase64 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warn "Hotkey will start on next login, but could not be launched immediately"
-        }
-    }
-
-    Write-Info "Created hotkey startup shortcut, but the hotkey cannot work in this fork (setup-hotkey was removed)"
-    return $true
-}
 function Resolve-JcodeWindowsArtifact([string[]]$ArchitectureCandidates) {
     $sawX64 = $false
 
@@ -1195,15 +1092,10 @@ if ($userPathUpdate.Changed) {
 Set-JcodeProcessPath -InstallDir $InstallDir | Out-Null
 
 $installedAlacritty = $false
-$configuredHotkey = $false
 $shouldSetupAlacritty = [bool]($ConfigureAlacritty -and -not $SkipAlacrittySetup)
-$shouldSetupHotkey = [bool]($ConfigureHotkey -and -not $SkipHotkeySetup)
 
 if ($ConfigureAlacritty -and $SkipAlacrittySetup) {
     Write-Warn "Both -ConfigureAlacritty and -SkipAlacrittySetup were provided; skipping Alacritty setup"
-}
-if ($ConfigureHotkey -and $SkipHotkeySetup) {
-    Write-Warn "Both -ConfigureHotkey and -SkipHotkeySetup were provided; skipping hotkey setup"
 }
 
 if ($shouldSetupAlacritty) {
@@ -1213,13 +1105,8 @@ if ($shouldSetupAlacritty) {
     Write-Info "Optional Alacritty setup not requested"
 }
 
-if ($shouldSetupHotkey) {
-    $configuredHotkey = Install-JcodeHotkey -JcodeExePath $LauncherPath
-} else {
-    Write-Info "Optional global hotkey setup not requested"
-}
 
-Set-SetupHintsState -AlacrittyConfigured:(Test-AlacrittyInstalled) -HotkeyConfigured:$configuredHotkey
+Set-SetupHintsState -AlacrittyConfigured:(Test-AlacrittyInstalled)
 
 Write-Host ""
 Write-Info "jcode $Version installed successfully!"
@@ -1230,18 +1117,6 @@ if (Test-AlacrittyInstalled) {
     if ($alacrittyPath) {
         Write-Info "Alacritty ready: $alacrittyPath"
     }
-}
-
-if ($configuredHotkey) {
-    # fork: 全局热键已在 863cc9b04 移除（setup-hotkey 子命令与 windows_hotkeys.rs 均不存在）。
-    # 快捷方式仍按上游逻辑创建，以免动到 .github/scripts/verify_windows_install.ps1 的断言；
-    # 但不能再宣称热键可用。
-    Write-Info "Hotkey listener is unavailable in this fork (setup-hotkey was removed)"
-    Write-Host ""
-} elseif (-not $ConfigureHotkey) {
-    # fork: 不再推荐已移除的 setup-hotkey，避免让用户去执行一条不存在的命令。
-    Write-Info "Global launch hotkeys are not available in this fork (setup-hotkey was removed)."
-    Write-Host ""
 }
 
 if (Get-Command jcode -ErrorAction SilentlyContinue) {

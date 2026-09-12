@@ -81,9 +81,6 @@ artifact="${TEST_ARCHIVE_ARTIFACT:-jcode-linux-x86_64}"
 cat > "$dest/$artifact" <<'BIN'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then printf 'jcode 1.2.3\n'; fi
-if [ "${1:-}" = "setup-hotkey" ] && [ -n "${HOTKEY_SETUP_LOG:-}" ]; then
-  printf '%s\n' "$*" >> "$HOTKEY_SETUP_LOG"
-fi
 BIN
 chmod +x "$dest/$artifact"
 EOF
@@ -91,7 +88,6 @@ chmod +x "$tmp/bin/uname" "$tmp/bin/curl" "$tmp/bin/tar"
 
 conversion_id="11111111-2222-4333-8444-555555555555"
 telemetry_log="$tmp/telemetry.jsonl"
-hotkey_setup_log="$tmp/hotkey-setup.log"
 PATH="$tmp/bin:$PATH" \
 HOME="$tmp/home" \
 JCODE_HOME="$tmp/home/.jcode" \
@@ -99,13 +95,11 @@ JCODE_INSTALL_DIR="$tmp/install" \
 JCODE_INSTALL_CONVERSION_ID="$conversion_id" \
 JCODE_SKIP_SERVER_RELOAD=1 \
 INSTALL_TELEMETRY_LOG="$telemetry_log" \
-HOTKEY_SETUP_LOG="$hotkey_setup_log" \
 bash "$repo_dir/scripts/install.sh" >/dev/null
 
 test "$(cat "$tmp/home/.jcode/install_conversion_id")" = "$conversion_id"
 grep -q '"stage":"installer_start".*"outcome":"success"' "$telemetry_log"
 grep -q '"stage":"installer_finish".*"outcome":"success"' "$telemetry_log"
-test "$(cat "$hotkey_setup_log")" = "setup-hotkey"
 
 # If GitHub's release page is blocked, the static jcode.sh version endpoint
 # must keep the complete install path working.

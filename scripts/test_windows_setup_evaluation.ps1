@@ -136,7 +136,6 @@ $coveredScenarios = [ordered]@{
     upgrade_idempotency = $false
     path_persistence_deduplication = $false
     wm_settingchange = $false
-    copilot_key_mapping = $false
     opt_out = $false
     uninstall_cleanup = $false
     spaces_non_ascii_paths = $false
@@ -149,7 +148,7 @@ try {
     $env:JCODE_INSTALL_PS1_IMPORT_ONLY = '1'
     $env:JCODE_SKIP_SERVER_RELOAD = '1'
     $env:JCODE_INSTALL_SKIP_BINARY_VALIDATION = '1'
-    . $installScript -SkipAlacrittySetup -SkipHotkeySetup
+    . $installScript -SkipAlacrittySetup
 
     Invoke-Case 'release_lookup_avoids_unauthenticated_github_api' {
         Assert-Equal 'v1.2.3' (Resolve-JcodeReleaseTagFromUri 'https://github.com/1jehuang/jcode/releases/tag/v1.2.3') 'release redirect parser should extract the stable tag'
@@ -263,7 +262,6 @@ try {
         $script:ArtifactExePath = $source
         $script:ArtifactTgzPath = $null
         $script:SkipAlacrittySetup = $true
-        $script:SkipHotkeySetup = $true
 
         Invoke-JcodeInstall
 
@@ -276,7 +274,7 @@ try {
         Assert-Equal 1 $script:pathBroadcasts 'clean install should broadcast exactly once for a PATH change'
         Assert-PathExists $profile.SetupHintsPath 'clean install should write setup hints into isolated JCODE_HOME'
         $state = Get-Content -LiteralPath $profile.SetupHintsPath -Raw | ConvertFrom-Json
-        Assert-Equal $false $state.hotkey_configured 'SkipHotkeySetup should record hotkey opt-out without configuring the listener'
+        Assert-Equal $false $state.hotkey_configured 'install must never record a configured hotkey (hotkey support was removed)'
         Assert-Equal $false $state.alacritty_configured 'SkipAlacrittySetup should avoid deterministic terminal installation side effects'
         Assert-PathMissing $profile.HotkeyDir 'hotkey opt-out should not create hotkey files'
         $script:coveredScenarios.clean_install = $true
@@ -295,7 +293,6 @@ try {
         $script:pathBroadcasts = 0
         $script:InstallDir = $profile.InstallDir
         $script:SkipAlacrittySetup = $true
-        $script:SkipHotkeySetup = $true
 
         $script:Version = 'v1.0.0-eval'
         $script:ArtifactExePath = $sourceV1
@@ -317,33 +314,28 @@ try {
         $script:coveredScenarios.upgrade_idempotency = $true
     }
 
-    Invoke-Case 'copilot_key_mapping_and_spaces_non_ascii_paths' {
-        $profile = New-IsolatedWindowsProfile 'hotkey-spaces-nonascii'
+    Invoke-Case 'spaces_and_non_ascii_paths' {
+        $profile = New-IsolatedWindowsProfile 'spaces-nonascii'
         Set-InstallScriptProfileGlobals $profile
-        $env:JCODE_WINDOWS_SETUP_SKIP_EXTERNALS = '1'
-        $jcodeExe = Join-Path $profile.Root '路径 With Spaces\jcode.exe'
-        New-Item -ItemType Directory -Path (Split-Path -Parent $jcodeExe) -Force | Out-Null
-        Set-Content -Path $jcodeExe -Value 'fake exe' -NoNewline
-        New-Item -ItemType Directory -Path $profile.HotkeyDir -Force | Out-Null
-        Set-Content -Path (Join-Path $profile.HotkeyDir 'jcode-hotkey.ps1') -Value 'legacy listener' -Force
+        $source = Join-Path $profile.Root '路径 With Spaces\jcode-v1.exe'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $source) -Force | Out-Null
+        Set-Content -Path $source -Value 'version-one' -NoNewline
+        $script:mockUserPath = 'C:\Tools'
+        $script:pathWrites = 0
+        $script:pathBroadcasts = 0
+        $script:InstallDir = $profile.InstallDir
+        $script:Version = 'v0.0.1-eval'
+        $script:ArtifactExePath = $source
+        $script:ArtifactTgzPath = $null
+        $script:SkipAlacrittySetup = $true
 
-        $ok = Install-JcodeHotkey -JcodeExePath $jcodeExe
-        Assert-Equal $true $ok 'hotkey install should succeed using the deterministic external-command skip hook'
-        $vbsPath = Join-Path $profile.HotkeyDir 'jcode-hotkey-launcher.vbs'
-        Assert-PathMissing $vbsPath 'hotkey install should remove the legacy hidden VBScript trampoline'
-        $shortcutScriptPath = Join-Path $profile.HotkeyDir 'jcode-hotkey-shortcut.ps1'
-        Assert-PathExists $shortcutScriptPath 'hotkey install should render the deterministic Startup shortcut script under the isolated JCODE_HOME'
-        $shortcutScript = Get-Content -LiteralPath $shortcutScriptPath -Raw
-        Assert-Contains $shortcutScript 'powershell.exe' 'Startup shortcut should target PowerShell directly'
-        Assert-Contains $shortcutScript 'ExecutionPolicy RemoteSigned' 'Startup shortcut should use RemoteSigned execution policy'
-        Assert-NotContains $shortcutScript 'ExecutionPolicy Bypass' 'Startup shortcut should not bypass execution policy'
-        Assert-Contains $shortcutScript 'setup-hotkey --listen-windows-hotkey' 'Startup shortcut should start the native Windows hotkey listener'
-        Assert-Contains $shortcutScript $jcodeExe 'Startup shortcut should preserve spaces and non-ASCII characters in the jcode path'
-        Assert-PathMissing (Join-Path $profile.HotkeyDir 'jcode-hotkey.ps1') 'hotkey upgrade should remove the legacy PowerShell listener'
-        $scriptText = Get-Content -LiteralPath $installScript -Raw
-        # fork: 全局热键已移除，安装器改为如实说明；此处断言的意图（必须记录启动键状况）不变。
-        Assert-Contains $scriptText 'but the hotkey cannot work in this fork' 'installer should document the launch-key situation after hotkey removal'
-        $script:coveredScenarios.copilot_key_mapping = $true
+        Invoke-JcodeInstall
+
+        Assert-PathExists $profile.LauncherPath 'install should succeed when the artifact path contains spaces and non-ASCII characters'
+        Assert-Equal 'version-one' (Get-Content -LiteralPath $profile.LauncherPath -Raw) 'launcher should contain the local artifact contents'
+        Assert-PathCount $script:mockUserPath $profile.InstallDir 1 'spaces/non-ASCII install should persist exactly one launcher PATH entry'
+        Assert-PathMissing $profile.HotkeyDir 'install must not create hotkey files (hotkey support was removed)'
+        Assert-PathMissing $profile.StartupShortcutPath 'install must not create a hotkey startup shortcut'
         $script:coveredScenarios.spaces_non_ascii_paths = $true
     }
 
@@ -357,9 +349,8 @@ try {
         New-Item -ItemType Directory -Path (Split-Path -Parent $jcodeExe) -Force | Out-Null
         Set-Content -Path $jcodeExe -Value 'fake exe' -NoNewline
 
-        Assert-Equal $true (Install-JcodeHotkey -JcodeExePath $jcodeExe) 'hotkey setup should not require Windows Terminal to be installed or active'
         $scriptText = Get-Content -LiteralPath $installScript -Raw
-        Assert-NotContains $scriptText 'wt.exe' 'installer should not shell out to Windows Terminal for hotkey setup'
+        Assert-NotContains $scriptText 'wt.exe' 'installer should not shell out to Windows Terminal'
         $script:coveredScenarios.missing_windows_terminal = $true
     }
 
