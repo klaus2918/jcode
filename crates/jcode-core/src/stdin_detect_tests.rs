@@ -1,5 +1,9 @@
 use super::*;
 
+// fork: 本文件中仅在 Linux 下编译的测试用到 Command/Stdio，按平台门控导入，避免其他平台产生 unused 告警。
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
+
 #[test]
 fn test_own_process_not_reading_stdin() {
     let pid = std::process::id();
