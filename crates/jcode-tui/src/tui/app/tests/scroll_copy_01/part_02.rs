@@ -295,7 +295,6 @@ fn test_remote_ctrl_digit_side_panel_preset() {
 
     rt.block_on(app.handle_remote_key(KeyCode::Char('4'), KeyModifiers::CONTROL, &mut remote))
         .unwrap();
-    assert_eq!(app.diagram_pane_ratio_target, 100);
 }
 
 #[test]

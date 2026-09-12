@@ -284,7 +284,7 @@ fn pinned_todo_band_renders_at_top_when_scrolled() {
         },
         DisplayMessage {
             role: "assistant".to_string(),
-            content: App::build_scroll_test_content(0, 40, None),
+            content: App::build_scroll_test_content(0, 40),
             tool_calls: vec![],
             duration_secs: None,
             title: None,

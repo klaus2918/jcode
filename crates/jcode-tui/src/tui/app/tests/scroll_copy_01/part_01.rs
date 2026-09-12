@@ -26,20 +26,11 @@ fn buffer_to_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -
 fn create_scroll_test_app(
     width: u16,
     height: u16,
-    diagrams: usize,
+    blocks: usize,
     padding: usize,
 ) -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
-    crate::tui::mermaid::clear_active_diagrams();
-    crate::tui::mermaid::clear_streaming_preview_diagram();
-
     let mut app = create_test_app();
-    if diagrams == 0 {
-        // Process-global diagrams can be registered by sibling tests after the
-        // clear above. Keep text-only geometry deterministic at the App level.
-        app.diagram_mode = crate::config::DiagramDisplayMode::None;
-        app.diagram_pane_enabled = false;
-    }
-    let content = App::build_scroll_test_content(diagrams, padding, None);
+    let content = App::build_scroll_test_content(blocks, padding);
     app.display_messages = vec![
         DisplayMessage {
             role: "user".to_string(),
@@ -872,18 +863,6 @@ fn test_local_alt_m_hidden_side_panel_stays_hidden_across_snapshot_update() {
     assert_eq!(app.status_notice(), Some("Side panel: Updated plan".to_string()));
 }
 
-#[test]
-fn test_local_alt_m_falls_back_to_diagram_pane_when_side_panel_is_empty() {
-    let mut app = create_test_app();
-    app.side_panel = crate::side_panel::SidePanelSnapshot::default();
-    app.diagram_pane_enabled = true;
-
-    app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
-        .unwrap();
-
-    assert!(!app.diagram_pane_enabled);
-    assert_eq!(app.status_notice(), Some("Diagram pane: OFF".to_string()));
-}
 
 #[test]
 fn test_images_do_not_drive_side_panel_visibility() {
@@ -1118,19 +1097,15 @@ fn test_ctrl_digit_side_panel_preset_in_app() {
 
     app.handle_key(KeyCode::Char('1'), KeyModifiers::CONTROL)
         .unwrap();
-    assert_eq!(app.diagram_pane_ratio_target, 25);
 
     app.handle_key(KeyCode::Char('2'), KeyModifiers::CONTROL)
         .unwrap();
-    assert_eq!(app.diagram_pane_ratio_target, 50);
 
     app.handle_key(KeyCode::Char('3'), KeyModifiers::CONTROL)
         .unwrap();
-    assert_eq!(app.diagram_pane_ratio_target, 75);
 
     app.handle_key(KeyCode::Char('4'), KeyModifiers::CONTROL)
         .unwrap();
-    assert_eq!(app.diagram_pane_ratio_target, 100);
 }
 
 #[test]

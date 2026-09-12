@@ -125,7 +125,7 @@ fn test_prompt_preview_reserves_rows_without_overwriting_visible_history() {
         },
         DisplayMessage {
             role: "assistant".to_string(),
-            content: App::build_scroll_test_content(0, 20, None),
+            content: App::build_scroll_test_content(0, 20),
             tool_calls: vec![],
             duration_secs: None,
             title: None,
@@ -833,7 +833,7 @@ fn test_history_anchor_keeps_distance_from_bottom_after_prepend() {
         0,
         DisplayMessage {
             role: "assistant".to_string(),
-            content: App::build_scroll_test_content(0, 40, None),
+            content: App::build_scroll_test_content(0, 40),
             tool_calls: vec![],
             duration_secs: None,
             title: None,
@@ -886,7 +886,7 @@ fn test_history_anchor_reconciles_into_scroll_offset_after_render() {
         0,
         DisplayMessage {
             role: "assistant".to_string(),
-            content: App::build_scroll_test_content(0, 30, None),
+            content: App::build_scroll_test_content(0, 30),
             tool_calls: vec![],
             duration_secs: None,
             title: None,

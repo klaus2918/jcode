@@ -4,37 +4,6 @@ fn clear_side_panel_render_caches() {
     super::clear_side_panel_render_caches();
 }
 
-fn render_side_panel_markdown_wraps_long_text_lines() {
-    let page = crate::side_panel::SidePanelPage {
-            id: "wrap_demo".to_string(),
-            title: "Wrap Demo".to_string(),
-            file_path: "wrap_demo.md".to_string(),
-            format: crate::side_panel::SidePanelPageFormat::Markdown,
-            source: crate::side_panel::SidePanelPageSource::Managed,
-            content: "This is a deliberately long side panel line that should wrap instead of overflowing the pane.".to_string(),
-            updated_at_ms: 1,
-        };
-
-    let rendered = render_side_panel_markdown_cached(&page, Rect::new(0, 0, 18, 30), false);
-
-    let non_empty: Vec<&Line<'_>> = rendered
-        .lines
-        .iter()
-        .filter(|line| line.width() > 0)
-        .collect();
-
-    assert!(
-        non_empty.len() >= 2,
-        "expected long side panel text to wrap: {:?}",
-        rendered.lines
-    );
-    assert!(
-        non_empty.iter().all(|line| line.width() <= 18),
-        "expected wrapped side panel lines to fit width 18: {:?}",
-        rendered.lines
-    );
-}
-
 #[test]
 fn render_side_panel_markdown_keeps_table_rows_intact() {
     let page = crate::side_panel::SidePanelPage {

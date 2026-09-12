@@ -139,9 +139,6 @@ struct TestState {
     onboarding_preview: bool,
     suggestions: Vec<(String, String)>,
     compacted_hidden_user_prompts: usize,
-    side_pane_images: Vec<crate::session::RenderedImage>,
-    pin_images: bool,
-    inline_images_visible: bool,
     chat_overscroll_active: bool,
     cache_ttl_status: Option<crate::tui::CacheTtlInfo>,
     status_notice: Option<String>,
@@ -174,9 +171,6 @@ impl crate::tui::TuiState for TestState {
                 .map(|tool| tools_ui::is_edit_tool_name(&tool.name))
                 .unwrap_or(false)
         })
-    }
-    fn side_pane_images(&self) -> Vec<crate::session::RenderedImage> {
-        self.side_pane_images.clone()
     }
     fn display_messages_version(&self) -> u64 {
         self.messages_version
@@ -379,44 +373,8 @@ impl crate::tui::TuiState for TestState {
         Default::default()
     }
     fn update_cost(&mut self) {}
-    fn diagram_mode(&self) -> crate::config::DiagramDisplayMode {
-        Default::default()
-    }
-    fn diagram_focus(&self) -> bool {
-        false
-    }
-    fn diagram_index(&self) -> usize {
-        0
-    }
-    fn diagram_scroll(&self) -> (i32, i32) {
-        (0, 0)
-    }
-    fn diagram_pane_ratio(&self) -> u8 {
-        50
-    }
-    fn diagram_pane_ratio_user_adjusted(&self) -> bool {
-        false
-    }
-    fn diagram_pane_animating(&self) -> bool {
-        false
-    }
-    fn diagram_pane_enabled(&self) -> bool {
-        false
-    }
-    fn diagram_pane_position(&self) -> crate::config::DiagramPanePosition {
-        Default::default()
-    }
-    fn diagram_zoom(&self) -> u8 {
-        100
-    }
     fn diff_pane_scroll(&self) -> usize {
         0
-    }
-    fn diff_pane_scroll_x(&self) -> i32 {
-        0
-    }
-    fn side_panel_image_zoom_percent(&self) -> u8 {
-        100
     }
     fn diff_pane_focus(&self) -> bool {
         false
@@ -425,12 +383,6 @@ impl crate::tui::TuiState for TestState {
         static EMPTY: std::sync::LazyLock<crate::side_panel::SidePanelSnapshot> =
             std::sync::LazyLock::new(crate::side_panel::SidePanelSnapshot::default);
         &EMPTY
-    }
-    fn pin_images(&self) -> bool {
-        self.pin_images
-    }
-    fn inline_images_visible(&self) -> bool {
-        self.inline_images_visible
     }
     fn diff_line_wrap(&self) -> bool {
         true
