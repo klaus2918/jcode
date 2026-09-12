@@ -262,11 +262,14 @@ fn write_profile_login_material(
 }
 
 fn competing_remote_profiles(selected: OpenAiCompatibleProfile) -> Vec<OpenAiCompatibleProfile> {
+    // fork: 本 fork 删去了内置第三方 provider，目录只剩 3 项且仅
+    // `openai-compatible` 一项 `requires_api_key: true`，因此不能再按
+    // “需要 API key” 来筛选竞品，否则选中它时竞品恒为空。
+    // 用例对竞品只写 env 文件，不依赖该字段。
     openai_compatible_profiles()
         .iter()
         .copied()
         .filter(|profile| profile.id != selected.id)
-        .filter(|profile| resolve_openai_compatible_profile(*profile).requires_api_key)
         .take(2)
         .collect()
 }
