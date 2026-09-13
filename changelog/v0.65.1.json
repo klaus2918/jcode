@@ -1,0 +1,16 @@
+{
+  "version": "0.65.1",
+  "date": "2026-09-13",
+  "fixes": [
+    "模型与认证状态提示里不再出现已下线的命令（/login、/auth、/account、/keys、/keybindings）",
+    "安装器不再引用已移除的全局热键能力",
+    "provider 实测覆盖报告的指引不再指向已删除的 jcode provider-doctor 命令，改为指向现有 live suite",
+    "修复若干会让 crate 编译或测试目标失败的回归（jcode-base、jcode-tui、jcode-core，以及 CI 上新版 clippy 的 lint）"
+  ],
+  "improvements": [
+    "仓库 10 篇文档逐条对齐代码事实，OAUTH.md 按本 fork 的真实凭据与接入方式重写",
+    "发布链路收敛为 Windows-only，并接入发布前自检与发布后产物核验",
+    "内部清理：移除功能减法留下的未使用依赖、校正质量棘轮基线、清理已删能力的残留引用",
+    "本次发布未合并 upstream 新版本，内容均为 fork 自身的修复与清理"
+  ]
+}
