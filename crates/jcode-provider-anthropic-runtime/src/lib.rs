@@ -387,15 +387,15 @@ impl AnthropicProvider {
 
     /// Resolve a usable access token (OAuth or API key) and whether it is OAuth.
     ///
-    /// Exposed for the provider-doctor's native Claude driver so it can validate
-    /// the credential and fetch the live model catalog through the exact same
-    /// resolution path the runtime uses. Returns the bearer token and an
-    /// `is_oauth` flag so callers can pick the matching catalog endpoint.
+    /// Exposed for native doctor flows so a driver can validate the credential
+    /// and fetch the live model catalog through the exact same resolution path
+    /// the runtime uses. Returns the bearer token and an `is_oauth` flag so
+    /// callers can pick the matching catalog endpoint.
     pub async fn resolve_access_token_for_doctor(&self) -> Result<(String, bool)> {
         self.get_access_token().await
     }
 
-    /// Pin the credential mode (OAuth vs API key) for a provider-doctor run.
+    /// Pin the credential mode (OAuth vs API key) for a doctor run.
     ///
     /// The `claude` login provider is specifically the OAuth/subscription path,
     /// while `claude-api` is the API-key path. The doctor must test the path

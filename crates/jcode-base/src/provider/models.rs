@@ -1157,8 +1157,8 @@ pub fn model_supports_tools(
 }
 
 /// Resolve the full capability record (with per-field provenance) for a
-/// model on a named provider, for diagnostics (`model list --verbose` /
-/// `provider-doctor`). Mirrors the route projection but keeps the
+/// model on a named provider, for diagnostics (`model list --verbose` / the
+/// model picker). Mirrors the route projection but keeps the
 /// `CapabilityTrace` so UIs can show where each field came from
 /// (config > registry > heuristic > default).
 pub fn model_capability_resolution_trace(

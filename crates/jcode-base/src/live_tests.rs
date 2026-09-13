@@ -740,7 +740,7 @@ pub struct LiveVerificationCoverageEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stage_statuses: Vec<String>,
     /// Token/cost spend recorded for this run (from the producing command's
-    /// `spend` metadata). Present for billable runs (e.g. provider-doctor full).
+    /// `spend` metadata). Present for billable runs (e.g. full-tier live runs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spend: Option<Value>,
 }
@@ -851,11 +851,11 @@ pub struct LiveProviderModelCoverageSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub issue_driven_targets: Vec<IssueDrivenLiveProviderTargetSummary>,
     /// Cumulative token/cost spend recorded across all billable runs in the
-    /// ledger (e.g. provider-doctor full-tier runs).
+    /// ledger (e.g. full-tier live runs).
     #[serde(default)]
     pub recorded_spend: LiveCoverageRecordedSpend,
     /// Full monitoring roster: every provider jcode knows about (OpenAI-compatible
-    /// profiles + login providers), whether `provider-doctor` can drive it, whether
+    /// profiles + login providers), whether a live driver can exercise it, whether
     /// a credential is present, and how much live READY evidence exists. Lets the
     /// report enumerate *every* provider, not just ones with ledger evidence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -873,8 +873,8 @@ pub struct ProviderMonitorEntry {
     /// subscription) vs `anthropic-api` (direct API key).
     #[serde(default)]
     pub auth_method: String,
-    /// True when `jcode provider-doctor <id>` can drive this provider today
-    /// (OpenAI-compatible profile exists for the id).
+    /// True when a live driver can exercise this provider today (an
+    /// OpenAI-compatible profile exists, or a native-runtime driver supports it).
     pub doctor_drivable: bool,
     /// True when an API key is present in env or the provider's `.env` file.
     pub has_credential: bool,
@@ -1684,7 +1684,7 @@ fn first_blocker(
     None
 }
 
-/// Suggest the `provider-doctor` tier that would next exercise the given stage,
+/// Suggest the live tier that would next exercise the given stage,
 /// so the reader knows exactly which command to run to make progress.
 fn doctor_tier_for_stage(stage_id: &str) -> &'static str {
     match stage_id {
@@ -1699,9 +1699,9 @@ fn doctor_tier_for_stage(stage_id: &str) -> &'static str {
     }
 }
 
-/// True when `provider-doctor` can drive `provider_id` end-to-end, either via
+/// True when a live driver can exercise `provider_id` end-to-end, either via
 /// the generic OpenAI-compatible driver (any compat profile) or a native-runtime
-/// driver (Claude OAuth, Antigravity). Used to annotate the monitoring roster so
+/// driver (Claude OAuth, OpenAI, jcode). Used to annotate the monitoring roster so
 /// native providers are not perpetually marked "needs native suite".
 fn doctor_supports_provider(provider_id: &str) -> bool {
     crate::provider_catalog::openai_compatible_profile_by_id(provider_id).is_some()
@@ -1943,8 +1943,8 @@ pub fn format_strict_live_provider_model_coverage_summary(
     });
 
     if all_pairs.is_empty() {
-        out.push_str("No provider+model pairs have live evidence yet. Run\n");
-        out.push_str("`jcode provider-doctor <provider> --tier full` to record one.\n\n");
+        out.push_str("No provider+model pairs have live evidence yet. Record one by\n");
+        out.push_str("running a provider live suite.\n\n");
     } else {
         // `gap_limit == 0` means "no cap": show every pair.
         let cap = if gap_limit == 0 {
@@ -2081,7 +2081,7 @@ pub fn format_strict_live_provider_model_coverage_summary(
         }
         out.push_str(
             "  Legend: auth=credential path (OAuth/subscription vs direct API key, etc.);\n  \
-             doctor=`provider-doctor` can drive it; key=credential present;\n  \
+             doctor=a live driver can exercise it; key=credential present;\n  \
              ready/seen pairs = READY pairs / pairs seen in the ledger (e.g. 1/3 = 1 of 3 ready).\n\n",
         );
     }
@@ -2130,12 +2130,8 @@ pub fn format_strict_live_provider_model_coverage_summary(
 
     // -- Footer: how to act on this report. ------------------------------------
     out.push_str("Next steps:\n");
-    out.push_str("  Drive any OpenAI-compatible pair through the pipeline (records evidence):\n");
-    out.push_str("    jcode provider-doctor <provider> --tier full   # spends balance\n");
-    out.push_str(
-        "    jcode provider-doctor <provider> --tier offline # wiring only, no key/spend\n",
-    );
-    out.push_str("  See docs/PROVIDER_DOCTOR.md for the full guide.\n");
+    out.push_str("  Record evidence by driving an OpenAI-compatible pair through a live\n");
+    out.push_str("  provider suite; this report only reflects what those runs record.\n");
     out.push_str(&format!("\nLedger: {}\n", summary.coverage_source));
 
     out
@@ -2213,11 +2209,11 @@ fn coverage_actor_label(dirty: bool, version: &str) -> &'static str {
 fn pair_fix_hint(provider_id: &str, model: &str, stage_id: &str) -> String {
     if doctor_supports_provider(provider_id) {
         let tier = doctor_tier_for_stage(stage_id);
-        format!("run `jcode provider-doctor {provider_id} --model {model} --tier {tier}`")
+        format!("run a live suite for {provider_id} `{model}` (next tier: {tier})")
     } else {
         // opencode and other non-OpenAI-compatible providers are recorded by their
-        // own live suites, not provider-doctor.
-        format!("re-run the {provider_id} live suite (provider-doctor does not cover it yet)")
+        // own live suites; no generic driver covers them yet.
+        format!("re-run the {provider_id} live suite (no generic driver covers it yet)")
     }
 }
 
@@ -2510,7 +2506,7 @@ mod tests {
         let coverage_path = temp.path().join("coverage.json");
         let _events = EnvGuard::set(LEDGER_ENV, &events_path);
         let _coverage = EnvGuard::set(COVERAGE_ENV, &coverage_path);
-        let secret = "sk-live-secret-that-must-not-appear";
+        let secret = "<live-test-secret-that-must-not-appear>";
 
         let event = LiveVerificationEvent::new(
             "live_test",

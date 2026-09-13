@@ -316,7 +316,7 @@ impl CapabilitySource {
 }
 
 /// Per-field provenance for a resolved capability, used by diagnostics
-/// (`provider-doctor` / `model list --verbose`) and the model picker.
+/// (`model list --verbose`) and the model picker.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityTrace {
     pub context_window: Option<CapabilitySource>,

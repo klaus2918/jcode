@@ -3,17 +3,15 @@ use crate::provider_catalog::{LoginProviderAuthKind, LoginProviderDescriptor};
 
 pub const VALIDATION_STALE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
-/// True when `jcode provider-doctor` has a native-runtime driver for
-/// `provider_id` (a provider whose live path is not OpenAI-compatible and so
-/// cannot be exercised by the generic OpenAI-compatible doctor). Today this is
-/// the Claude OAuth/subscription provider and the generic native-runtime
-/// providers (OpenAI, jcode).
+/// True when a native-runtime driver can exercise `provider_id` end-to-end
+/// (a provider whose live path is not OpenAI-compatible and so cannot be
+/// driven by the generic OpenAI-compatible path). Today this is the Claude
+/// OAuth/subscription provider and the generic native-runtime providers
+/// (OpenAI, jcode).
 ///
-/// The drivers themselves live downstream in the `jcode-provider-doctor`
-/// crate (which re-exports this predicate); this roster lives here so
-/// `live_tests` can annotate the monitoring roster without depending on that
-/// crate. A sync test in `jcode-provider-doctor` asserts this list matches its
-/// `NativeProviderKind` specs.
+/// This roster lives here so `live_tests` can annotate the monitoring roster
+/// without depending on provider runtimes; keep it in sync with the native
+/// provider kinds the runtime crates actually support.
 pub fn native_doctor_supports_provider(provider_id: &str) -> bool {
     matches!(
         crate::auth::lifecycle::normalized_auth_provider_id(Some(provider_id)),

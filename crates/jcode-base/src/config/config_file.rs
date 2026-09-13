@@ -27,7 +27,7 @@ impl Config {
         let mut config = Self::load_from_file_strict()?.unwrap_or_default();
         config.apply_env_overrides();
         // CLI commands that load via `load_strict` still need registry-backed
-        // capability data (model list diagnostics, provider-doctor), so load
+        // capability data (model list diagnostics, model picker), so load
         // the user registry here too. The mtime cache makes repeat calls cheap.
         super::modelcap::load_user_modelcap_registry();
         Ok(config)
