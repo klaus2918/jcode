@@ -5,6 +5,7 @@ use super::{
 };
 use crate::tui::TuiState;
 use crate::tui::info_widget::WidgetPlacement;
+use jcode_tui_style::theme::warning_color;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph},
@@ -635,6 +636,93 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         .scroll((scroll as u16, 0));
 
     frame.render_widget(paragraph, area);
+}
+
+/// Page list overlay: every side-panel page, filterable by typing.
+///
+/// The tab bar shows what fits; this is the "there are 12 pages, which one do I
+/// want" view, including pages the bar had to fold into `…+N`.
+pub(super) fn draw_side_panel_page_picker(
+    frame: &mut Frame,
+    area: Rect,
+    picker: &crate::tui::ui::PagePickerState,
+    app: &dyn TuiState,
+) {
+    clear_area(frame, area);
+
+    let snapshot = app.side_panel();
+    let rows =
+        crate::tui::ui::picker_rows(&snapshot.pages, picker, snapshot.focused_page_id.as_deref());
+    let selected = picker.selected_row(rows.len());
+
+    let title_style = Style::default()
+        .fg(rgb(200, 200, 220))
+        .add_modifier(Modifier::BOLD);
+    let selected_style = Style::default()
+        .fg(accent_color())
+        .add_modifier(Modifier::BOLD);
+    let row_style = Style::default().fg(rgb(230, 230, 240));
+    let tag_style = Style::default().fg(rgb(150, 150, 165));
+    let badge_style = Style::default().fg(warning_color());
+    let dim_style = Style::default().fg(dim_color());
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("  Filter  ", dim_style),
+        Span::styled(picker.query().to_string(), row_style),
+        Span::styled("_", accent_color()),
+    ]));
+    lines.push(Line::from(""));
+
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No page matches that filter",
+            dim_style,
+        )));
+    }
+
+    for (row, entry) in rows.iter().enumerate() {
+        let is_selected = selected == Some(row);
+        let marker_style = if is_selected {
+            selected_style
+        } else {
+            dim_style
+        };
+        let mut spans = vec![Span::styled(
+            if is_selected { "  ▸ " } else { "    " },
+            marker_style,
+        )];
+        if app.side_panel_tab_updated(&entry.page_id) {
+            spans.push(Span::styled("• ", badge_style));
+        }
+        spans.push(Span::styled(
+            entry.title.clone(),
+            if is_selected {
+                selected_style
+            } else {
+                row_style
+            },
+        ));
+        spans.push(Span::styled(format!("  {}", entry.tag), tag_style));
+        if entry.focused {
+            spans.push(Span::styled("  (current)", tag_style));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" Side panel pages: {} ", rows.len()),
+            title_style,
+        ))
+        .title_bottom(Line::from(Span::styled(
+            " Enter open · type to filter · ↑/↓ select · Esc close ",
+            dim_style,
+        )))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(dim_color()));
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 pub(super) fn draw_model_status_overlay(

@@ -111,6 +111,8 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.refresh_todos_view_if_needed();
     needs_redraw |= app.refresh_todo_card_if_needed();
     needs_redraw |= app.refresh_pinned_todos_if_needed();
+    needs_redraw |= app.refresh_progress_view_if_needed();
+    needs_redraw |= app.refresh_req_map_view_if_needed();
     needs_redraw |= app.refresh_side_panel_linked_content_if_due();
     needs_redraw |= app.poll_model_picker_load();
     needs_redraw |= app.poll_session_picker_load();

@@ -350,6 +350,8 @@ impl App {
             session.provider_key = crate::session::derive_session_provider_key(provider.name());
         }
         let display = config().display.clone();
+        let (side_pane_ratio, side_pane_ratio_user_set) =
+            super::ui_prefs::initial_side_pane_ratio(display.side_pane_ratio_percent());
         let features = config().features.clone();
         let autoreview_enabled = session
             .autoreview_enabled
@@ -586,6 +588,16 @@ impl App {
             last_side_panel_focus_id: None,
             side_panel_user_hidden: false,
             side_panel_explicit_hidden: false,
+            side_pane_ratio,
+            side_pane_ratio_user_set,
+            side_panel_tab_state: crate::tui::ui::SidePanelTabState::default(),
+            side_panel_page_picker: None,
+            progress_markdown: String::new(),
+            progress_updated_at_ms: 0,
+            progress_checked_at: None,
+            req_map_markdown: String::new(),
+            req_map_updated_at_ms: 0,
+            req_map_checked_at: None,
             pin_images: display.pin_images,
             pinned_images_auto_hide_deadline: None,
             pinned_images_seen_count: 0,
@@ -716,6 +728,8 @@ impl App {
         session.provider_key = crate::session::derive_session_provider_key(provider.name());
         session.ensure_initial_session_context_message();
         let display = config().display.clone();
+        let (side_pane_ratio, side_pane_ratio_user_set) =
+            super::ui_prefs::initial_side_pane_ratio(display.side_pane_ratio_percent());
         let features = config().features.clone();
         let autoreview_enabled = session
             .autoreview_enabled
@@ -981,6 +995,16 @@ impl App {
             last_side_panel_focus_id: None,
             side_panel_user_hidden: false,
             side_panel_explicit_hidden: false,
+            side_pane_ratio,
+            side_pane_ratio_user_set,
+            side_panel_tab_state: crate::tui::ui::SidePanelTabState::default(),
+            side_panel_page_picker: None,
+            progress_markdown: String::new(),
+            progress_updated_at_ms: 0,
+            progress_checked_at: None,
+            req_map_markdown: String::new(),
+            req_map_updated_at_ms: 0,
+            req_map_checked_at: None,
             pin_images: display.pin_images,
             pinned_images_auto_hide_deadline: None,
             pinned_images_seen_count: 0,

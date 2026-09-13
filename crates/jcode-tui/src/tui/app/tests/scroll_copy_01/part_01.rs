@@ -827,19 +827,30 @@ fn test_local_alt_s_toggles_typing_scroll_lock() {
 }
 
 #[test]
-fn test_local_alt_m_toggles_side_panel_visibility() {
+fn test_local_alt_m_focuses_then_hides_side_panel() {
     let mut app = create_test_app();
     app.side_panel = test_side_panel_snapshot("plan", "Plan");
     app.last_side_panel_focus_id = Some("plan".to_string());
+    assert!(!app.diff_pane_focus);
 
+    // A visible but unfocused panel is focused first: one press is enough to
+    // start using it (the old behaviour needed a separate Ctrl+L).
+    app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
+        .unwrap();
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("plan"));
+    assert!(app.diff_pane_focus);
+
+    // Pressing it again hides the panel.
     app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
         .unwrap();
     assert_eq!(app.side_panel.focused_page_id, None);
     assert_eq!(app.status_notice(), Some("Side panel: OFF".to_string()));
 
+    // And it comes back focused, restoring the last page the user read.
     app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
         .unwrap();
     assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("plan"));
+    assert!(app.diff_pane_focus);
     assert_eq!(app.status_notice(), Some("Side panel: Plan".to_string()));
 }
 
@@ -849,9 +860,13 @@ fn test_local_alt_m_hidden_side_panel_stays_hidden_across_snapshot_update() {
     app.side_panel = test_side_panel_snapshot("plan", "Plan");
     app.last_side_panel_focus_id = Some("plan".to_string());
 
+    // A visible panel is focused by the first press and hidden by the second.
+    app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
+        .unwrap();
     app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
         .unwrap();
     assert_eq!(app.side_panel.focused_page_id, None);
+    assert!(app.side_panel_user_hidden);
 
     app.set_side_panel_snapshot(test_side_panel_snapshot("plan", "Updated plan"));
     assert_eq!(app.side_panel.focused_page_id, None);
@@ -860,7 +875,10 @@ fn test_local_alt_m_hidden_side_panel_stays_hidden_across_snapshot_update() {
     app.handle_key(KeyCode::Char('m'), KeyModifiers::ALT)
         .unwrap();
     assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("plan"));
-    assert_eq!(app.status_notice(), Some("Side panel: Updated plan".to_string()));
+    assert_eq!(
+        app.status_notice(),
+        Some("Side panel: Updated plan".to_string())
+    );
 }
 
 
@@ -887,13 +905,19 @@ fn test_images_do_not_drive_side_panel_visibility() {
 }
 
 #[test]
-fn test_remote_alt_m_toggles_side_panel_visibility() {
+fn test_remote_alt_m_focuses_then_hides_side_panel() {
     let mut app = create_test_app();
     app.side_panel = test_side_panel_snapshot("plan", "Plan");
     app.last_side_panel_focus_id = Some("plan".to_string());
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    // Same contract as the local path: focus first, hide on the next press.
+    rt.block_on(app.handle_remote_key(KeyCode::Char('m'), KeyModifiers::ALT, &mut remote))
+        .unwrap();
+    assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("plan"));
+    assert!(app.diff_pane_focus);
 
     rt.block_on(app.handle_remote_key(KeyCode::Char('m'), KeyModifiers::ALT, &mut remote))
         .unwrap();
@@ -903,6 +927,7 @@ fn test_remote_alt_m_toggles_side_panel_visibility() {
     rt.block_on(app.handle_remote_key(KeyCode::Char('m'), KeyModifiers::ALT, &mut remote))
         .unwrap();
     assert_eq!(app.side_panel.focused_page_id.as_deref(), Some("plan"));
+    assert!(app.diff_pane_focus);
     assert_eq!(app.status_notice(), Some("Side panel: Plan".to_string()));
 }
 
@@ -1093,19 +1118,42 @@ fn test_prompt_jump_ctrl_esc_fallback_on_macos() {
 
 #[test]
 fn test_ctrl_digit_side_panel_preset_in_app() {
+    // Persisting the width writes the UI preferences file, so point JCODE_HOME
+    // at a throwaway directory instead of the developer's real one.
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
     let mut app = create_test_app();
+    assert!(!app.side_pane_ratio_user_set);
 
-    app.handle_key(KeyCode::Char('1'), KeyModifiers::CONTROL)
-        .unwrap();
+    for (key, expected) in [('1', 25u16), ('2', 50), ('3', 75), ('4', 100)] {
+        app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL)
+            .unwrap();
+        assert_eq!(app.side_pane_ratio, expected, "Ctrl+{key} preset");
+        assert!(app.side_pane_ratio_user_set);
+        assert_eq!(
+            app.status_notice(),
+            Some(format!("Side panel width: {expected}%"))
+        );
+    }
 
-    app.handle_key(KeyCode::Char('2'), KeyModifiers::CONTROL)
+    // Ctrl+5..Ctrl+9 stay owned by the prompt-rank jump and must not resize.
+    app.handle_key(KeyCode::Char('5'), KeyModifiers::CONTROL)
         .unwrap();
+    assert_eq!(app.side_pane_ratio, 100);
 
-    app.handle_key(KeyCode::Char('3'), KeyModifiers::CONTROL)
+    // A bare digit belongs to the input, not the presets.
+    app.handle_key(KeyCode::Char('2'), KeyModifiers::NONE)
         .unwrap();
+    assert_eq!(app.side_pane_ratio, 100);
 
-    app.handle_key(KeyCode::Char('4'), KeyModifiers::CONTROL)
-        .unwrap();
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
 }
 
 #[test]

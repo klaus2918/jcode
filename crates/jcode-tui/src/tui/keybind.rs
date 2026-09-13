@@ -377,6 +377,8 @@ impl ToggleBinding {
 #[derive(Clone, Debug)]
 pub struct ToggleKeys {
     pub side_panel: ToggleBinding,
+    /// Open the side-panel page list (default `Alt+P`).
+    pub side_panel_pages: ToggleBinding,
     pub copy_selection: ToggleBinding,
     pub typing_scroll_lock: ToggleBinding,
     pub diff_mode_cycle: ToggleBinding,
@@ -389,6 +391,7 @@ pub fn load_toggle_keys() -> ToggleKeys {
     let cfg = config();
     ToggleKeys {
         side_panel: ToggleBinding::load(&cfg.keybindings.side_panel_toggle, 'm'),
+        side_panel_pages: ToggleBinding::load(&cfg.keybindings.side_panel_pages, 'p'),
         copy_selection: ToggleBinding::load(&cfg.keybindings.copy_selection_toggle, 'y'),
         typing_scroll_lock: ToggleBinding::load(&cfg.keybindings.typing_scroll_lock_toggle, 's'),
         diff_mode_cycle: ToggleBinding::load(&cfg.keybindings.diff_mode_cycle, 'g'),

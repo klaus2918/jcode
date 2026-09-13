@@ -69,6 +69,12 @@ mod output_style;
 mod overlays;
 #[path = "ui_pinned.rs"]
 mod pinned_ui;
+#[path = "side_panel_tabs.rs"]
+mod side_panel_tabs;
+pub(crate) use side_panel_tabs::{
+    PROGRESS_PAGE_ID, PagePickerAction, PagePickerState, REQ_MAP_PAGE_ID, SidePanelTabState,
+    page_picker_action, picker_rows, tab_order, tab_position,
+};
 #[path = "ui_prepare.rs"]
 pub(crate) mod prepare;
 #[path = "ui_smoothness.rs"]
@@ -2366,6 +2372,18 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
+    if let Some(picker) = app.side_panel_page_picker() {
+        overlays::draw_side_panel_page_picker(frame, area, picker, app);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
+        return;
+    }
+
     if let Some(scroll) = app.help_scroll() {
         overlays::draw_help_overlay(frame, area, scroll, app);
         finalize_frame_metrics(
@@ -2443,11 +2461,14 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         let image_dominant_pane =
             has_pinned_content && !has_file_diff_edits && !has_side_panel_content;
         const ADAPTIVE_IMAGE_RATIO: u32 = 55;
-        const DEFAULT_SIDE_PANE_RATIO: u32 = 40;
-        let effective_ratio = if image_dominant_pane {
-            DEFAULT_SIDE_PANE_RATIO.max(ADAPTIVE_IMAGE_RATIO)
+        let configured_ratio = u32::from(app.side_pane_ratio_percent().clamp(25, 100));
+        // A width the user picked themselves (`Ctrl+1`..`Ctrl+4`) always wins:
+        // the adaptive widening only helps panes still sitting on the default
+        // ratio, otherwise a remembered width would be silently overridden.
+        let effective_ratio = if image_dominant_pane && !app.side_pane_ratio_user_set() {
+            configured_ratio.max(ADAPTIVE_IMAGE_RATIO)
         } else {
-            DEFAULT_SIDE_PANE_RATIO
+            configured_ratio
         };
         let max_diff = chat_area.width.saturating_sub(MIN_CHAT_WIDTH);
         if max_diff >= MIN_DIFF_WIDTH {

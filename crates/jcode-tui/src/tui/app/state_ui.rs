@@ -607,11 +607,16 @@ impl App {
         } else {
             snapshot
         };
-        let mut snapshot = if self.observe_mode_enabled {
+        let snapshot = if self.observe_mode_enabled {
             self.decorate_side_panel_with_observe(snapshot, focus_observe)
         } else {
             snapshot
         };
+        // The progress page is derived from local files (and never steals
+        // focus), so it is re-attached here instead of being carried by the
+        // incoming snapshot.
+        let snapshot = self.decorate_side_panel_with_progress(snapshot);
+        let mut snapshot = self.decorate_side_panel_with_req_map(snapshot);
         if self.side_panel_user_hidden && snapshot.focused_page_id.is_some() {
             snapshot.focused_page_id = None;
         }
@@ -635,6 +640,7 @@ impl App {
         }
         self.last_side_panel_refresh = None;
         self.side_panel = snapshot;
+        self.side_panel_tab_state.sync(&self.side_panel);
         self.note_runtime_memory_event("side_panel_updated", "side_panel_snapshot_applied");
         if focused_changed {
             self.diff_pane_scroll = 0;
@@ -754,7 +760,7 @@ impl App {
             &self.side_panel,
             terminal_width,
             terminal_height,
-            40,
+            self.side_pane_ratio.min(100) as u8,
             self.centered,
         );
     }

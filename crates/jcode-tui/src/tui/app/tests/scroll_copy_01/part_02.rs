@@ -288,13 +288,31 @@ fn test_remote_escape_interrupt_disables_auto_poke_while_processing() {
 
 #[test]
 fn test_remote_ctrl_digit_side_panel_preset() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
+    // The remote path must apply the same presets as the local one.
     rt.block_on(app.handle_remote_key(KeyCode::Char('4'), KeyModifiers::CONTROL, &mut remote))
         .unwrap();
+    assert_eq!(app.side_pane_ratio, 100);
+    assert!(app.side_pane_ratio_user_set);
+
+    rt.block_on(app.handle_remote_key(KeyCode::Char('1'), KeyModifiers::CONTROL, &mut remote))
+        .unwrap();
+    assert_eq!(app.side_pane_ratio, 25);
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
 }
 
 #[test]

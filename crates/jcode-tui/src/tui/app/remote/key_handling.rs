@@ -239,6 +239,11 @@ async fn handle_remote_key_internal(
         return app.handle_help_key(code);
     }
 
+    if app.side_panel_page_picker.is_some() {
+        app.handle_side_panel_page_picker_key(code, modifiers);
+        return Ok(());
+    }
+
     if app.session_picker_overlay.is_some() {
         return app.handle_session_picker_key(code, modifiers);
     }
@@ -312,6 +317,11 @@ async fn handle_remote_key_internal(
 
     if app.toggle_keys.side_panel.matches(code, modifiers) {
         app.toggle_side_panel();
+        return Ok(());
+    }
+
+    if app.toggle_keys.side_panel_pages.matches(code, modifiers) {
+        app.open_side_panel_page_picker();
         return Ok(());
     }
 
@@ -467,6 +477,11 @@ async fn handle_remote_key_internal(
         } else {
             app.scroll_to_next_prompt();
         }
+        return Ok(());
+    }
+
+    if let Some(percent) = App::side_pane_ratio_preset(&code, modifiers) {
+        app.set_side_pane_ratio(percent);
         return Ok(());
     }
 

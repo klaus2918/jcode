@@ -77,10 +77,13 @@ mod observe;
 pub(crate) mod onboarding_flow;
 mod onboarding_flow_control;
 mod onboarding_sim;
+mod op_workspace;
+mod progress_view;
 mod prompt_history;
 mod remote;
 mod remote_notifications;
 mod replay;
+mod req_map;
 pub(crate) mod run_shell;
 mod runtime_memory;
 mod shortcut_hints;
@@ -104,10 +107,9 @@ mod tui_state;
 mod turn;
 mod turn_memory;
 mod turn_notify;
-// ui_prefs（内联图像可见性等持久化偏好）在 feature-simplification 移除图像侧栏
-// 后仅剩 cfg(test) 用例引用（scroll_copy_02 等），生产编译无使用者；
-// 标 cfg(test) 令其只在测试目标中编译，避免生产 dead_code。
-#[cfg(test)]
+// ui_prefs（内联图像可见性、侧栏宽度比例等持久化偏好）。侧栏宽度比例由
+// `Ctrl+1`..`Ctrl+4` 在运行时写入并在启动时读取，所以本模块在生产路径
+// 确实有使用者，不能再按测试专用编译。
 mod ui_prefs;
 
 pub(crate) use self::state_ui_storage::compact_display_messages_for_storage;
@@ -1267,6 +1269,31 @@ pub struct App {
     // repopulation (such as after a server reload/reconnect) does not re-reveal
     // a panel the user deliberately closed.
     side_panel_explicit_hidden: bool,
+    /// Side-panel width percentage (25-100) currently in effect. Seeded from
+    /// the UI preferences file (the last `Ctrl+1`..`Ctrl+4` choice) and falling
+    /// back to `display.side_pane_ratio`.
+    side_pane_ratio: u16,
+    /// Set once the user resizes the panel themselves. Automatic widening for
+    /// image-dominant panes only applies while this is false, so a remembered
+    /// width is never silently overridden.
+    side_pane_ratio_user_set: bool,
+    /// Tab-bar badges: page ids that changed while they were not focused. The
+    /// renderer shows a `•` next to those tabs.
+    side_panel_tab_state: crate::tui::ui::SidePanelTabState,
+    /// Side-panel page list overlay (`Alt+P`) filter state; `None` when closed.
+    side_panel_page_picker: Option<crate::tui::ui::PagePickerState>,
+    /// Rendered body of the side panel's `progress` page. Empty when the
+    /// workspace has no `op` change directory to report on.
+    progress_markdown: String,
+    progress_updated_at_ms: u64,
+    /// Last time the op workspace was re-scanned (throttles the file reads).
+    progress_checked_at: Option<Instant>,
+    /// Rendered body of the side panel's `req_map` page (requirements →
+    /// tasks → files). Empty when the workspace has no plan/tasks to pair.
+    req_map_markdown: String,
+    req_map_updated_at_ms: u64,
+    /// Last time the plan/tasks were re-scanned.
+    req_map_checked_at: Option<Instant>,
     // Pin read images to side pane
     //
     // feature-simplification 移除图像侧栏后，该状态位在生产路径只被恢复/初始化

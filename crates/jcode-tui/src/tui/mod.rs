@@ -439,6 +439,27 @@ pub trait TuiState {
     fn chat_native_scrollbar(&self) -> bool;
     /// Whether to show a native terminal scrollbar for the side panel
     fn side_panel_native_scrollbar(&self) -> bool;
+    /// Side-panel width as a percentage of the terminal width (25-100).
+    /// Renderer harnesses that do not model resizing keep the historical 40.
+    fn side_pane_ratio_percent(&self) -> u16 {
+        40
+    }
+    /// Whether the user picked that width themselves. When true the automatic
+    /// widening for image-dominant panes is skipped so a remembered width is
+    /// never silently overridden.
+    fn side_pane_ratio_user_set(&self) -> bool {
+        false
+    }
+    /// Whether this page changed while it was not the focused page, which puts
+    /// a `•` next to its tab in the side-panel tab bar.
+    fn side_panel_tab_updated(&self, _page_id: &str) -> bool {
+        false
+    }
+    /// Filter state of the side-panel page list overlay, or `None` when the
+    /// overlay is closed. Renderer harnesses without the overlay keep `None`.
+    fn side_panel_page_picker(&self) -> Option<&crate::tui::ui::PagePickerState> {
+        None
+    }
     /// Whether to wrap lines in the pinned diff pane
     fn diff_line_wrap(&self) -> bool;
     /// Interactive inline UI state (picker-like flows shown above input)

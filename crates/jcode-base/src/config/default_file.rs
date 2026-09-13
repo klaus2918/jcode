@@ -70,6 +70,9 @@ workspace_right = "alt+l"
 
 # Pane / mode toggles
 side_panel_toggle = "alt+m"
+# Open the side-panel page list (filterable list of every page in the panel).
+# alt+l is taken by workspace navigation, hence alt+p.
+side_panel_pages = "alt+p"
 copy_selection_toggle = "alt+y"
 typing_scroll_lock_toggle = "alt+s"
 diff_mode_cycle = "alt+g"
@@ -108,6 +111,14 @@ centered = false
 # Wrap long lines in the pinned diff pane (default: true)
 # Set to false for horizontal scrolling instead of wrapping
 diff_line_wrap = true
+
+# Side panel width as a percentage of the terminal width (25-100, default 40).
+# Ctrl+1..Ctrl+4 set 25/50/75/100 at runtime; that choice is remembered in the
+# UI preferences file and takes precedence over this startup value.
+# side_pane_ratio = 40
+
+# Show the page tab bar at the top of the side panel (default: true)
+# side_panel_tabs = true
 
 # Queue mode: wait until assistant is done before sending next message
 queue_mode = false

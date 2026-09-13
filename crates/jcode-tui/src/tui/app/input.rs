@@ -1949,6 +1949,11 @@ pub(super) fn handle_navigation_shortcuts(
         return true;
     }
 
+    if let Some(percent) = App::side_pane_ratio_preset(&code, modifiers) {
+        app.set_side_pane_ratio(percent);
+        return true;
+    }
+
     if let Some(rank) = App::ctrl_prompt_rank(&code, modifiers) {
         app.scroll_to_recent_prompt_rank(rank);
         return true;
@@ -2056,6 +2061,11 @@ pub(super) fn handle_pre_control_shortcuts(
 
     if app.toggle_keys.side_panel.matches(code, modifiers) {
         app.toggle_side_panel();
+        return true;
+    }
+
+    if app.toggle_keys.side_panel_pages.matches(code, modifiers) {
+        app.open_side_panel_page_picker();
         return true;
     }
     if app.toggle_keys.typing_scroll_lock.matches(code, modifiers) {
@@ -2272,6 +2282,11 @@ pub(super) fn handle_modal_key(
 
     if app.help_scroll.is_some() {
         app.handle_help_key(code)?;
+        return Ok(true);
+    }
+
+    if app.side_panel_page_picker.is_some() {
+        app.handle_side_panel_page_picker_key(code, modifiers);
         return Ok(true);
     }
 

@@ -1144,6 +1144,9 @@ pub struct KeybindingsConfig {
     pub workspace_right: String,
     /// Toggle the side panel (default: "alt+m")
     pub side_panel_toggle: String,
+    /// Open the side-panel page list, a filterable list of every page in the
+    /// panel (default: "alt+p"; `alt+l` is taken by workspace navigation).
+    pub side_panel_pages: String,
     /// Toggle copy/selection mode (default: "alt+y")
     pub copy_selection_toggle: String,
     /// Toggle typing scroll lock (default: "alt+s")
@@ -1201,6 +1204,7 @@ impl Default for KeybindingsConfig {
             workspace_up: get("workspace_up", "alt+k"),
             workspace_right: get("workspace_right", "alt+l"),
             side_panel_toggle: get("side_panel_toggle", "alt+m"),
+            side_panel_pages: get("side_panel_pages", "alt+p"),
             copy_selection_toggle: get("copy_selection_toggle", "alt+y"),
             typing_scroll_lock_toggle: get("typing_scroll_lock_toggle", "alt+s"),
             diff_mode_cycle: get("diff_mode_cycle", "alt+g"),
@@ -1239,6 +1243,11 @@ impl Default for NativeScrollbarConfig {
 }
 fn default_true() -> bool {
     true
+}
+
+/// Startup width of the side panel as a percentage of the terminal width.
+fn default_side_pane_ratio() -> u16 {
+    40
 }
 /// Display/UI configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1337,6 +1346,16 @@ pub struct DisplayConfig {
     /// reveal when scrolling past the bottom, "on" keeps it always visible.
     #[serde(default)]
     pub overscroll_status: OverscrollStatusMode,
+    /// Startup width of the side panel as a percentage of the terminal width
+    /// (clamped to 25-100, default: 40). `Ctrl+1`..`Ctrl+4` set it to
+    /// 25/50/75/100 at runtime; that choice is remembered in the UI
+    /// preferences file and wins over this value.
+    #[serde(default = "default_side_pane_ratio")]
+    pub side_pane_ratio: u16,
+    /// Show the page tab bar at the top of the side panel (default: true).
+    /// Set false for the pre-tab-bar look.
+    #[serde(default = "default_true")]
+    pub side_panel_tabs: bool,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -1373,6 +1392,8 @@ impl Default for DisplayConfig {
             colors: std::collections::BTreeMap::new(),
             active_sessions_manager: false,
             overscroll_status: OverscrollStatusMode::default(),
+            side_pane_ratio: default_side_pane_ratio(),
+            side_panel_tabs: true,
         }
     }
 }
@@ -1385,6 +1406,13 @@ impl DisplayConfig {
                 DiffDisplayMode::Off
             };
         }
+    }
+
+    /// Side-panel width percentage, clamped to the range the layout supports
+    /// (25-100). Out-of-range values in a hand-edited config fall back to the
+    /// nearest supported preset instead of collapsing the pane.
+    pub fn side_pane_ratio_percent(&self) -> u16 {
+        self.side_pane_ratio.clamp(25, 100)
     }
 
     /// Resolve the effective reasoning display mode. Prefers the explicit

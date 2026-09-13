@@ -1,4 +1,5 @@
 use super::*;
+use jcode_tui_style::theme::{border_color, warning_color};
 mod ui_pinned_table;
 use ui_pinned_table::is_rendered_table_line;
 
@@ -34,6 +35,85 @@ fn side_panel_content_area(area: Rect) -> Option<Rect> {
         width: inner.width,
         height: inner.height - SIDE_PANEL_HEADER_HEIGHT,
     })
+}
+
+/// Reserve the top row of the side panel for the page tab bar.
+///
+/// Returns `(tab_strip, content_area)`. The strip is `None` when the bar is
+/// disabled by config, when there is only one page (nothing to switch to), or
+/// when the pane is too short to give up a row. Only the height changes, so the
+/// markdown wrap width — and therefore the render cache key — is unaffected.
+fn side_panel_tab_strip(
+    area: Rect,
+    snapshot: &crate::side_panel::SidePanelSnapshot,
+) -> (Option<Rect>, Rect) {
+    if !crate::config::config().display.side_panel_tabs
+        || snapshot.pages.len() < 2
+        || area.height <= 1
+    {
+        return (None, area);
+    }
+
+    (
+        Some(Rect { height: 1, ..area }),
+        Rect {
+            y: area.y + 1,
+            height: area.height - 1,
+            ..area
+        },
+    )
+}
+
+/// Draw the page tab bar: one row of labels in [`side_panel_tabs::tab_order`]
+/// order, the focused page highlighted, a `•` on pages that changed while they
+/// were not focused, and `…+N` markers for tabs that had to be dropped.
+fn draw_side_panel_tabs(
+    frame: &mut Frame,
+    area: Rect,
+    app: &dyn TuiState,
+    snapshot: &crate::side_panel::SidePanelSnapshot,
+) {
+    use ratatui::widgets::Paragraph;
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let items =
+        super::side_panel_tabs::tab_items(snapshot, |page_id| app.side_panel_tab_updated(page_id));
+    let layout = super::side_panel_tabs::layout_tab_bar(&items, area.width as usize);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if layout.leading_hidden > 0 {
+        spans.push(Span::styled(
+            format!("…+{} ", layout.leading_hidden),
+            Style::default().fg(dim_color()),
+        ));
+    }
+    for (position, slot) in layout.slots.iter().enumerate() {
+        if position > 0 {
+            spans.push(Span::styled("│", Style::default().fg(border_color())));
+        }
+        if slot.updated {
+            spans.push(Span::styled("•", Style::default().fg(warning_color())));
+        }
+        let style = if slot.focused {
+            Style::default()
+                .fg(accent_color())
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default().fg(dim_color())
+        };
+        spans.push(Span::styled(format!(" {} ", slot.label), style));
+    }
+    if layout.trailing_hidden > 0 {
+        spans.push(Span::styled(
+            format!(" …+{}", layout.trailing_hidden),
+            Style::default().fg(dim_color()),
+        ));
+    }
+
+    super::clear_area(frame, area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 #[path = "ui_pinned_selection.rs"]
@@ -792,7 +872,7 @@ pub(super) fn draw_side_panel_markdown(
         ));
         if page_count > 1 {
             title_parts.push(Span::styled(
-                " Tab/Shift-Tab pages ",
+                " Tab/←→/1-9 tabs ",
                 Style::default().fg(dim_color()),
             ));
         }
@@ -806,6 +886,10 @@ pub(super) fn draw_side_panel_markdown(
     else {
         return;
     };
+    let (tab_strip_area, content_shell_area) = side_panel_tab_strip(content_shell_area, snapshot);
+    if let Some(tab_strip_area) = tab_strip_area {
+        draw_side_panel_tabs(frame, tab_strip_area, app, snapshot);
+    }
     let show_native_scrollbar = super::native_scrollbar_visible(
         app.side_panel_native_scrollbar() && content_shell_area.width > 1,
         rendered_full_width.lines.len(),

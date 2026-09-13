@@ -1679,6 +1679,22 @@ impl crate::tui::TuiState for App {
     fn side_panel_native_scrollbar(&self) -> bool {
         self.side_panel_native_scrollbar
     }
+    fn side_pane_ratio_percent(&self) -> u16 {
+        self.side_pane_ratio
+    }
+    fn side_pane_ratio_user_set(&self) -> bool {
+        self.side_pane_ratio_user_set
+    }
+    fn side_panel_tab_updated(&self, page_id: &str) -> bool {
+        // A page the user is looking at never shows a badge, even if its badge
+        // bookkeeping has not been cleared yet (focus can move without a new
+        // snapshot being applied).
+        self.side_panel.focused_page_id.as_deref() != Some(page_id)
+            && self.side_panel_tab_state.is_updated(page_id)
+    }
+    fn side_panel_page_picker(&self) -> Option<&crate::tui::ui::PagePickerState> {
+        self.side_panel_page_picker.as_ref()
+    }
     fn diff_line_wrap(&self) -> bool {
         crate::config::config().display.diff_line_wrap
     }

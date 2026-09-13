@@ -285,10 +285,12 @@ impl App {
                 == Some(super::split_view::SPLIT_VIEW_PAGE_ID)
             {
                 self.set_status_notice(
-                    "Focus: split view (j/k scroll, Esc to return, Ctrl+H back to chat)",
+                    "Focus: split view (j/k scroll, Tab/←→/1-9 tabs, Esc to return, Ctrl+H back to chat)",
                 );
             } else if self.side_panel.focused_page().is_some() {
-                self.set_status_notice("Focus: side pane (j/k scroll, h/l pan, Esc to return)");
+                self.set_status_notice(
+                    "Focus: side pane (j/k scroll, Tab/←→/1-9 tabs, h/l pan, Esc to return)",
+                );
             } else {
                 self.set_status_notice("Focus: side pane (j/k scroll, Esc to return)");
             }
@@ -324,6 +326,43 @@ impl App {
         self.diff_pane_scroll_x = 0;
         crate::tui::clear_side_panel_render_caches();
         self.set_status_notice("Side image zoom: fit".to_string());
+    }
+
+    /// Width presets behind `Ctrl+1`..`Ctrl+4`, as a percentage of the terminal
+    /// width. These match the presets the user manual has always documented.
+    const SIDE_PANE_RATIO_PRESETS: [u16; 4] = [25, 50, 75, 100];
+
+    /// `Ctrl+1`..`Ctrl+4` -> a side-panel width preset, or `None` for any other
+    /// chord. Deliberately mirrors [`App::ctrl_prompt_rank`], which owns
+    /// `Ctrl+5`..`Ctrl+9`.
+    pub(super) fn side_pane_ratio_preset(code: &KeyCode, modifiers: KeyModifiers) -> Option<u16> {
+        if !modifiers.contains(KeyModifiers::CONTROL)
+            || modifiers.contains(KeyModifiers::ALT)
+            || modifiers.contains(KeyModifiers::SHIFT)
+        {
+            return None;
+        }
+        let KeyCode::Char(character) = code else {
+            return None;
+        };
+        let index = character.to_digit(10)?.checked_sub(1)?;
+        Self::SIDE_PANE_RATIO_PRESETS.get(index as usize).copied()
+    }
+
+    /// Apply a side-panel width preset, remember it in the UI preferences (so it
+    /// survives a restart), and report the new width. Returns false when the
+    /// width was already in effect.
+    pub(super) fn set_side_pane_ratio(&mut self, percent: u16) -> bool {
+        let next = percent.clamp(25, 100);
+        if next == self.side_pane_ratio && self.side_pane_ratio_user_set {
+            return false;
+        }
+        self.side_pane_ratio = next;
+        self.side_pane_ratio_user_set = true;
+        super::ui_prefs::save_side_pane_ratio_percent(next);
+        crate::tui::clear_side_panel_render_caches();
+        self.set_status_notice(format!("Side panel width: {next}%"));
+        true
     }
 
     pub(super) fn handle_diff_pane_focus_key(
@@ -365,11 +404,27 @@ impl App {
             KeyCode::BackTab if self.side_panel.focused_page().is_some() => {
                 self.focus_adjacent_side_panel_page(-1);
             }
-            KeyCode::Char('h') | KeyCode::Left if self.side_panel.focused_page().is_some() => {
+            KeyCode::Char('h') if self.side_panel.focused_page().is_some() => {
                 self.pan_diff_pane_x(-4);
             }
-            KeyCode::Char('l') | KeyCode::Right if self.side_panel.focused_page().is_some() => {
+            KeyCode::Char('l') if self.side_panel.focused_page().is_some() => {
                 self.pan_diff_pane_x(4);
+            }
+            // `←`/`→` walk the tab bar in the order it is drawn, and `1`..`9`
+            // jump straight to a tab. Horizontal panning stays on `h`/`l` so the
+            // arrows can match the bar visually.
+            KeyCode::Left if self.side_panel.focused_page().is_some() => {
+                self.focus_adjacent_side_panel_page(-1);
+            }
+            KeyCode::Right if self.side_panel.focused_page().is_some() => {
+                self.focus_adjacent_side_panel_page(1);
+            }
+            KeyCode::Char(digit)
+                if digit.is_ascii_digit()
+                    && digit != '0'
+                    && self.side_panel.focused_page().is_some() =>
+            {
+                self.focus_side_panel_tab_at((digit as u8 - b'1') as usize);
             }
             KeyCode::Char('+') | KeyCode::Char('=') if self.side_panel.focused_page().is_some() => {
                 self.adjust_side_panel_image_zoom(10);
@@ -395,25 +450,113 @@ impl App {
             return;
         }
 
-        let current_index = self
+        let current = self
             .side_panel
             .focused_page_id
             .as_deref()
-            .and_then(|focused_id| {
-                self.side_panel
-                    .pages
-                    .iter()
-                    .position(|page| page.id == focused_id)
-            })
+            .and_then(|focused_id| crate::tui::ui::tab_position(&self.side_panel.pages, focused_id))
             .unwrap_or(0);
-        let next_index = (current_index as isize + delta).rem_euclid(page_count as isize) as usize;
+        let next = (current as isize + delta).rem_euclid(page_count as isize) as usize;
+        self.focus_side_panel_tab_at(next);
+    }
 
-        let next_id = self.side_panel.pages[next_index].id.clone();
-        self.side_panel.focused_page_id = Some(next_id.clone());
-        self.last_side_panel_focus_id = Some(next_id);
+    /// Focus the tab at `display_index` in [`tab_order`](crate::tui::ui::tab_order)
+    /// order (the order the tab bar draws them in). Returns false when the index
+    /// is out of range.
+    pub(super) fn focus_side_panel_tab_at(&mut self, display_index: usize) -> bool {
+        let order = crate::tui::ui::tab_order(&self.side_panel.pages);
+        let Some(&page_index) = order.get(display_index) else {
+            return false;
+        };
+        let page_id = self.side_panel.pages[page_index].id.clone();
+        self.focus_side_panel_page(&page_id);
+        true
+    }
+
+    /// Focus a side-panel page by id: remember it for the next `Alt+M`, drop its
+    /// `•` badge, and rewind the pane's scroll position to the top.
+    pub(super) fn focus_side_panel_page(&mut self, page_id: &str) {
+        if !self.side_panel.pages.iter().any(|page| page.id == page_id) {
+            return;
+        }
+        self.side_panel.focused_page_id = Some(page_id.to_string());
+        self.last_side_panel_focus_id = Some(page_id.to_string());
+        self.side_panel_tab_state.clear_badge(page_id);
         self.diff_pane_scroll = 0;
+        self.diff_pane_scroll_x = 0;
         self.diff_pane_auto_scroll = true;
         crate::tui::clear_side_panel_render_caches();
+    }
+
+    /// Panes cannot be listed when there is nothing to list.
+    pub(super) fn open_side_panel_page_picker(&mut self) {
+        if self.side_panel.pages.is_empty() {
+            self.set_status_notice("Side panel: no pages");
+            return;
+        }
+        self.side_panel_page_picker = Some(crate::tui::ui::PagePickerState::new());
+    }
+
+    /// Keys while the page list is open. Typing filters, arrows move, `Enter`
+    /// focuses the selected page, `Esc` closes without changing anything.
+    pub(super) fn handle_side_panel_page_picker_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) {
+        let Some(picker) = self.side_panel_page_picker.as_ref() else {
+            return;
+        };
+        let matches = picker.matches(&self.side_panel.pages);
+        let action = crate::tui::ui::page_picker_action(code, modifiers, matches.len());
+        let commit_row = match action {
+            crate::tui::ui::PagePickerAction::Commit => picker.selected_row(matches.len()),
+            _ => None,
+        };
+
+        match action {
+            crate::tui::ui::PagePickerAction::Ignored => {}
+            crate::tui::ui::PagePickerAction::Close => self.side_panel_page_picker = None,
+            crate::tui::ui::PagePickerAction::Commit => {
+                self.side_panel_page_picker = None;
+                let Some(row) = commit_row else {
+                    return;
+                };
+                let page_id = self.side_panel.pages[matches[row]].id.clone();
+                self.focus_side_panel_page(&page_id);
+                self.side_panel_user_hidden = false;
+                self.side_panel_explicit_hidden = false;
+                // Land with the keyboard on the pane so the page can be read
+                // straight away.
+                self.set_diff_pane_focus(true);
+                let status = self
+                    .side_panel
+                    .focused_page()
+                    .map(|page| format!("Side panel: {}", page.title))
+                    .unwrap_or_else(|| "Side panel: ON".to_string());
+                self.set_status_notice(status);
+            }
+            crate::tui::ui::PagePickerAction::Move(delta) => {
+                if let Some(picker) = self.side_panel_page_picker.as_mut() {
+                    picker.move_selection(delta, matches.len());
+                }
+            }
+            crate::tui::ui::PagePickerAction::Push(ch) => {
+                if let Some(picker) = self.side_panel_page_picker.as_mut() {
+                    picker.push_char(ch);
+                }
+            }
+            crate::tui::ui::PagePickerAction::Pop => {
+                if let Some(picker) = self.side_panel_page_picker.as_mut() {
+                    picker.pop_char();
+                }
+            }
+            crate::tui::ui::PagePickerAction::ClearQuery => {
+                if let Some(picker) = self.side_panel_page_picker.as_mut() {
+                    picker.clear_query();
+                }
+            }
+        }
     }
 
     fn side_pane_has_visual_images(&self) -> bool {
@@ -729,16 +872,22 @@ impl App {
             self.side_panel_user_hidden = false;
             self.side_panel_explicit_hidden = false;
             self.pinned_images_auto_hide_deadline = None;
-            if self.side_panel.pages.is_empty() {
-                return;
-            }
         }
 
         if self.side_panel.pages.is_empty() {
+            self.set_status_notice("Side panel: no pages");
             return;
         }
 
         if self.side_panel.focused_page().is_some() {
+            if !self.diff_pane_focus {
+                // Visible but not focused: put the keyboard on the pane instead
+                // of hiding what the user is about to use. The pre-existing
+                // sequence (open, then hide on the second press) still holds
+                // because the first press now also focuses.
+                self.set_diff_pane_focus(true);
+                return;
+            }
             self.last_side_panel_focus_id = self.side_panel.focused_page_id.clone();
             self.side_panel.focused_page_id = None;
             self.side_panel_user_hidden = true;
@@ -750,21 +899,31 @@ impl App {
             return;
         }
 
+        // Restore the page the user last read, else the first tab as drawn.
+        let order = crate::tui::ui::tab_order(&self.side_panel.pages);
         let restore_id = self
             .last_side_panel_focus_id
             .as_deref()
             .filter(|id| self.side_panel.pages.iter().any(|page| page.id == *id))
             .map(str::to_owned)
-            .or_else(|| self.side_panel.pages.first().map(|page| page.id.clone()));
+            .or_else(|| {
+                order
+                    .first()
+                    .map(|&index| self.side_panel.pages[index].id.clone())
+            });
 
         let Some(restore_id) = restore_id else {
             return;
         };
 
         self.side_panel.focused_page_id = Some(restore_id.clone());
-        self.last_side_panel_focus_id = Some(restore_id);
+        self.last_side_panel_focus_id = Some(restore_id.clone());
         self.side_panel_user_hidden = false;
         self.side_panel_explicit_hidden = false;
+        self.side_panel_tab_state.clear_badge(&restore_id);
+        // Opening the panel focuses it, so the very next keystroke scrolls the
+        // page instead of typing into the chat input.
+        self.set_diff_pane_focus(true);
         let status = self
             .side_panel
             .focused_page()
