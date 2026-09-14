@@ -15,6 +15,10 @@
     Kept in sync with the inline fallback copies inside install.ps1 and
     uninstall.ps1, which must stay self-contained because they are also run via
     `irm <url> | iex` with no local files.
+
+    Besides the PATH helpers this module also owns the launcher deployment
+    (Install-JcodeLauncher / Remove-JcodeStaleLauncherBackups), which must
+    survive being pointed at a currently running jcode.exe.
 #>
 
 function Get-JcodeLocalAppDataDir {
@@ -149,4 +153,78 @@ namespace Jcode {
     $result = [UIntPtr]::Zero
     [Jcode.EnvironmentBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, "Environment", 0x0002, 5000, [ref]$result) | Out-Null
     return $true
+}
+
+# --- Launcher deployment (shared with update_local_install.ps1) --------------
+# A plain Copy-Item onto the launcher path fails with "the file is in use" when
+# that jcode.exe is the currently running process: Windows refuses to overwrite
+# a loaded image. It does allow the directory entry to be *renamed* while the
+# process keeps running from its existing handle, so the deployment below stages
+# the new binary next to the target, renames the live one aside, then moves the
+# staged file into the stable PATH location (rolling back if that move fails).
+#
+# Measured 2026-09-14: update_local_install.ps1 used a bare Copy-Item and aborted
+# on a re-run while jcode was alive (PID 110020 held .jcode\bin\jcode.exe), even
+# though the first run had succeeded. install.ps1 already had the safe version;
+# this module now carries it so both scripts behave the same.
+
+function Remove-JcodeStaleLauncherBackups {
+    param(
+        [Parameter(Mandatory = $true)][string]$LauncherDir
+    )
+
+    Get-ChildItem -LiteralPath $LauncherDir -Filter '.jcode-launcher-old-*.exe' -File -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+function Install-JcodeLauncher {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$LauncherPath
+    )
+
+    $launcherDir = Split-Path -Parent $LauncherPath
+    New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
+
+    $operationId = [guid]::NewGuid().ToString('N')
+    $tempLauncher = Join-Path $launcherDir (".jcode-launcher-{0}.tmp.exe" -f $operationId)
+    $oldLauncher = Join-Path $launcherDir (".jcode-launcher-old-{0}.exe" -f $operationId)
+    $movedExistingLauncher = $false
+    try {
+        Copy-Item -Path $SourcePath -Destination $tempLauncher -Force
+        if (Test-Path -LiteralPath $LauncherPath) {
+            # Windows will not overwrite a loaded executable, but it does allow
+            # the directory entry to be renamed while the process keeps running
+            # from its existing file handle. Move the old launcher aside first,
+            # then atomically put the new binary at the stable PATH location.
+            Move-Item -LiteralPath $LauncherPath -Destination $oldLauncher
+            $movedExistingLauncher = $true
+        }
+
+        try {
+            Move-Item -LiteralPath $tempLauncher -Destination $LauncherPath
+        } catch {
+            if ($movedExistingLauncher -and -not (Test-Path -LiteralPath $LauncherPath)) {
+                Move-Item -LiteralPath $oldLauncher -Destination $LauncherPath
+                $movedExistingLauncher = $false
+            }
+            throw
+        }
+
+        if ($movedExistingLauncher) {
+            # Removal succeeds immediately for an idle launcher. If an older
+            # jcode process still has the renamed executable loaded, Windows
+            # keeps it until that process exits and the next install cleans it.
+            Remove-Item -LiteralPath $oldLauncher -Force -ErrorAction SilentlyContinue
+        }
+
+        # Only prune backups after the stable path contains the new launcher.
+        # Doing this before replacement could delete another concurrent
+        # installer's rollback file during its short rename window.
+        Remove-JcodeStaleLauncherBackups -LauncherDir $launcherDir
+    } finally {
+        Remove-Item -LiteralPath $tempLauncher -Force -ErrorAction SilentlyContinue
+    }
+
+    return $LauncherPath
 }

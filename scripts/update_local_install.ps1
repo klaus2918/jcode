@@ -161,7 +161,12 @@ function Invoke-JcodeLocalUpdate {
     # (different volume, non-NTFS, missing privileges).
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
     New-Item -ItemType Directory -Path $buildSlotDir -Force | Out-Null
-    Copy-Item -LiteralPath $source -Destination $launcherPath -Force
+    # Deploy through the shared helper instead of a bare Copy-Item: overwriting
+    # bin\jcode.exe aborts with "the file is in use" while that exe is the
+    # running jcode (measured 2026-09-14 on PID 110020, which held
+    # .jcode\bin\jcode.exe). The helper renames the live image aside first and
+    # sweeps the *.old-* backups an in-use update has to leave behind.
+    Install-JcodeLauncher -SourcePath $source -LauncherPath $launcherPath | Out-Null
     if (Test-Path -LiteralPath $buildSlotPath) {
         Remove-Item -LiteralPath $buildSlotPath -Force -ErrorAction SilentlyContinue
     }

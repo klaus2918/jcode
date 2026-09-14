@@ -472,6 +472,10 @@ function Set-JcodeProcessPath([string]$InstallDir) {
     return $update
 }
 
+# NOTE: scripts/lib/path_utils.ps1 carries the shared copy of this function plus
+# Install-JcodeLauncher below, used by update_local_install.ps1. This inline copy
+# stays self-contained for `irm <url> | iex`, which has no local files to
+# dot-source. Keep the two in sync.
 function Remove-JcodeStaleLauncherBackups {
     param(
         [Parameter(Mandatory = $true)][string]$LauncherDir
