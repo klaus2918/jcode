@@ -2109,15 +2109,15 @@ fn build_release_prompt(before_bump_instruction: &str, release_instruction: &str
 
 pub(super) fn build_fast_release_prompt() -> String {
     build_release_prompt(
-        "Before editing Cargo.toml or the changelog for the version bump, run scripts/quick-release.sh --prepare-fast v<version>. It must refresh the warm target/selfdev cache for the Linux x86_64 binary while the existing Cargo version is unchanged and record the prepared commit.",
-        "Then run scripts/quick-release.sh --fast-local v<version>. It must wrap the prepared selfdev binary with the release identity, publish that Linux asset and the GitHub release immediately, and let CI replace it with the portable Linux artifact while adding macOS, Windows, FreeBSD, signatures, and final checksums. Do not run the separate local macOS cross-build or wait for release optimization. If preparation is stale or the release-metadata commit contains code changes, stop instead of publishing a binary that differs from the tag.",
+        "",
+        "Then run scripts/quick-release.sh v<version> to tag the release-metadata commit and push the tag. This fork publishes Windows x86_64 only and builds it exclusively in CI (.github/workflows/release.yml), so there is no local build step to trigger: the pushed tag starts the build, signing, checksums and publication. Wait for the release workflow and report its result instead of publishing anything locally.",
     )
 }
 
 pub(super) fn build_remote_release_prompt() -> String {
     build_release_prompt(
         "",
-        "Then run scripts/quick-release.sh --remote v<version> to push the tag immediately without any local build. Let the release workflow build, sign, checksum, and publish every platform, and leave publication gated on those remote checks.",
+        "Then run scripts/quick-release.sh v<version> to push the tag without any local build. The script has a single mode now (the former --prepare-fast / --fast-local / --remote flags were removed on 2026-09-13 along with the local Linux/macOS build paths). Let the release workflow build, sign, checksum, and publish the Windows x86_64 assets, and leave publication gated on those remote checks.",
     )
 }
 

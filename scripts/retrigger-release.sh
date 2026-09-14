@@ -54,57 +54,12 @@ fail() { echo "REFUSED: $*" >&2; exit 1; }
 # 令牌来源优先级：环境变量 → git 凭据（与 verify-release.sh 一致）。
 # 匿名请求每 IP 每小时只有 60 次，发布验证很容易把它用尽（实测就是这样吃到 403），
 # 鉴权后是 5000 次。credential fill 加 timeout 防阻塞。
-API_TOKEN="${JCODE_API_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
-if [ -z "$API_TOKEN" ]; then
-  tmp_cred="$(mktemp)"
-  trap 'rm -f "$tmp_cred"' EXIT
-  if printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$tmp_cred" 2>/dev/null; then
-    API_TOKEN="$(sed -n 's/^password=//p' "$tmp_cred" | head -1)"
-  fi
-fi
-
-fetch_api() {
-  local url="$1"
-  local auth_args=()
-  [[ -n "$API_TOKEN" ]] && auth_args=(-H "Authorization: Bearer $API_TOKEN")
-
-  if command -v curl >/dev/null 2>&1; then
-    out="$(curl -fsS --max-time 20 "${auth_args[@]}" \
-      -H 'User-Agent: jcode-release' -H 'Accept: application/vnd.github+json' \
-      "$url" 2>/dev/null || true)"
-    [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
-  fi
-
-  if command -v python3 >/dev/null 2>&1; then
-    out="$(JCODE_API_TOKEN="$API_TOKEN" python3 -c '
-import os, sys, urllib.request
-headers = {"User-Agent": "jcode-release", "Accept": "application/vnd.github+json"}
-token = os.environ.get("JCODE_API_TOKEN", "")
-if token:
-    headers["Authorization"] = "Bearer " + token
-req = urllib.request.Request(sys.argv[1], headers=headers)
-try:
-    with urllib.request.urlopen(req, timeout=25) as r:
-        sys.stdout.write(r.read().decode())
-except Exception:
-    pass
-' "$url" 2>/dev/null || true)"
-    [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
-  fi
-
-  if command -v powershell >/dev/null 2>&1; then
-    out="$(JCODE_API_TOKEN="$API_TOKEN" powershell -NoProfile -Command "
-      try {
-        \$h = @{ 'User-Agent' = 'jcode-release'; Accept = 'application/vnd.github+json' }
-        if (\$env:JCODE_API_TOKEN) { \$h['Authorization'] = 'Bearer ' + \$env:JCODE_API_TOKEN }
-        Invoke-RestMethod -Uri '$url' -Headers \$h -TimeoutSec 25 -UseBasicParsing | ConvertTo-Json -Depth 6 -Compress
-      } catch { }
-    " 2>/dev/null || true)"
-    [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
-  fi
-
-  return 1
-}
+# 令牌获取与 HTTP 传输统一在 scripts/lib/release_api.sh（curl / python3 / PowerShell
+# 三通道；本机实测 curl 返回 000（被拦），python3 可用）。
+# shellcheck source=scripts/lib/release_api.sh
+. "$(dirname "$0")/lib/release_api.sh"
+API_TOKEN="$(jcode_release_token)"
+export JCODE_API_TOKEN="$API_TOKEN"
 
 echo "=== 前置条件检查：$TAG ==="
 
@@ -142,7 +97,7 @@ if [[ "$ASSUME_NO_RELEASE" == "true" ]]; then
   echo "  [警告] 跳过了 release 查询（--assume-no-release）"
   echo "        你必须在 https://github.com/$REPO_SLUG/releases 亲自确认 $TAG 无 release"
 else
-  if ! releases="$(fetch_api "https://api.github.com/repos/$REPO_SLUG/releases?per_page=100")"; then
+  if ! releases="$(jcode_release_fetch "https://api.github.com/repos/$REPO_SLUG/releases?per_page=100")"; then
     fail "无法查询 release 列表（curl/python3/PowerShell 全部不可达，或 API 限流）。\
 若你已在网页上确认 $TAG 无 release，可加 --assume-no-release 重跑"
   fi

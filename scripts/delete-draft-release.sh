@@ -25,14 +25,10 @@ cd "$(git rev-parse --show-toplevel)"
 fail() { echo "REFUSED: $*" >&2; exit 1; }
 
 # 令牌来源优先级：环境变量 → git 凭据（与 verify-release.sh 一致）。
-# credential fill 加 timeout 保护：无凭据且需交互时可能阻塞。
-TOKEN="${JCODE_API_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
-if [ -z "$TOKEN" ]; then
-  tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' EXIT
-  printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$tmp" 2>/dev/null || true
-  TOKEN="$(sed -n 's/^password=//p' "$tmp" | head -1)"
-fi
+# 实现统一在 scripts/lib/release_api.sh，credential fill 自带 timeout 保护。
+# shellcheck source=scripts/lib/release_api.sh
+. "$(dirname "$0")/lib/release_api.sh"
+TOKEN="$(jcode_release_token)"
 [[ -n "$TOKEN" ]] || fail "未取到 GitHub 令牌（可设 GH_TOKEN 环境变量，或配置 git 凭据）"
 
 TAG="$TAG" REPO_SLUG="$REPO_SLUG" DRY_RUN="$DRY_RUN" GH_TOKEN_FOR_API="$TOKEN" \

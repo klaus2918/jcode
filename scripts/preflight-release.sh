@@ -102,7 +102,7 @@ PY
 
 echo
 echo "=== 3. 发布辅助脚本可用 ==="
-for s in generate_release_notes.sh generate_checksums.sh quick-release.sh retrigger-release.sh verify-release.sh delete-draft-release.sh; do
+for s in generate_release_notes.sh generate_checksums.sh quick-release.sh retrigger-release.sh verify-release.sh delete-draft-release.sh lib/release_api.sh; do
   if [ -f "scripts/$s" ]; then
     if bash -n "scripts/$s" 2>/dev/null; then
       echo "[PASS] scripts/$s（存在且语法通过）"
@@ -114,6 +114,21 @@ for s in generate_release_notes.sh generate_checksums.sh quick-release.sh retrig
     echo "[WARN] scripts/$s 不存在"
   fi
 done
+
+echo
+echo "=== 3.1 发布链路只剩一条路径（2026-09-13 收敛）==="
+if grep -qE '^[[:space:]]*--(prepare-fast|fast-local|remote)\)' scripts/quick-release.sh; then
+  echo "[FAIL] scripts/quick-release.sh 重新引入了已删除的本地构建模式"
+  fail=$((fail + 1))
+else
+  echo "[PASS] quick-release.sh 只有一条路径（无 --prepare-fast / --fast-local / --remote）"
+fi
+if [ -e scripts/build_linux_compat.sh ]; then
+  echo "[FAIL] scripts/build_linux_compat.sh 仍在（已删除，见 docs/发布流程.md §6）"
+  fail=$((fail + 1))
+else
+  echo "[PASS] scripts/build_linux_compat.sh 已移除"
+fi
 
 echo
 echo "=== 4. 工作区与远端状态 ==="

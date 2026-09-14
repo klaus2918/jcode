@@ -155,19 +155,41 @@ function Invoke-JcodeLocalUpdate {
         Write-Info "JCODE_HOME already correct (User): $jcodeHome"
     }
 
-    # 3. Deploy the same file to both locations (idempotent overwrite).
+    # 3. Deploy to both locations. The build slot is normally a hard link to the
+    # bin launcher, so an install stores one binary blob instead of two identical
+    # copies; fall back to a real copy when the filesystem refuses hard links
+    # (different volume, non-NTFS, missing privileges).
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
     New-Item -ItemType Directory -Path $buildSlotDir -Force | Out-Null
     Copy-Item -LiteralPath $source -Destination $launcherPath -Force
-    Copy-Item -LiteralPath $source -Destination $buildSlotPath -Force
+    if (Test-Path -LiteralPath $buildSlotPath) {
+        Remove-Item -LiteralPath $buildSlotPath -Force -ErrorAction SilentlyContinue
+    }
+    $hardLinked = $false
+    try {
+        New-Item -ItemType HardLink -Path $buildSlotPath -Target $launcherPath -ErrorAction Stop | Out-Null
+        $hardLinked = $true
+    } catch {
+        $hardLinked = $false
+    }
+    if (-not $hardLinked) {
+        Copy-Item -LiteralPath $source -Destination $buildSlotPath -Force
+        Write-Info "Build slot is a separate copy (hard link unavailable on this filesystem)"
+    } else {
+        Write-Info "Build slot hard-linked to the bin launcher (single blob on disk)"
+    }
 
-    # 4. SHA256 consistency across all three copies.
+    # 4. SHA256 consistency: launcher and build slot must both match the source.
     $launcherHash = (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $buildSlotHash = (Get-FileHash -LiteralPath $buildSlotPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($launcherHash -ne $sourceHash -or $buildSlotHash -ne $sourceHash) {
         Write-Err "SHA256 mismatch after deploy: source=$sourceHash launcher=$launcherHash buildSlot=$buildSlotHash"
     }
-    Write-Info "SHA256 consistent (3 copies): $sourceHash"
+    if ($hardLinked) {
+        Write-Info "SHA256 consistent (source == bin launcher == hard-linked build slot): $sourceHash"
+    } else {
+        Write-Info "SHA256 consistent (3 copies): $sourceHash"
+    }
 
     # 5. Update the user PATH by reading the existing value and prepending.
     $currentUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')

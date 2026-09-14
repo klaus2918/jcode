@@ -27,17 +27,12 @@ TAG="${1:-}"
 
 cd "$(git rev-parse --show-toplevel)"
 
-# 令牌来源优先级：环境变量 → git 凭据。
+# 令牌来源优先级：环境变量 → git 凭据；实现见 scripts/lib/release_api.sh。
 #   - CI（如 GitHub Actions）用 GH_TOKEN / GITHUB_TOKEN，无需 git 凭据；
 #   - 本地开发机回退到 git credential fill（匿名请求每 IP 每小时仅 60 次，容易用尽）。
-# credential fill 加 timeout：无凭据且需交互的环境中可能阻塞。
-TOKEN="${JCODE_API_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
-if [ -z "$TOKEN" ]; then
-  cred="$(mktemp)"
-  trap 'rm -f "$cred"' EXIT
-  printf 'protocol=https\nhost=github.com\n\n' | timeout 15 git credential fill > "$cred" 2>/dev/null || true
-  TOKEN="$(sed -n 's/^password=//p' "$cred" | head -1)"
-fi
+# shellcheck source=scripts/lib/release_api.sh
+. "$(dirname "$0")/lib/release_api.sh"
+TOKEN="$(jcode_release_token)"
 JCODE_API_TOKEN="$TOKEN" \
 JCODE_REPO="$REPO_SLUG" JCODE_TAG="$TAG" JCODE_API_TOKEN="$JCODE_API_TOKEN" \
 JCODE_SKIP_DOWNLOAD="$SKIP_DOWNLOAD" \

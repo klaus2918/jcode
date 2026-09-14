@@ -194,7 +194,11 @@ incremental = false
 
 [profile.dev]
 debug = 0
-incremental = true
+# Measured 2026-09-13: leaving incremental enabled grew target/debug/incremental
+# to 24.85 GB on a single machine (target/ total 39.67 GB). Dev rebuilds are fast
+# enough without it; incremental stays enabled for the selfdev profile, which is
+# the hot local-iteration path.
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 0
@@ -464,7 +468,9 @@ opt-level = 3
 
 [profile.test]
 debug = 0
-incremental = true
+# Tests build into the same target/debug tree as dev; incremental here was the
+# single largest disk consumer on the dev machine (24.85 GB, measured 2026-09-13).
+incremental = false
 codegen-units = 256
 
 [dev-dependencies]

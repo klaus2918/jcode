@@ -9,10 +9,10 @@
 |---|---|---|
 | 发布平台 | 7 个（Linux x86_64/aarch64、macOS aarch64/x86_64、Windows x86_64/aarch64、FreeBSD x86_64） | **仅 Windows x86_64** |
 | 触发方式 | 推送 `v*` tag | 同上（`.github/workflows/release.yml`，且**没有** `workflow_dispatch`，只能靠 tag 触发） |
-| 构建位置 | 本地 `scripts/quick-release.sh --fast-local`（Linux x86_64 主机）＋ CI 补其余平台 | 全部在 CI；本地只用 `--remote` 推 tag |
+| 构建位置 | 本地 osxcross / Docker 构建，CI 补其余平台 | 全部在 CI；本地脚本只负责打 tag、推 tag、备好草稿 |
 | 代码签名 | Azure Artifact Signing 为必达步骤 | 本仓库未配置签名账号，签名步骤自动跳过；二进制未签名，首次运行会有 SmartScreen 警告 |
 | 包管理器 | 结束时更新 Homebrew 与 AUR（`scripts/update_packages.sh`） | 相关步骤已从 workflow 移除（它们依赖 Linux/macOS 资产）；脚本仍在仓库里，但 CI 不再调用 |
-| 跨平台工具链 | osxcross 交叉编译 macOS | 不使用（无 macOS 产物） |
+| 跨平台工具链 | osxcross 交叉编译 macOS | 不使用（无 macOS 产物）；相关脚本与文档已移除 |
 | 在线自更新 | 支持在线自更新 | 已移除，只支持 `jcode update --local <包>` 与 git 源码重建 |
 
 ## 二、最短发布路径
@@ -28,13 +28,14 @@ git commit -m "release: vX.Y.Z"
 git push origin master
 
 # 2. 打 tag 并推送，触发 CI 发布（Windows 下用 Git Bash 执行）
-bash scripts/quick-release.sh --remote vX.Y.Z
+bash scripts/quick-release.sh vX.Y.Z
 ```
 
 - 版本唯一真源是 `Cargo.toml` 的 `version`，tag 必须与其一致。
 - 必须同时准备 `changelog/vX.Y.Z.json` 与 `changelog/index.json` 里的对应条目，
   否则发行说明会退化成一份提交清单。
 - CI 先建 draft release，只有 Windows 双资产（`.exe` + `.tar.gz`）齐全才转为 public。
+- `bash scripts/quick-release.sh --dry-run vX.Y.Z` 只打印计划，不改变任何东西。
 
 ## 三、发布后核对
 
@@ -46,10 +47,14 @@ bash scripts/quick-release.sh --remote vX.Y.Z
 
 以下内容来自 upstream 的发布流程，在本仓库**不要照做**：
 
-- `scripts/quick-release.sh --fast-local` / `--prepare-fast`：要求 Linux x86_64 主机，
-  与本 fork“构建只在 CI”的取向冲突（原因见 [docs/发布流程.md](docs/发布流程.md) §6）。
+- 本地 Linux / macOS 构建（`--fast-local`、`--prepare-fast`，以及默认的
+  Docker manylinux + osxcross 构建）：这些模式已于 2026-09-13 删除。实测依据是
+  docker 未安装、`~/.osxcross` 与 `~/.cache/jcode-linux-compat` 都不存在，本地路径
+  全部无法执行，而 CI 只发布 Windows x86_64。
 - osxcross 交叉编译（`~/.osxcross`、`aarch64-apple-darwin`、`~/.cargo/config.toml` 的
   Darwin linker 配置）：本 fork 不含 macOS 产物。
+- `scripts/build_linux_compat.sh`（Docker manylinux2014 便携 Linux 构建）：已删除，
+  需要时从 `.op/changes/packaging-simplification/work/removed-scripts/` 或 git 历史取回。
 - Homebrew / AUR 发布：workflow 已移除对应步骤。
 - upstream 的在线安装脚本：`scripts/install.sh` 与 `scripts/install.ps1` 仍指向 upstream 仓库与
   其元数据服务，本 fork 的产物请用 `jcode update --local <包>`（或
@@ -60,7 +65,7 @@ bash scripts/quick-release.sh --remote vX.Y.Z
 | 文件 | 作用 |
 |---|---|
 | `.github/workflows/release.yml` | 唯一的正式发布流水线（Windows x86_64） |
-| `scripts/quick-release.sh` | 本地入口；本 fork 只用 `--remote` |
+| `scripts/quick-release.sh` | 本地入口：打 tag、推 tag、备好草稿；无本地构建模式 |
 | `scripts/retrigger-release.sh` | tag 事件被丢弃后重新触发（先查前提再删建 tag） |
 | `scripts/delete-draft-release.sh` | 清理异常中止留下的草稿 release |
 | `scripts/generate_release_notes.sh` | 生成发行说明（CI 与本地共用） |

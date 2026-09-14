@@ -134,11 +134,43 @@ remove_path() {
 
 log "target dir: $target_dir (activity window: ${activity_window_min}min, apply=$apply, aggressive=$aggressive, sweep=${sweep_days:-off})"
 
+# 0) Size report. Growth used to be invisible until the disk filled up: this
+#    tree reached 39.67 GB on a dev machine (2026-09-13), of which 24.85 GB was
+#    target/debug/incremental alone. Always report the total, the biggest
+#    children, and warn once the configured threshold is crossed.
+target_warn_gb="${JCODE_TARGET_WARN_GB:-20}"
+target_total=$(dir_bytes "$target_dir")
+target_total=${target_total:-0}
+if [[ -d "$target_dir" ]]; then
+  log "target size: $(human "$target_total") (warn threshold: ${target_warn_gb}GB, override: JCODE_TARGET_WARN_GB)"
+  while IFS=$'\t' read -r bytes path; do
+    [[ -n "$path" ]] || continue
+    log "  $(human "$bytes")  $(basename "$path")"
+  done < <(
+    for d in "$target_dir"/*; do
+      [[ -d "$d" ]] || continue
+      printf '%s\t%s\n' "$(dir_bytes "$d")" "$d"
+    done | sort -rn | head -5 || true
+  )
+  if (( target_total > target_warn_gb * 1024 * 1024 * 1024 )); then
+    log "WARNING: target/ exceeds ${target_warn_gb}GB; reclaim with: scripts/clean_target.sh --sweep 7 --apply"
+  fi
+fi
+
 # 1) Cross-compile / compat caches: not part of the local dev inner loop. They
 #    are regenerated on demand by release/compat scripts.
-for d in "$target_dir"/*-apple-darwin "$target_dir"/*-pc-windows-* "$target_dir"/linux-compat; do
+#
+#    Anything directly under target/ that is not a cargo profile dir is a
+#    target-triple dir (x86_64-unknown-linux-gnu, aarch64-apple-darwin,
+#    x86_64-pc-windows-msvc, ...) or the linux-compat container cache. The
+#    previous glob list (*-apple-darwin / *-pc-windows-* / linux-compat) never
+#    matched x86_64-unknown-linux-gnu, which was sitting at 0.68 GB.
+for d in "$target_dir"/*; do
   [[ -d "$d" ]] || continue
-  remove_path "$d" "cross-compile/compat cache"
+  case "$(basename "$d")" in
+    debug|release|release-lto|selfdev|tmp|package|doc) continue ;;
+  esac
+  remove_path "$d" "cross-compile/triple cache"
 done
 
 # 2) Sweep stale artifact generations. When a crate is recompiled (feature or
@@ -167,7 +199,7 @@ list_stale_dep_generations() {
 }
 
 if [[ -n "$sweep_days" ]]; then
-  for profile_dir in "$target_dir"/debug "$target_dir"/release "$target_dir"/selfdev; do
+  for profile_dir in "$target_dir"/debug "$target_dir"/release "$target_dir"/release-lto "$target_dir"/selfdev; do
     [[ -d "$profile_dir" ]] || continue
     if path_has_active_process "$profile_dir"; then
       log "SKIP sweep (active process): $profile_dir"
@@ -202,7 +234,7 @@ fi
 # 3) Aggressive: cargo clean on stale (not-recently-active, no active process)
 #    profiles to drop accumulated fingerprints/old artifact generations.
 if [[ "$aggressive" == "true" ]]; then
-  for profile_dir in "$target_dir"/debug "$target_dir"/release "$target_dir"/selfdev; do
+  for profile_dir in "$target_dir"/debug "$target_dir"/release "$target_dir"/release-lto "$target_dir"/selfdev; do
     [[ -d "$profile_dir" ]] || continue
     profile=$(basename "$profile_dir")
     [[ "$profile" == "debug" ]] && profile="dev"

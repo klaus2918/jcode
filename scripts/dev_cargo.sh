@@ -113,8 +113,8 @@ build_is_incremental() {
   esac
   case "$(selected_profile "$@")" in
     # Non-incremental profiles (see Cargo.toml): sccache can produce hits here.
-    release-lto) return 1 ;;
-    # selfdev/dev/release/test and unknown profiles default to incremental.
+    release-lto|dev|test) return 1 ;;
+    # selfdev/release and unknown profiles default to incremental.
     *) return 0 ;;
   esac
 }
