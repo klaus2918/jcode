@@ -38,7 +38,7 @@ impl Tool for SidePanelTool {
     }
 
     fn description(&self) -> &str {
-        "Manage side panel pages."
+        "Manage side panel pages. Page content is rendered as Markdown: write plain Markdown (headings, lists, tables, fenced code) and do not emit HTML, which is displayed as raw markup instead of being rendered."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -66,7 +66,7 @@ impl Tool for SidePanelTool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Page content."
+                    "description": "Page content as Markdown. Do not use HTML tags; the side panel does not render HTML."
                 },
                 "focus": {
                     "type": "boolean",

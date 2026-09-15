@@ -94,3 +94,31 @@ async fn side_panel_tool_loads_file_with_derived_page_id() {
     assert_eq!(page.title, "Project Plan.md");
     assert_eq!(page.content, "# Plan\n\nInitial");
 }
+
+#[test]
+fn side_panel_tool_steers_the_model_to_markdown() {
+    let tool = SidePanelTool::new();
+
+    let description = tool.description();
+    assert!(
+        description.contains("Markdown"),
+        "tool description should say page content is Markdown: {description}"
+    );
+    assert!(
+        description.contains("HTML"),
+        "tool description should warn that HTML is not rendered: {description}"
+    );
+
+    let schema = tool.parameters_schema();
+    let content = schema["properties"]["content"]["description"]
+        .as_str()
+        .expect("content description");
+    assert!(
+        content.contains("Markdown"),
+        "content schema should mention Markdown: {content}"
+    );
+    assert!(
+        content.contains("HTML"),
+        "content schema should warn against HTML: {content}"
+    );
+}

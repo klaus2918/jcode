@@ -501,6 +501,245 @@ fn test_mouse_click_in_main_chat_switches_focus_from_side_panel() {
 }
 
 #[test]
+fn test_mouse_click_in_side_panel_focuses_it() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.diff_pane_focus = false;
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: String::new(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "hello".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+
+    let backend = ratatui::backend::TestBackend::new(80, 16);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+    render_and_snap(&app, &mut terminal);
+
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+    let diff_area = layout.diff_pane_area.expect("side pane area");
+
+    let handled = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: diff_area.x + diff_area.width / 2,
+        row: diff_area.y + diff_area.height / 2,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    assert!(!handled, "clicks should request an immediate redraw");
+    assert!(
+        app.diff_pane_focus,
+        "clicking the side pane should hand it keyboard focus"
+    );
+    assert!(
+        app.status_notice()
+            .is_some_and(|notice| notice.starts_with("Focus: side pane")),
+        "focus notice should tell the user the pane is active: {:?}",
+        app.status_notice()
+    );
+}
+
+#[test]
+fn test_side_panel_click_focus_keeps_drag_selection_working() {
+    let _render_lock = scroll_render_test_lock();
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.diff_pane_focus = false;
+    app.copy_selection_mode = true;
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: String::new(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "alpha\nbeta highlight target\ngamma".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+
+    let backend = ratatui::backend::TestBackend::new(100, 20);
+    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+    render_and_snap(&app, &mut terminal);
+
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+    let diff_area = layout.diff_pane_area.expect("side pane area");
+
+    // Locate the first and last screen columns of the target line, mirroring
+    // the existing side-pane drag test.
+    let (visible_start, visible_end) =
+        crate::tui::ui::side_pane_visible_range().expect("side pane visible range");
+    let (line_idx, _line_text) = (visible_start..visible_end)
+        .find_map(|abs_line| {
+            let text = crate::tui::ui::side_pane_line_text(abs_line)?;
+            text.contains("beta highlight target").then_some((abs_line, text))
+        })
+        .expect("target side pane line");
+    let (row, start_column) = (diff_area.y..diff_area.y + diff_area.height)
+        .find_map(|screen_y| {
+            (diff_area.x..diff_area.x + diff_area.width)
+                .find(|&screen_x| {
+                    crate::tui::ui::side_pane_point_from_screen(screen_x, screen_y)
+                        .map(|point| point.abs_line == line_idx)
+                        .unwrap_or(false)
+                })
+                .map(|screen_x| (screen_y, screen_x))
+        })
+        .expect("screen x for side selection start");
+    let end_column = (diff_area.x..diff_area.x + diff_area.width)
+        .filter_map(|screen_x| {
+            crate::tui::ui::side_pane_point_from_screen(screen_x, row)
+                .filter(|point| point.abs_line == line_idx)
+                .map(|point| (screen_x, point.column))
+        })
+        .max_by_key(|(_, mapped)| *mapped)
+        .map(|(screen_x, _)| screen_x)
+        .expect("screen x for side selection end");
+
+    let down = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: start_column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+    assert!(!down, "click should request an immediate redraw");
+    assert!(
+        app.diff_pane_focus,
+        "clicking the side pane should focus it even while copy-selection is active"
+    );
+
+    let drag = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: end_column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+    assert!(!drag, "drag should request an immediate redraw");
+
+    let selected = app
+        .current_copy_selection_text()
+        .expect("expected side pane selection");
+    assert!(
+        selected.contains("beta highlight target"),
+        "selected={selected}"
+    );
+    assert_eq!(
+        app.current_copy_selection_pane(),
+        Some(crate::tui::CopySelectionPane::SidePane)
+    );
+
+    let up = app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: end_column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+    assert!(!up, "release should request an immediate redraw");
+    assert!(
+        app.diff_pane_focus,
+        "releasing the selection should not drop pane focus"
+    );
+}
+
+#[test]
+fn test_side_panel_focus_does_not_swallow_alt_chords() {
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.diff_pane_focus = true;
+    app.diff_pane_scroll = 5;
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: String::new(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+
+    // Alt chords belong to the global shortcut map: a pane that holds focus must
+    // let them fall through instead of consuming them as pane navigation.
+    app.handle_key(KeyCode::Char('j'), KeyModifiers::ALT)
+        .expect("alt chord should be handled without error");
+    assert_eq!(
+        app.diff_pane_scroll, 5,
+        "Alt+J should not scroll the focused side pane"
+    );
+
+    // Alt+G cycles the diff display mode; it used to jump the pane to the top
+    // whenever the pane had focus.
+    let before_mode = app.diff_mode.label().to_string();
+    app.handle_key(KeyCode::Char('g'), KeyModifiers::ALT)
+        .expect("alt chord should be handled without error");
+    assert_ne!(
+        app.diff_mode.label(),
+        before_mode.as_str(),
+        "Alt+G should cycle the diff display mode while the pane is focused"
+    );
+
+    // Unmodified keys still drive the pane.
+    app.handle_key(KeyCode::Char('j'), KeyModifiers::empty())
+        .expect("plain key should be handled without error");
+    assert!(
+        app.diff_pane_scroll > 5,
+        "plain j should still scroll the focused pane"
+    );
+}
+
+#[test]
+fn test_side_panel_wheel_keeps_working_without_a_layout_snapshot() {
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.diff_pane_focus = true;
+    app.diff_pane_scroll = 2;
+    app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("plan".to_string()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "plan".to_string(),
+            title: "Plan".to_string(),
+            file_path: String::new(),
+            format: crate::side_panel::SidePanelPageFormat::Markdown,
+            source: crate::side_panel::SidePanelPageSource::Managed,
+            content: "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight".to_string(),
+            updated_at_ms: 1,
+        }],
+    };
+
+    // Simulate a layout snapshot that cannot place the pane yet (the frame right
+    // after the panel opens or a resize). The focused pane must still receive
+    // the wheel instead of scrolling the chat.
+    crate::tui::ui::record_layout_snapshot(
+        ratatui::layout::Rect::new(0, 0, 80, 20),
+        None,
+        None,
+        None,
+    );
+
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 70,
+        row: 5,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    assert!(
+        app.diff_pane_scroll > 2,
+        "wheel should fall back to the focused pane when the layout cannot place it"
+    );
+}
+
+#[test]
 fn test_mouse_click_in_input_switches_focus_from_side_panel() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();

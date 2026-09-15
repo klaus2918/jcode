@@ -370,7 +370,11 @@ impl App {
         code: KeyCode,
         modifiers: KeyModifiers,
     ) -> bool {
-        if !self.diff_pane_focus || modifiers.contains(KeyModifiers::CONTROL) {
+        // Only unmodified keys (plus Shift for `G`/`BackTab`) belong to the
+        // pane; Alt/Super stay reserved for the global map (e.g. Alt+G).
+        if !self.diff_pane_focus
+            || modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+        {
             return false;
         }
 
@@ -1065,20 +1069,25 @@ impl App {
             finish_mouse_event!(false, "session_picker_overlay");
         }
         let layout = super::super::ui::last_layout_snapshot();
-        let mut over_diff_pane = false;
-        let mut input_area: Option<Rect> = None;
-        if let Some(layout) = layout {
-            input_area = layout.input_area;
-            if let Some(diff_area) = layout.diff_pane_area {
-                over_diff_pane =
-                    super::super::layout_utils::point_in_rect(mouse.column, mouse.row, diff_area);
-            }
-        }
+        let diff_pane_area = layout.as_ref().and_then(|layout| layout.diff_pane_area);
+        let input_area: Option<Rect> = layout.as_ref().and_then(|layout| layout.input_area);
+        let diff_pane_area_known = diff_pane_area.is_some();
+        let over_diff_pane = diff_pane_area.is_some_and(|area| {
+            super::super::layout_utils::point_in_rect(mouse.column, mouse.row, area)
+        });
 
         let clicked_main_chat =
             matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) && !over_diff_pane;
         if clicked_main_chat {
             self.set_diff_pane_focus(false);
+        }
+
+        // Clicking the pane focuses it; the press still arms copy-selection below.
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && over_diff_pane
+            && self.diff_pane_visible()
+        {
+            self.set_diff_pane_focus(true);
         }
 
         // A left press in the composer moves the caret first (native text-field
@@ -1115,8 +1124,12 @@ impl App {
         let mut handled_scroll = false;
         let mut immediate_redraw = false;
 
+        // A focused pane also owns the wheel while the layout cannot place it.
+        let wheel_over_diff_pane =
+            over_diff_pane || (self.diff_pane_focus && !diff_pane_area_known);
+
         if !handled_scroll
-            && over_diff_pane
+            && wheel_over_diff_pane
             && self.diff_pane_visible()
             && matches!(
                 mouse.kind,
