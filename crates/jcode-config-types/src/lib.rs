@@ -1486,6 +1486,166 @@ impl Default for FeatureConfig {
     }
 }
 
+/// 模型调用收敛控制项（变更 `agent-model-call-optimization` · P2 #6）。
+///
+/// 设计原则（方案「功能稳定性保护」）：**默认保守**——改变行为的控制默认关闭
+/// （关闭即回到现状），只观测类控制默认开启；每项独立可回退；参数集中在此，
+/// 便于诊断与灰度放开。总开关 `enabled=false` 时所有控制项一律按现状执行，
+/// 作为「一键回退」入口。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ModelCallControlConfig {
+    /// 总开关：false 时所有控制项按现状执行（仅观测，不介入）。
+    pub enabled: bool,
+    /// busy-requeue 合并 / 冷却退避 / 尝试上限（P2 #7/#8）。
+    pub busy_requeue: BusyRequeueControl,
+    /// 单回合续写预算统一 + 内容哈希去重（P2 #9）。
+    pub continuation_budget: ContinuationBudgetControl,
+    /// auto-poke 软阈值提醒 / 硬阈值停止（P2 #10）。
+    pub auto_poke_stop: AutoPokeStopControl,
+    /// 后台监控与 presence 轮询退化（P2 #11）。
+    pub poll_backoff: PollBackoffControl,
+    /// 工具回合效率：重复只读观测与可选去重（P2 工具回合效率）。
+    pub tool_dedup: ToolDedupControl,
+    /// 调用账本自身：打标缺口告警最小间隔（毫秒，0 = 使用内置默认）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_alarm_interval_ms: Option<u64>,
+}
+
+impl Default for ModelCallControlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            busy_requeue: BusyRequeueControl::default(),
+            continuation_budget: ContinuationBudgetControl::default(),
+            auto_poke_stop: AutoPokeStopControl::default(),
+            poll_backoff: PollBackoffControl::default(),
+            tool_dedup: ToolDedupControl::default(),
+            ledger_alarm_interval_ms: None,
+        }
+    }
+}
+
+/// busy-requeue 合并 / 退避 / 上限（#7/#8）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BusyRequeueControl {
+    /// 启用合并 + 退避（默认 false：仅观测、行为不变）。
+    pub enabled: bool,
+    /// 同内容只排队一次（仅当 `enabled` 生效）。
+    pub merge_same_content: bool,
+    /// 退避基数（毫秒），按尝试次数指数上探。
+    pub backoff_base_ms: u64,
+    /// 退避封顶（毫秒）。
+    pub backoff_cap_ms: u64,
+    /// 单次排队的最多重派次数，超过后改为等待显式空闲信号。
+    pub max_attempts: u32,
+    /// 等待空闲信号的兜底超时（毫秒）。
+    pub idle_wait_timeout_ms: u64,
+}
+
+impl Default for BusyRequeueControl {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            merge_same_content: true,
+            backoff_base_ms: 500,
+            backoff_cap_ms: 8_000,
+            max_attempts: 5,
+            idle_wait_timeout_ms: 30_000,
+        }
+    }
+}
+
+/// 单回合续写预算统一 + 内容去重（#9）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ContinuationBudgetControl {
+    /// 启用统一续写预算（默认 false：仅观测，沿用现状分层上限）。
+    pub enabled: bool,
+    /// 单回合续写总上限（分层语义保留，取更严者）。
+    pub max_per_turn: u32,
+    /// 相同内容的续写不重复发送（内容哈希去重）。
+    pub dedup_same_content: bool,
+}
+
+impl Default for ContinuationBudgetControl {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_per_turn: 8,
+            dedup_same_content: true,
+        }
+    }
+}
+
+/// auto-poke 软阈值提醒 / 硬阈值停止（#10）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AutoPokeStopControl {
+    /// 启用硬阈值停止（默认 false：只做软提醒，不停）。
+    pub enabled: bool,
+    /// 软阈值：占 `max_per_turn` 的比例达到即提醒一次。
+    pub soft_ratio: f32,
+    /// 硬停是否仅作用于非用户触发（决策 2：用户轮不受硬限，默认 true）。
+    pub non_user_only: bool,
+}
+
+impl Default for AutoPokeStopControl {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            soft_ratio: 0.8,
+            non_user_only: true,
+        }
+    }
+}
+
+/// 轮询退化（#11）：后台监控与 presence 自适应间隔。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PollBackoffControl {
+    /// 启用自适应间隔（默认 false：保持现状固定间隔）。
+    pub enabled: bool,
+    /// 活跃态间隔（毫秒，现状值）。
+    pub active_interval_ms: u64,
+    /// 空闲态间隔（毫秒）。
+    pub idle_interval_ms: u64,
+}
+
+impl Default for PollBackoffControl {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active_interval_ms: 2_000,
+            idle_interval_ms: 6_000,
+        }
+    }
+}
+
+/// 工具回合效率（P2）：同回合重复只读调用的观测与可选去重。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ToolDedupControl {
+    /// 启用去重（默认 false：仅观测重复率与潜在节省）。
+    pub enabled: bool,
+    /// 启用判定「只读」工具名单（空 = 内置默认）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub readonly_tools: Vec<String>,
+    /// 单回合去重缓存上限（保护性限幅）。
+    pub max_entries_per_turn: usize,
+}
+
+impl Default for ToolDedupControl {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            readonly_tools: Vec::new(),
+            max_entries_per_turn: 64,
+        }
+    }
+}
+
 /// Search engine used by the websearch tool.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "lowercase")]

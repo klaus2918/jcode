@@ -1,4 +1,5 @@
 use super::*;
+use jcode_provider_core::{CallReason, CallSource, current_call_source, with_call_reason};
 
 /// Largest byte index `<= index` that is a UTF-8 char boundary in `text`.
 /// Equivalent to the unstable `str::floor_char_boundary`, reimplemented so the
@@ -96,6 +97,10 @@ impl Agent {
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
+
+        // 调用归因（agent-model-call-optimization #1）：本轮迭代即将发起的模型调用
+        // 原因（发起方维度由外层作用域声明，见 `with_call_origin`）。
+        let mut next_call_reason = CallReason::Initial;
 
         loop {
             let repaired = self.repair_missing_tool_outputs();
@@ -228,13 +233,20 @@ impl Agent {
             drop(cache_signature_messages);
             drop(ephemeral_signature_messages);
             let mut keepalive = stream_keepalive_ticker();
+            // 调用归因（#1）：本次调用原因；后续迭代默认按「工具结果后的续轮」
+            // 记账，具体 `continue` 分支会覆盖为更精确的原因。
+            let call_reason = next_call_reason;
+            next_call_reason = CallReason::ToolResults;
             let mut stream = {
-                let mut complete_future = std::pin::pin!(provider.complete_split(
-                    send_messages,
-                    &tools,
-                    &split_prompt.static_part,
-                    &split_prompt.dynamic_part,
-                    resume_session_id.as_deref(),
+                let mut complete_future = std::pin::pin!(with_call_reason(
+                    call_reason,
+                    provider.complete_split(
+                        send_messages,
+                        &tools,
+                        &split_prompt.static_part,
+                        &split_prompt.dynamic_part,
+                        resume_session_id.as_deref(),
+                    ),
                 ));
                 loop {
                     tokio::select! {
@@ -931,6 +943,7 @@ impl Agent {
                     api_start,
                     vec![("mode", "mpsc".to_string())],
                 );
+                next_call_reason = CallReason::ContextLimit;
                 continue;
             }
 
@@ -996,6 +1009,14 @@ impl Agent {
                 cache_read_input_tokens: usage_cache_read,
                 cache_creation_input_tokens: usage_cache_creation,
             };
+
+            // 会话级账本记账（#3）：内存聚合 + 节流批写；仅观测，fail-open。
+            let ledger_usage = self.last_usage.clone();
+            let ledger_source = CallSource {
+                origin: current_call_source().origin,
+                reason: call_reason,
+            };
+            self.record_call_ledger(ledger_source, api_start.elapsed(), &ledger_usage);
 
             // Detect a transparent mid-request model switch (e.g. Anthropic's
             // retired `claude-fable-5` falling back to `claude-opus-4-8`). The
@@ -1158,6 +1179,7 @@ impl Agent {
                         &mut empty_post_tool_continuations,
                     )?
                 {
+                    next_call_reason = CallReason::EmptyPostTool;
                     continue;
                 }
                 match self.handle_streaming_no_tool_calls(
@@ -1198,7 +1220,10 @@ impl Agent {
                         }
                         break;
                     }
-                    NoToolCallOutcome::ContinueWithoutEvent => continue,
+                    NoToolCallOutcome::ContinueWithoutEvent => {
+                        next_call_reason = CallReason::Incomplete;
+                        continue;
+                    }
                     NoToolCallOutcome::ContinueWithSoftInterrupt { injected, point } => {
                         for event in Self::build_soft_interrupt_events(injected, point, None) {
                             let _ = event_tx.send(event);

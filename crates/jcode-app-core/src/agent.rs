@@ -216,6 +216,15 @@ pub struct Agent {
     cache_tracker: CacheTracker,
     /// Last token usage from API request (for debug socket queries)
     last_usage: TokenUsage,
+    /// 会话级调用账本（#3）：按 (发起方 × 原因) 内存聚合，节流批写侧车文件。
+    /// 仅观测、fail-open，不影响主链路。
+    call_ledger: crate::call_ledger::CallLedger,
+    /// 账本上次落盘时间（批写节流）。
+    call_ledger_flushed_at: Option<std::time::Instant>,
+    /// 自上次落盘以来新增的调用记录数（批写节流）。
+    call_ledger_pending: u32,
+    /// 单回合续写预算 + 相同续写去重门（P2 #9）；回合开始时复位。
+    continuation_gate: crate::call_control::ContinuationGate,
     /// Locked tool list: once the first API request is sent, freeze the tool list
     /// to avoid cache invalidation when MCP tools arrive asynchronously.
     /// Cleared on compaction/reset.
@@ -271,6 +280,8 @@ impl Agent {
     ) -> Self {
         let skills = SkillRegistry::shared_snapshot();
         let initial_provider_model = provider.model();
+        // #3：会话级调用账本从侧车文件恢复（缺失/损坏时为空账本，fail-open）。
+        let call_ledger = crate::call_ledger::load_ledger(&session.id);
         let agent = Self {
             provider,
             registry,
@@ -293,6 +304,10 @@ impl Agent {
             graceful_shutdown: InterruptSignal::new(),
             cache_tracker: CacheTracker::new(),
             last_usage: TokenUsage::default(),
+            call_ledger,
+            call_ledger_flushed_at: None,
+            call_ledger_pending: 0,
+            continuation_gate: crate::call_control::ContinuationGate::new(),
             locked_tools: None,
             mcp_late_register_resolved: false,
             system_prompt_override: None,
@@ -894,6 +909,80 @@ impl Agent {
     /// Get the last token usage from the most recent API request
     pub fn last_usage(&self) -> &TokenUsage {
         &self.last_usage
+    }
+
+    /// 只读账本视图（#3，信息部件 / 调试查询用）。
+    pub fn call_ledger(&self) -> &crate::call_ledger::CallLedger {
+        &self.call_ledger
+    }
+
+    /// 记录一次 provider 调用到会话账本（#3，仅观测、fail-open）。
+    ///
+    /// 内存聚合 + 节流批写：不在此处同步落盘以外的任何主链路行为。
+    pub fn record_call_ledger(
+        &mut self,
+        source: jcode_provider_core::CallSource,
+        elapsed: std::time::Duration,
+        usage: &TokenUsage,
+    ) {
+        let now = chrono::Utc::now();
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        self.call_ledger.record(
+            source,
+            crate::call_ledger::LedgerUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_input_tokens,
+                cache_write_tokens: usage.cache_creation_input_tokens,
+            },
+            elapsed_ms,
+            now,
+        );
+        self.call_ledger_pending = self.call_ledger_pending.saturating_add(1);
+        if let Some(line) = self
+            .call_ledger
+            .take_unknown_alarm(now, crate::call_ledger::UNKNOWN_ALARM_MIN_INTERVAL_MS)
+        {
+            logging::warn(&line);
+        }
+        self.maybe_flush_call_ledger(false);
+    }
+
+    /// 账本节流批写（#3）：时间 / 条数任一到期即落盘；失败只记日志。
+    pub fn maybe_flush_call_ledger(&mut self, force: bool) {
+        let due_by_time = self
+            .call_ledger_flushed_at
+            .map(|at| at.elapsed().as_millis() as u64 >= crate::call_ledger::FLUSH_MIN_INTERVAL_MS)
+            .unwrap_or(true);
+        let due_by_count = self.call_ledger_pending >= crate::call_ledger::FLUSH_MIN_RECORDS;
+        if !force && !due_by_time && !due_by_count {
+            return;
+        }
+        if self.call_ledger.is_empty() {
+            return;
+        }
+        let session_id = self.session.id.clone();
+        crate::call_ledger::save_ledger(&session_id, &self.call_ledger);
+        self.call_ledger_flushed_at = Some(std::time::Instant::now());
+        self.call_ledger_pending = 0;
+    }
+
+    /// 强制落盘账本（回合结束 / 关闭会话时调用）。
+    pub fn flush_call_ledger(&mut self) {
+        self.maybe_flush_call_ledger(true);
+    }
+
+    /// #12 工具回合效率：回合结束汇总「同回合重复只读调用」观测
+    /// （默认仅观测，不改变行为；有重复才记一行，避免噪音）。
+    pub fn report_tool_turn_dedup(&self) {
+        let stats = crate::tool::turn_dedup::end_turn(&self.session.id);
+        if stats.duplicates == 0 {
+            return;
+        }
+        crate::logging::info(&format!(
+            "TOOL_TURN_DEDUP action=summary duplicates={} potential_saved_chars={}",
+            stats.duplicates, stats.potential_saved_chars
+        ));
     }
 
     pub fn token_usage_totals(&self) -> crate::protocol::TokenUsageTotals {

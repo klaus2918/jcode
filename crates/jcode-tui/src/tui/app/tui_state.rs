@@ -1508,7 +1508,17 @@ impl crate::tui::TuiState for App {
             connection_type: self.connection_type.clone(),
             workspace_rows,
             workspace_animation_tick,
-            ambient_info: gather_ambient_info(crate::config::config().ambient.enabled),
+            ambient_info: gather_ambient_info(crate::config::config().ambient.enabled).map(
+                |mut info| {
+                    // #4：预算条接入真实数据（当前口径=上下文剩余率；P2 统一预算
+                    // 落地后再评估是否替换）。
+                    info.budget_percent = crate::tui::app::helpers::context_headroom_percent(
+                        self.context_limit,
+                        self.current_stream_context_tokens(),
+                    );
+                    info
+                },
+            ),
             observed_context_tokens: self.current_stream_context_tokens(),
             cache_hit_info,
             compaction_info,
@@ -1522,6 +1532,12 @@ impl crate::tui::TuiState for App {
                 false
             },
             git_info: gather_git_info(),
+            call_ledger: if self.is_remote {
+                // 远端会话的账本由服务端进程持有，本地不读盘。
+                None
+            } else {
+                crate::tui::app::helpers::cached_call_ledger_summary(self.session.id.as_str())
+            },
         }
     }
 

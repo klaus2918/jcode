@@ -1,15 +1,70 @@
 use super::{
-    BackgroundInfo, CacheHitInfo, CacheMissAttribution, GraphEdge, GraphNode, InfoWidgetData,
-    Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState, PipelineState,
-    StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind, calculate_placements,
-    calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
-    render_kv_cache_widget, render_memory_compact, render_memory_widget, render_model_widget,
-    render_todos_compact, render_todos_expanded, render_todos_widget, render_usage_compact,
-    render_usage_widget, swarm_plan_todos, truncate_smart,
+    BackgroundInfo, CacheHitInfo, CacheMissAttribution, CallLedgerSummary, GraphEdge, GraphNode,
+    InfoWidgetData, Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState,
+    PipelineState, StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind,
+    calculate_placements, calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
+    render_call_ledger_section, render_kv_cache_widget, render_memory_compact,
+    render_memory_widget, render_model_widget, render_todos_compact, render_todos_expanded,
+    render_todos_widget, render_usage_compact, render_usage_widget, swarm_plan_todos,
+    truncate_smart,
 };
 use crate::protocol::SwarmMemberStatus;
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
+
+#[test]
+fn call_ledger_section_renders_totals_gap_and_rows() {
+    use crate::call_ledger::{CallLedger, LedgerUsage};
+    use jcode_provider_core::{CallOrigin, CallReason, CallSource};
+
+    let mut ledger = CallLedger::default();
+    let at = chrono::Utc::now();
+    ledger.record(
+        CallSource {
+            origin: CallOrigin::User,
+            reason: CallReason::ToolResults,
+        },
+        LedgerUsage {
+            input_tokens: 12_000,
+            output_tokens: 400,
+            cache_read_tokens: Some(1_000),
+            cache_write_tokens: None,
+        },
+        250,
+        at,
+    );
+    ledger.record(CallSource::default(), LedgerUsage::default(), 100, at);
+
+    let summary = CallLedgerSummary::from_ledger(&ledger, 2).expect("non-empty summary");
+    assert_eq!(summary.total_calls, 2);
+    assert_eq!(summary.unknown_origins, 1);
+    assert_eq!(summary.unknown_reasons, 1);
+    assert_eq!(summary.rows.len(), 2);
+
+    let data = InfoWidgetData {
+        call_ledger: Some(summary.clone()),
+        ..Default::default()
+    };
+    let lines = render_call_ledger_section(&data, 80);
+    // 渲染行数必须与高度计算一致，否则紧凑总览页会裁行或留空。
+    assert_eq!(lines.len() as u16, summary.line_count());
+    let text = lines_text(&lines);
+    // `lines_text` 以 "\n" 连接 span，故跨 span 的短语不能整体断言。
+    assert!(text.contains("Calls"), "totals label missing: {text}");
+    assert!(
+        text.contains("2 · 12.0k in / 400 out"),
+        "totals values missing: {text}"
+    );
+    assert!(text.contains("unattributed"), "gap line missing: {text}");
+    assert!(text.contains("user / tool_results"), "row missing: {text}");
+
+    // 空账本不占行。
+    let empty = InfoWidgetData {
+        call_ledger: CallLedgerSummary::from_ledger(&CallLedger::default(), 2),
+        ..Default::default()
+    };
+    assert!(render_call_ledger_section(&empty, 80).is_empty());
+}
 
 #[test]
 fn effective_prompt_tokens_handles_split_and_subset_accounting() {

@@ -5,15 +5,14 @@
 //! 完成后通过通知通道告知 TUI。
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex as StdMutex};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 
 /// 单个后台会话的元数据
 #[derive(Debug, Clone)]
 pub(super) struct BackgroundSessionInfo {
     /// session ID
-    #[allow(dead_code)] // Phase 2 TUI 集成时使用
     pub session_id: String,
     /// 切换为后台的时间
     pub moved_to_background_at: Instant,
@@ -67,8 +66,10 @@ pub(super) fn init_background_session_tracker() -> mpsc::UnboundedReceiver<Backg
 /// 将 session 注册为后台会话。
 ///
 /// 当 Agent 仍在执行 turn 时（Mutex 被锁定），切换 session 会调用此函数，
-/// 保留 session 在 `SessionAgents` 中不被清理。
+/// 保留 session 在 `SessionAgents` 中不被清理。同时在 `~/.jcode/background_pids`
+/// 写入跨进程标记，让任意进程的会话看板都能看到「后台运行中」。
 pub(super) fn register_background_session(session_id: &str, friendly_name: Option<String>) {
+    crate::storage::mark_background(session_id);
     if let Ok(mut tracker) = TRACKER.lock() {
         crate::logging::info(&format!(
             "BACKGROUND_SESSION: registered {} (name={:?})",
@@ -85,6 +86,9 @@ pub(super) fn register_background_session(session_id: &str, friendly_name: Optio
 
 /// 移除后台会话注册（完成后或恢复前台时调用）
 pub(super) fn unregister_background_session(session_id: &str) {
+    // 标记清理先行：即使 tracker 里没有记录（如重启后的漂移），
+    // 也不应让面板继续显示「后台运行中」。
+    crate::storage::unmark_background(session_id);
     if let Ok(mut tracker) = TRACKER.lock()
         && tracker.sessions.remove(session_id).is_some()
     {
@@ -92,8 +96,7 @@ pub(super) fn unregister_background_session(session_id: &str) {
     }
 }
 
-/// 检查 session 是否为后台会话
-#[allow(dead_code)] // Phase 2 TUI session picker 集成时使用
+/// 检查 session 是否为后台会话（在 `handle_resume_session` 恢复前台时用于注销）
 pub(super) fn is_background_session(session_id: &str) -> bool {
     TRACKER
         .lock()
@@ -101,8 +104,7 @@ pub(super) fn is_background_session(session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 获取所有后台会话的信息快照
-#[allow(dead_code)] // Phase 2 TUI 后台面板集成时使用
+/// 获取所有后台会话的信息快照（调试 socket 的 `background_sessions` 命令消费）
 pub fn list_background_sessions() -> Vec<BackgroundSessionInfo> {
     TRACKER
         .lock()
@@ -120,10 +122,15 @@ pub(super) fn notify_completion(event: BackgroundCompletionEvent) {
 }
 
 /// 清理所有后台会话记录（server 关闭时调用）
-#[allow(dead_code)] // Phase 2 graceful shutdown 集成时使用
+///
+/// 除清空内存 tracker 外，同时移除 `~/.jcode/background_pids` 文件标记，
+/// 避免 server 退出后其他进程的看板残留「后台运行中」幽灵行。
 pub(super) fn clear_all_background_sessions() {
     if let Ok(mut tracker) = TRACKER.lock() {
         let count = tracker.sessions.len();
+        for session_id in tracker.sessions.keys() {
+            crate::storage::unmark_background(session_id);
+        }
         tracker.sessions.clear();
         if count > 0 {
             crate::logging::info(&format!(
@@ -138,10 +145,17 @@ pub(super) fn clear_all_background_sessions() {
 ///
 /// 每 2 秒检查一次所有后台 session 的 Agent 是否已完成 turn。
 /// 当 Agent 的 Mutex 可以成功锁定时，说明 turn 已完成。
-pub(super) fn spawn_background_session_monitor(sessions: crate::server::SessionAgents) {
+pub(super) fn spawn_background_session_monitor(
+    sessions: crate::server::SessionAgents,
+    swarm_members: Arc<RwLock<HashMap<String, super::SwarmMember>>>,
+) {
     tokio::spawn(async move {
+        // #11 轮询退化：有后台会话时用 active 间隔，空闲时用 idle 间隔
+        // （控制默认关闭 → 恒为现状 2s）。注册/完成路径仍即时触发检查。
+        let mut had_background = false;
         loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            let interval = crate::call_control::poll_interval(had_background);
+            tokio::time::sleep(interval).await;
 
             let session_ids: Vec<String> = {
                 match TRACKER.lock() {
@@ -149,6 +163,7 @@ pub(super) fn spawn_background_session_monitor(sessions: crate::server::SessionA
                     Err(_) => continue,
                 }
             };
+            had_background = !session_ids.is_empty();
 
             if session_ids.is_empty() {
                 continue;
@@ -190,12 +205,28 @@ pub(super) fn spawn_background_session_monitor(sessions: crate::server::SessionA
                             // 标记 session 为已关闭并持久化状态
                             agent.mark_closed();
 
-                            // 发送完成通知
+                            // 发送完成通知（进程内通道）
                             notify_completion(BackgroundCompletionEvent {
                                 session_id: session_id.clone(),
-                                friendly_name: info.friendly_name,
+                                friendly_name: info.friendly_name.clone(),
                                 duration,
                             });
+
+                            // 即时通道：广播给所有已连接客户端，让会话看板与完成
+                            // 通知即时更新（跨进程兜底见 `finished_pids` 标记快照）。
+                            let delivered = super::state::broadcast_all_client_events(
+                                &swarm_members,
+                                crate::protocol::ServerEvent::BackgroundSessionFinished {
+                                    session_id: session_id.clone(),
+                                    friendly_name: info.friendly_name.clone(),
+                                    duration_ms: duration.as_millis() as u64,
+                                },
+                            )
+                            .await;
+                            crate::logging::info(&format!(
+                                "BACKGROUND_SESSION: completion broadcast for {} reached {} client(s)",
+                                session_id, delivered
+                            ));
                         }
                     }
                     Err(_) => {
@@ -214,6 +245,13 @@ mod tests {
     // 所有测试合并为一个，避免并行执行时共享全局 TRACKER 的竞争条件。
     #[test]
     fn tracker_lifecycle() {
+        // 注册/注销现在会写 `~/.jcode/background_pids` 跨进程标记，
+        // 测试需隔离 JCODE_HOME，避免污染真实用户目录。
+        let _env_lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
         // --- 清理初始状态 ---
         if let Ok(mut tracker) = TRACKER.lock() {
             tracker.sessions.clear();
@@ -232,11 +270,15 @@ mod tests {
             .collect();
         assert!(names.contains(&Some("优化查询")));
         assert!(names.contains(&None));
+        // 跨进程文件标记与内存 tracker 同步（会话看板的可见性来源）
+        assert!(crate::storage::session_is_background("sess-1"));
+        assert!(crate::storage::session_is_background("sess-2"));
 
         // --- unregister ---
         assert!(is_background_session("sess-1"));
         unregister_background_session("sess-1");
         assert!(!is_background_session("sess-1"));
+        assert!(!crate::storage::session_is_background("sess-1"));
         unregister_background_session("nonexistent");
 
         // --- is_background_session ---
@@ -254,6 +296,12 @@ mod tests {
         assert_eq!(list_background_sessions().len(), 4);
         clear_all_background_sessions();
         assert_eq!(list_background_sessions().len(), 0);
+        for session_id in ["a", "b", "c", "sess-2"] {
+            assert!(
+                !crate::storage::session_is_background(session_id),
+                "clear_all 应清理 {session_id} 的文件标记"
+            );
+        }
 
         // --- register 替换已有条目 ---
         register_background_session("sess-1", Some("旧名".to_string()));
@@ -282,6 +330,10 @@ mod tests {
         if let Ok(mut tracker) = TRACKER.lock() {
             tracker.sessions.clear();
             tracker.completion_tx = None;
+        }
+        match prev_home {
+            Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+            None => crate::env::remove_var("JCODE_HOME"),
         }
     }
 }

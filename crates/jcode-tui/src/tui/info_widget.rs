@@ -641,6 +641,73 @@ pub struct InfoWidgetData {
     pub is_compacting: bool,
     /// Git repository status
     pub git_info: Option<GitInfo>,
+    /// 调用账本摘要（变更 agent-model-call-optimization · P1 #4）：
+    /// 按 (发起方 × 原因) 的调用分布与打标缺口；None 表示无账本数据。
+    pub call_ledger: Option<CallLedgerSummary>,
+}
+
+/// 调用账本摘要（展示用）。
+#[derive(Debug, Clone, Default)]
+pub struct CallLedgerSummary {
+    /// 本会话（含 swarm 子树归集）累计调用数。
+    pub total_calls: u64,
+    /// 累计输入 tokens。
+    pub input_tokens: u64,
+    /// 累计输出 tokens。
+    pub output_tokens: u64,
+    /// 发起方未打标（unknown）的调用数。
+    pub unknown_origins: u64,
+    /// 原因未打标（unknown）的调用数。
+    pub unknown_reasons: u64,
+    /// 按调用数倒序的 Top 分桶。
+    pub rows: Vec<CallLedgerRow>,
+}
+
+/// 账本单行（一个「发起方 × 原因」分桶）。
+#[derive(Debug, Clone)]
+pub struct CallLedgerRow {
+    pub origin: String,
+    pub reason: String,
+    pub count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub elapsed_ms_avg: u64,
+}
+
+impl CallLedgerSummary {
+    /// 展示用 Top-N 摘要；空账本返回 `None`（不占信息面板行）。
+    pub fn from_ledger(ledger: &crate::call_ledger::CallLedger, top_n: usize) -> Option<Self> {
+        if ledger.total_calls == 0 {
+            return None;
+        }
+        let (input_tokens, output_tokens, _, _) = ledger.token_totals();
+        let rows = ledger
+            .top_entries(top_n)
+            .into_iter()
+            .map(|entry| CallLedgerRow {
+                origin: entry.origin.as_str().to_string(),
+                reason: entry.reason.as_str().to_string(),
+                count: entry.count,
+                input_tokens: entry.input_tokens,
+                output_tokens: entry.output_tokens,
+                elapsed_ms_avg: entry.elapsed_ms_avg(),
+            })
+            .collect();
+        Some(Self {
+            total_calls: ledger.total_calls,
+            input_tokens,
+            output_tokens,
+            unknown_origins: ledger.unknown_origin_calls,
+            unknown_reasons: ledger.unknown_reason_calls,
+            rows,
+        })
+    }
+
+    /// 渲染行数（必须与 `render_call_ledger_section` 的行数严格一致）。
+    pub fn line_count(&self) -> u16 {
+        1 + u16::from(self.unknown_origins > 0 || self.unknown_reasons > 0)
+            + u16::try_from(self.rows.len()).unwrap_or(u16::MAX)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -709,6 +776,9 @@ impl InfoWidgetData {
                     .map(|u| u.available)
                     .unwrap_or(false)
                 {
+                    sections += 1;
+                }
+                if self.call_ledger.is_some() {
                     sections += 1;
                 }
                 if self.cache_hit_info.is_some() {
@@ -2039,6 +2109,9 @@ fn render_sections(
         lines.extend(render_usage_compact(info, inner.width));
     }
 
+    // 调用账本（#3/#4）：按 (发起方 × 原因) 的 Top 分桶 + 打标缺口
+    lines.extend(render_call_ledger_section(data, inner.width));
+
     if let Some(cache) = data.cache_hit_info.as_ref() {
         lines.push(render_kv_cache_summary_line(cache));
     }
@@ -2050,6 +2123,62 @@ fn render_sections(
         lines.extend(render_git_compact(info, inner.width));
     }
 
+    lines
+}
+
+fn format_call_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// 调用账本区块（#4）。行数必须与 `CallLedgerSummary::line_count` 一致，
+/// 否则紧凑总览页会裁掉末行或留空行。
+fn render_call_ledger_section(data: &InfoWidgetData, width: u16) -> Vec<Line<'static>> {
+    let Some(summary) = data.call_ledger.as_ref() else {
+        return Vec::new();
+    };
+    let width = width as usize;
+    let dim = Style::default().fg(rgb(140, 140, 150));
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(summary.line_count() as usize);
+    lines.push(Line::from(vec![
+        Span::styled("Calls ", Style::default().fg(rgb(180, 180, 190)).bold()),
+        Span::styled(
+            format!(
+                "{} · {} in / {} out",
+                summary.total_calls,
+                format_call_tokens(summary.input_tokens),
+                format_call_tokens(summary.output_tokens)
+            ),
+            dim,
+        ),
+    ]));
+    if summary.unknown_origins > 0 || summary.unknown_reasons > 0 {
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "  ⚠ unattributed: origin {} · reason {}",
+                summary.unknown_origins, summary.unknown_reasons
+            ),
+            Style::default().fg(rgb(255, 200, 100)),
+        )]));
+    }
+    for row in &summary.rows {
+        let text = format!(
+            "  {} / {} ×{} · {} in",
+            row.origin,
+            row.reason,
+            row.count,
+            format_call_tokens(row.input_tokens)
+        );
+        lines.push(Line::from(vec![Span::styled(
+            truncate_with_ellipsis(&text, width),
+            dim,
+        )]));
+    }
     lines
 }
 

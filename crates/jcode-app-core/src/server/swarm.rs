@@ -7,6 +7,7 @@ use crate::protocol::{NotificationType, ServerEvent};
 use crate::session::Session;
 use anyhow::Result;
 use futures::future::try_join_all;
+use jcode_provider_core::{CallOrigin, with_call_origin};
 use jcode_swarm_core::{
     completion_notification_message, normalize_completion_report, truncate_detail,
 };
@@ -1581,7 +1582,9 @@ pub(super) async fn run_swarm_task(
         .apply_to_allowed_set(&mut allowed);
 
     let mut worker = Agent::new_with_session(provider, registry, session, Some(allowed));
-    match worker.run_once_capture(prompt).await {
+    // 调用归因（agent-model-call-optimization #1）：swarm 成员（子代理）的
+    // 模型调用统一标记发起方为 `Swarm`（非用户触发类）。
+    match with_call_origin(CallOrigin::Swarm, worker.run_once_capture(prompt)).await {
         Ok(output) => {
             log_swarm_lifecycle(
                 "task_done",
@@ -1635,7 +1638,7 @@ No extra text.\n\nRequest:\n{message}"
 
     let plan_text = {
         let mut agent = agent.lock().await;
-        agent.run_once_capture(&planner_prompt).await?
+        with_call_origin(CallOrigin::Swarm, agent.run_once_capture(&planner_prompt)).await?
     };
 
     let mut tasks = parse_swarm_tasks(&plan_text);
@@ -1685,7 +1688,11 @@ No extra text.\n\nRequest:\n{message}"
 
     let final_output = {
         let mut agent = agent.lock().await;
-        agent.run_once_capture(&integration_prompt).await?
+        with_call_origin(
+            CallOrigin::Swarm,
+            agent.run_once_capture(&integration_prompt),
+        )
+        .await?
     };
 
     log_swarm_lifecycle(

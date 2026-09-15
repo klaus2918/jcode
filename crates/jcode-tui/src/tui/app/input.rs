@@ -1475,6 +1475,19 @@ impl App {
             ));
             return false;
         };
+        // #16 验证回路收敛：(a) 非用户触发优先停——auto-poke 预算耗尽则不再投递；
+        // (b) 同内容 digest 不重复投递（完成判据不变，只去重）。
+        if super::helpers::auto_poke_budget_exhausted() {
+            crate::logging::info("TODO_GATE_DIGEST action=skip reason=non_user_budget_exhausted");
+            return false;
+        }
+        if !super::helpers::claim_gate_digest(
+            &session_id,
+            super::helpers::content_fingerprint(&digest),
+        ) {
+            crate::logging::info("TODO_GATE_DIGEST action=skip reason=duplicate_content");
+            return false;
+        }
         self.todo_gate_digest_delivered = true;
         crate::logging::info(&format!(
             "TODO_GATE_DIGEST action=queue observations={}",
@@ -1494,6 +1507,10 @@ impl App {
             || self.pending_turn
             || self.has_queued_followups()
         {
+            if !self.auto_poke_incomplete_todos {
+                // #10：本轮自动推进已结束（控制权交还用户）→ 复位连续 poke 计数。
+                super::helpers::reset_auto_poke_budget();
+            }
             return false;
         }
 
@@ -1580,6 +1597,26 @@ impl App {
             )));
             self.pending_queued_dispatch = false;
             return false;
+        }
+
+        // #10 auto-poke 治理：软阈值提醒 / 硬阈值停止（控制默认关闭 → 与现状一致）。
+        match super::helpers::note_auto_poke_and_verdict() {
+            super::helpers::AutoPokeVerdict::Stop => {
+                crate::logging::warn("AUTO_POKE_BUDGET action=stop reason=hard_threshold");
+                self.push_display_message(DisplayMessage::system(
+                    "⚠️ Auto-poke reached its configured budget; stopping automatic continuation (todos remain).",
+                ));
+                self.auto_poke_incomplete_todos = false;
+                self.pending_queued_dispatch = false;
+                return false;
+            }
+            super::helpers::AutoPokeVerdict::Allow { soft_reminder } => {
+                if soft_reminder {
+                    self.push_display_message(DisplayMessage::system(
+                        "ℹ️ Auto-poke is nearing its configured budget for this cycle.",
+                    ));
+                }
+            }
         }
 
         self.push_display_message(DisplayMessage::system(format!(
@@ -2582,6 +2619,16 @@ impl App {
     }
 
     pub(super) fn handle_key_press_event(&mut self, event: KeyEvent) -> Result<()> {
+        // A held Ctrl+X must not walk the session picker's removal flow: the
+        // arm + confirm pair always needs two deliberate presses. Repeats of
+        // every other key (holding an arrow to scroll, for example) still fall
+        // through unchanged.
+        if crate::tui::session_picker::should_drop_held_remove_chord(
+            self.session_picker_overlay.is_some(),
+            &event,
+        ) {
+            return Ok(());
+        }
         self.handle_key_core(
             event.code,
             event.modifiers,

@@ -15,7 +15,15 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
+        // #9：新回合 → 复位续写预算 / 去重门。
+        self.continuation_gate = crate::call_control::ContinuationGate::new();
+        // #12：新回合 → 清空同回合工具去重缓存（不跨回合）。
+        crate::tool::turn_dedup::begin_turn(&self.session.id);
         let _ = self.run_turn(true).await?;
+        // #3：回合结束强制落盘调用账本（批量写，避免每次调用都 IO）。
+        self.flush_call_ledger();
+        // #12：回合结束汇总重复只读调用观测（默认仅观测）。
+        self.report_tool_turn_dedup();
         Ok(())
     }
 
@@ -31,7 +39,16 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
-        self.run_turn(false).await
+        // #9：新回合 → 复位续写预算 / 去重门。
+        self.continuation_gate = crate::call_control::ContinuationGate::new();
+        // #12：新回合 → 清空同回合工具去重缓存（不跨回合）。
+        crate::tool::turn_dedup::begin_turn(&self.session.id);
+        let result = self.run_turn(false).await;
+        // #3：回合结束强制落盘调用账本（批量写，避免每次调用都 IO）。
+        self.flush_call_ledger();
+        // #12：回合结束汇总重复只读调用观测（默认仅观测）。
+        self.report_tool_turn_dedup();
+        result
     }
 
     /// Run one conversation turn with streaming events via mpsc channel (per-client)
@@ -84,9 +101,17 @@ impl Agent {
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
         self.fire_turn_start_hook("chat");
+        // #9：新回合 → 复位续写预算 / 去重门。
+        self.continuation_gate = crate::call_control::ContinuationGate::new();
+        // #12：新回合 → 清空同回合工具去重缓存（不跨回合）。
+        crate::tool::turn_dedup::begin_turn(&self.session.id);
         let result = self.run_turn_streaming_mpsc(event_tx).await;
         self.current_turn_system_reminder = None;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
+        // #3：回合结束强制落盘调用账本（批量写，避免每次调用都 IO）。
+        self.flush_call_ledger();
+        // #12：回合结束汇总重复只读调用观测（默认仅观测）。
+        self.report_tool_turn_dedup();
         result
     }
 

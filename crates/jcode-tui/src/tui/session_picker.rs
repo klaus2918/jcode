@@ -21,8 +21,8 @@ use std::io::IsTerminal;
 use std::time::Duration;
 
 pub use jcode_tui_session_picker::{
-    PickerItem, PreviewMessage, ResumeTarget, ServerGroup, SessionFilterMode, SessionInfo,
-    SessionSource,
+    BoardSection, PickerItem, PreviewMessage, ResumeTarget, ServerGroup, SessionFilterMode,
+    SessionInfo, SessionSource,
 };
 
 mod filter;
@@ -70,6 +70,12 @@ pub enum OverlayAction {
     Continue,
     Close,
     Selected(PickerResult),
+    /// Ctrl+X was pressed consecutively on the same row inside the
+    /// confirmation window: the session should be closed / removed from the
+    /// panel (the app layer performs the stop + hide).
+    RemoveConfirmed {
+        session_id: String,
+    },
 }
 
 /// Safely truncate a string at a character boundary
@@ -129,8 +135,9 @@ fn format_time_ago(time: chrono::DateTime<chrono::Utc>) -> String {
     format!("{}mo ago", days / 30)
 }
 
-/// Compact duration for the "working Ns" badge in the Active view.
-fn format_short_duration(duration: std::time::Duration) -> String {
+/// Compact duration for the "working Ns" badge in the Active view and the
+/// background-session completion notices.
+pub(crate) fn format_short_duration(duration: std::time::Duration) -> String {
     let secs = duration.as_secs();
     if secs < 60 {
         return format!("{}s", secs);
@@ -158,6 +165,55 @@ const SESSION_PAGE_STEP_COUNT: usize = 3;
 /// How often the Active view re-snapshots live presence (which sessions are
 /// still working vs ready) while it is on screen.
 const LIVE_PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Board window for the "Recently finished" section: sessions that ended
+/// inside this window stay under it; older finishes (still inside the storage
+/// retention window) fall into the "Earlier" section.
+const BOARD_RECENT_FINISH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Emphasis window for the footer count badge after its numbers change.
+const BOARD_COUNTS_PULSE: Duration = Duration::from_millis(1500);
+
+/// How long the Ctrl+X removal confirmation stays armed before a second press
+/// counts as a fresh first press.
+const REMOVE_ARM_WINDOW: Duration = Duration::from_secs(2);
+
+/// How long a refused Ctrl+X press keeps its footer explanation on screen
+/// (e.g. the highlighted row is the session this client is attached to).
+const REMOVE_BLOCK_NOTICE_WINDOW: Duration = Duration::from_secs(4);
+
+/// Armed Ctrl+X removal confirmation: the first press targets one row, the
+/// second press (inside [`REMOVE_ARM_WINDOW`]) confirms it. Any other key --
+/// including movement -- disarms.
+struct PendingRemove {
+    session_id: String,
+    armed_at: std::time::Instant,
+}
+
+/// Whether a key event is a *held* Ctrl+X while the session picker is open and
+/// must therefore be dropped before the picker sees it.
+///
+/// The removal flow requires two deliberate presses, so key auto-repeat (which
+/// terminals with the kitty keyboard protocol report as
+/// [`KeyEventKind::Repeat`]) must never supply the confirm press. Repeats of
+/// every other key - holding an arrow to scroll the list, for example - are
+/// left alone.
+pub(crate) fn should_drop_held_remove_chord(
+    picker_open: bool,
+    event: &crossterm::event::KeyEvent,
+) -> bool {
+    if !picker_open || event.kind != KeyEventKind::Repeat {
+        return false;
+    }
+    let held_ctrl_x =
+        event.code == KeyCode::Char('x') && event.modifiers.contains(KeyModifiers::CONTROL);
+    if held_ctrl_x {
+        crate::logging::info(
+            "SESSION_PICKER: ignoring held Ctrl+X repeat (removal needs two deliberate presses)",
+        );
+    }
+    held_ctrl_x
+}
 
 /// Interactive session picker
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,6 +344,15 @@ pub struct SessionPicker {
     live_presence: std::collections::HashMap<String, crate::session::SessionPresence>,
     /// When `live_presence` was last snapshotted (throttles periodic refresh).
     live_presence_refreshed_at: Option<std::time::Instant>,
+    /// Finish time per recently finished session (cross-process
+    /// `finished_pids` marker snapshot), keyed by session ID. Drives the
+    /// "recently finished / earlier" board sections and finished badges.
+    finish_times: std::collections::HashMap<String, std::time::SystemTime>,
+    /// Last rendered (working, ready) board counts, used to pulse the footer
+    /// count badge when the numbers change.
+    last_board_counts: Option<(usize, usize)>,
+    /// Deadline for the count-badge emphasis pulse; `None` when not pulsing.
+    board_counts_pulse_until: Option<std::time::Instant>,
     /// ID of the session the picker was opened from, labeled "current" in the
     /// list so the user can orient themselves in the Active view.
     current_session_id: Option<String>,
@@ -295,6 +360,16 @@ pub struct SessionPicker {
     /// live Claude session never stops it; only confirming this prompt emits
     /// `PickerResult::TakeOverClaude`.
     pending_claude_takeover: Option<ResumeTarget>,
+    /// Armed Ctrl+X removal confirmation (see [`PendingRemove`]).
+    pending_remove: Option<PendingRemove>,
+    /// Why the last Ctrl+X press was refused without arming (session title,
+    /// raised at). Shown briefly in the footer so a refused press never looks
+    /// like a dead key.
+    remove_block_notice: Option<(String, std::time::Instant)>,
+    /// Sessions the user removed from the board (cross-process
+    /// `hidden_sessions` marker snapshot). Filtered out of every list mode and
+    /// surfaced only by the hidden recovery view.
+    hidden_ids: HashSet<String>,
 }
 
 impl SessionPicker {
@@ -341,8 +416,14 @@ impl SessionPicker {
             current_dir: None,
             live_presence: std::collections::HashMap::new(),
             live_presence_refreshed_at: None,
+            finish_times: std::collections::HashMap::new(),
+            last_board_counts: None,
+            board_counts_pulse_until: None,
             current_session_id: None,
             pending_claude_takeover: None,
+            pending_remove: None,
+            remove_block_notice: None,
+            hidden_ids: HashSet::new(),
         };
         picker.refresh_live_presence();
         picker.rebuild_items();
@@ -386,8 +467,14 @@ impl SessionPicker {
             current_dir: None,
             live_presence: std::collections::HashMap::new(),
             live_presence_refreshed_at: None,
+            finish_times: std::collections::HashMap::new(),
+            last_board_counts: None,
+            board_counts_pulse_until: None,
             current_session_id: None,
             pending_claude_takeover: None,
+            pending_remove: None,
+            remove_block_notice: None,
+            hidden_ids: HashSet::new(),
         }
     }
 
@@ -463,8 +550,14 @@ impl SessionPicker {
             current_dir: None,
             live_presence: std::collections::HashMap::new(),
             live_presence_refreshed_at: None,
+            finish_times: std::collections::HashMap::new(),
+            last_board_counts: None,
+            board_counts_pulse_until: None,
             current_session_id: None,
             pending_claude_takeover: None,
+            pending_remove: None,
+            remove_block_notice: None,
+            hidden_ids: HashSet::new(),
         };
         picker.refresh_live_presence();
         picker.rebuild_items();
@@ -516,6 +609,13 @@ impl SessionPicker {
             .into_iter()
             .map(|presence| (presence.session_id.clone(), presence))
             .collect();
+        // Cross-process finish markers: the board's "recently finished" and
+        // "earlier" sections read this snapshot instead of stat-ing files per
+        // row. Storage retention keeps it bounded (≤512 entries).
+        self.finish_times = crate::storage::recent_finishes(512).into_iter().collect();
+        // Hidden index: user intent wins over any later presence/finish refresh
+        // (removed rows must never reappear).
+        self.hidden_ids = crate::storage::hidden_session_ids().into_iter().collect();
         if let Ok(sessions) = crate::claude_live::live_claude_sessions() {
             for session in sessions {
                 let session_id = format!("claude:{}", session.session_id);
@@ -526,6 +626,8 @@ impl SessionPicker {
                         pid: session.pid,
                         streaming: false,
                         streaming_since: None,
+                        background: false,
+                        background_since: None,
                         internal: false,
                     },
                 );
@@ -543,10 +645,40 @@ impl SessionPicker {
         if self.loading_message.is_some() {
             return false;
         }
+        let idle = !self
+            .live_presence
+            .values()
+            .any(|presence| presence.streaming || presence.background);
+        // #11 轮询退化：控制关闭时保持既有常量间隔（= 现状）；启用后空闲态放宽，
+        // 有会话在跑时仍用 active 间隔；事件到达走 refresh_live_presence_now() 即时刷新。
+        let interval = if crate::call_control::control_enabled(
+            crate::call_control::ControlName::PollBackoff,
+        ) {
+            crate::call_control::poll_interval(!idle)
+        } else {
+            LIVE_PRESENCE_REFRESH_INTERVAL
+        };
         let due = self
             .live_presence_refreshed_at
-            .is_none_or(|at| at.elapsed() >= LIVE_PRESENCE_REFRESH_INTERVAL);
+            .is_none_or(|at| at.elapsed() >= interval);
         if !due {
+            return false;
+        }
+        let before = std::mem::take(&mut self.live_presence);
+        self.refresh_live_presence();
+        let changed = before != self.live_presence;
+        if changed && self.filter_mode == SessionFilterMode::Active {
+            self.rebuild_items();
+        }
+        changed
+    }
+
+    /// Force an immediate live-presence refresh, bypassing the throttle. Used
+    /// when a background-session completion event arrives so the board drops
+    /// its "background running" row without waiting for the next poll.
+    /// Returns true when the presence snapshot changed.
+    pub fn refresh_live_presence_now(&mut self) -> bool {
+        if self.loading_message.is_some() {
             return false;
         }
         let before = std::mem::take(&mut self.live_presence);
@@ -561,6 +693,12 @@ impl SessionPicker {
     /// Whether the session has a live process right now.
     pub(super) fn session_is_live(&self, session: &SessionInfo) -> bool {
         self.live_presence.contains_key(&session.id)
+    }
+
+    /// Whether the session with this id has a live process right now. Used by
+    /// the Ctrl+X removal flow to route live targets through the stop request.
+    pub(super) fn session_is_live_by_id(&self, session_id: &str) -> bool {
+        self.live_presence.contains_key(session_id)
     }
 
     fn selected_live_claude_target(&self) -> Option<ResumeTarget> {
@@ -602,6 +740,93 @@ impl SessionPicker {
         })
     }
 
+    /// Ctrl+X removal confirmation state machine.
+    ///
+    /// First Ctrl+X arms removal for the highlighted row; a second Ctrl+X
+    /// inside [`REMOVE_ARM_WINDOW`] confirms it (the app layer then stops /
+    /// hides the session). Any other key disarms; while armed, Esc cancels the
+    /// arming instead of closing the panel. Returns `None` when the key is not
+    /// part of the removal flow so normal handling continues.
+    fn handle_remove_arm_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<OverlayAction> {
+        let ctrl_x = code == KeyCode::Char('x') && modifiers.contains(KeyModifiers::CONTROL);
+        let armed = self.pending_remove.as_ref().map(|pending| {
+            (
+                pending.session_id.clone(),
+                pending.armed_at.elapsed() > REMOVE_ARM_WINDOW,
+            )
+        });
+
+        if let Some((session_id, expired)) = armed {
+            if ctrl_x && !expired {
+                self.pending_remove = None;
+                return Some(OverlayAction::RemoveConfirmed { session_id });
+            }
+            if !ctrl_x && code == KeyCode::Esc {
+                // Esc cancels the arming and is consumed: the panel stays open.
+                self.pending_remove = None;
+                return Some(OverlayAction::Continue);
+            }
+            // Confirming too late, or any other key, disarms; Ctrl+X falls
+            // through to re-arm so a stale window never surprises the user.
+            self.pending_remove = None;
+        }
+
+        if ctrl_x {
+            let target = self.selected_session().map(|session| {
+                (
+                    session.id.clone(),
+                    session.title.clone(),
+                    self.session_is_current(session),
+                )
+            });
+            if let Some((session_id, title, is_current)) = target {
+                // The session this client is attached to cannot be removed from
+                // under itself (a remote server refuses it too). Refuse at arm
+                // time so the row never shows the destructive confirm state,
+                // and say why in the footer. The hidden view is exempt: there
+                // the same gesture restores a row instead of removing it.
+                if !self.in_hidden_view() && is_current {
+                    self.remove_block_notice = Some((
+                        safe_truncate(&title, 32).to_string(),
+                        std::time::Instant::now(),
+                    ));
+                    return Some(OverlayAction::Continue);
+                }
+                self.remove_block_notice = None;
+                self.pending_remove = Some(PendingRemove {
+                    session_id,
+                    armed_at: std::time::Instant::now(),
+                });
+            }
+            return Some(OverlayAction::Continue);
+        }
+
+        None
+    }
+
+    /// Whether a Ctrl+X removal confirmation is currently armed (and fresh).
+    pub(super) fn remove_arm_active(&self) -> bool {
+        self.pending_remove
+            .as_ref()
+            .is_some_and(|pending| pending.armed_at.elapsed() <= REMOVE_ARM_WINDOW)
+    }
+
+    /// Footer text explaining a freshly refused Ctrl+X press, if any.
+    pub(super) fn remove_block_footer(&self) -> Option<String> {
+        let (label, at) = self.remove_block_notice.as_ref()?;
+        (at.elapsed() <= REMOVE_BLOCK_NOTICE_WINDOW)
+            .then(|| format!(" ⚠ {label} is the session you're in · Ctrl+X can't remove it "))
+    }
+
+    /// Whether the picker is showing the hidden-sessions recovery view.
+    pub(super) fn in_hidden_view(&self) -> bool {
+        self.filter_mode == SessionFilterMode::Hidden
+    }
+
     #[cfg(test)]
     pub(crate) fn claude_takeover_confirmation_active_for_test(&self) -> bool {
         self.pending_claude_takeover.is_some()
@@ -632,6 +857,84 @@ impl SessionPicker {
             .and_then(|since| std::time::SystemTime::now().duration_since(since).ok())
     }
 
+    /// Whether the session is registered as a background session (the server
+    /// keeps its agent running after the client switched away mid-turn).
+    pub(super) fn session_is_background(&self, session: &SessionInfo) -> bool {
+        self.live_presence
+            .get(&session.id)
+            .is_some_and(|presence| presence.background)
+    }
+
+    /// How long the session has been running in the background.
+    pub(super) fn session_background_duration(
+        &self,
+        session: &SessionInfo,
+    ) -> Option<std::time::Duration> {
+        self.live_presence
+            .get(&session.id)
+            .and_then(|presence| presence.background_since)
+            .and_then(|since| std::time::SystemTime::now().duration_since(since).ok())
+    }
+
+    /// How long ago the session finished, from the cross-process finish
+    /// markers (written when the active-PID record goes away). `None` when no
+    /// marker is retained, e.g. long-closed history.
+    pub(super) fn session_finish_age(&self, session: &SessionInfo) -> Option<std::time::Duration> {
+        self.finish_times
+            .get(&session.id)
+            .and_then(|at| std::time::SystemTime::now().duration_since(*at).ok())
+    }
+
+    /// Whether the session finished inside the board's "recently finished"
+    /// window. Older retained finishes fall into the "earlier" section.
+    pub(super) fn session_finished_recently(&self, session: &SessionInfo) -> bool {
+        self.session_finish_age(session)
+            .is_some_and(|age| age <= BOARD_RECENT_FINISH_WINDOW)
+    }
+
+    /// Finish time in the chrono type the list formatters use (`finished 5m
+    /// ago` badges), when a finish marker is retained.
+    pub(super) fn session_finish_time_chrono(
+        &self,
+        session: &SessionInfo,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.finish_times
+            .get(&session.id)
+            .map(|at| chrono::DateTime::<chrono::Utc>::from(*at))
+    }
+
+    /// Live board counts (working, ready) from the presence snapshot: working
+    /// covers streaming and background sessions, ready covers the remaining
+    /// live sessions.
+    fn board_live_counts(&self) -> (usize, usize) {
+        self.live_presence
+            .values()
+            .fold((0usize, 0usize), |(working, ready), presence| {
+                if presence.streaming || presence.background {
+                    (working + 1, ready)
+                } else {
+                    (working, ready + 1)
+                }
+            })
+    }
+
+    /// Counts for the footer badge plus whether the emphasis pulse is active.
+    /// Starts the pulse when the numbers change; clears it once elapsed.
+    fn board_counts_for_render(&mut self) -> (usize, usize, bool) {
+        let counts = self.board_live_counts();
+        if self.last_board_counts != Some(counts) {
+            self.last_board_counts = Some(counts);
+            self.board_counts_pulse_until = Some(std::time::Instant::now() + BOARD_COUNTS_PULSE);
+        }
+        let pulsing = self
+            .board_counts_pulse_until
+            .is_some_and(|until| std::time::Instant::now() < until);
+        if !pulsing {
+            self.board_counts_pulse_until = None;
+        }
+        (counts.0, counts.1, pulsing)
+    }
+
     /// Test-only: inject a synthetic live-presence snapshot so Active-view
     /// behavior can be exercised without real processes. Marks the snapshot as
     /// just-refreshed so the periodic refresh does not immediately overwrite it.
@@ -645,6 +948,17 @@ impl SessionPicker {
             .map(|presence| (presence.session_id.clone(), presence))
             .collect();
         self.live_presence_refreshed_at = Some(std::time::Instant::now());
+        self.rebuild_items();
+    }
+
+    /// Test-only: inject synthetic finish times so board sections/badges can
+    /// be exercised without real marker files.
+    #[cfg(test)]
+    pub(crate) fn set_finish_times_for_test(
+        &mut self,
+        finishes: Vec<(String, std::time::SystemTime)>,
+    ) {
+        self.finish_times = finishes.into_iter().collect();
         self.rebuild_items();
     }
 
@@ -1190,6 +1504,9 @@ impl SessionPicker {
         modifiers: KeyModifiers,
     ) -> Result<OverlayAction> {
         if let Some(action) = self.handle_claude_takeover_confirmation_key(code, modifiers) {
+            return Ok(action);
+        }
+        if let Some(action) = self.handle_remove_arm_key(code, modifiers) {
             return Ok(action);
         }
         if self.loading_message.is_some() {
@@ -2339,6 +2656,13 @@ impl SessionPicker {
 
                         match self.handle_overlay_key(key.code, key.modifiers)? {
                             OverlayAction::Continue => {}
+                            OverlayAction::RemoveConfirmed { session_id } => {
+                                // The standalone picker loop has no session
+                                // removal dispatch; the app layer owns it.
+                                crate::logging::info(&format!(
+                                    "SESSION_PICKER: removal confirmed for {session_id} ignored in standalone mode"
+                                ));
+                            }
                             OverlayAction::Close => break Ok(None),
                             OverlayAction::Selected(result) => break Ok(Some(result)),
                         }

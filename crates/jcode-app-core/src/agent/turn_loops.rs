@@ -1,5 +1,6 @@
 use super::*;
 use crate::{terminal_eprintln as eprintln, terminal_print as print, terminal_println as println};
+use jcode_provider_core::{CallReason, CallSource, current_call_source, with_call_reason};
 
 impl Agent {
     /// Run turns until no more tool calls
@@ -31,6 +32,10 @@ impl Agent {
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
+
+        // 调用归因（agent-model-call-optimization #1）：本轮迭代即将发起的模型调用
+        // 原因（发起方维度由外层作用域声明，见 `with_call_origin`）。
+        let mut next_call_reason = CallReason::Initial;
 
         loop {
             let repaired = self.repair_missing_tool_outputs();
@@ -112,16 +117,21 @@ impl Agent {
             let send_messages = stamped.as_deref().unwrap_or(&messages_with_memory);
             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
             self.last_status_detail = None;
-            let mut stream = match self
-                .provider
-                .complete_split(
+            // 调用归因（#1）：本次调用原因；后续迭代默认按「工具结果后的续轮」
+            // 记账，具体 `continue` 分支会覆盖为更精确的原因。
+            let call_reason = next_call_reason;
+            next_call_reason = CallReason::ToolResults;
+            let mut stream = match with_call_reason(
+                call_reason,
+                self.provider.complete_split(
                     send_messages,
                     &tools,
                     &split_prompt.static_part,
                     &split_prompt.dynamic_part,
                     self.provider_session_id.as_deref(),
-                )
-                .await
+                ),
+            )
+            .await
             {
                 Ok(stream) => stream,
                 Err(e) => {
@@ -136,6 +146,7 @@ impl Agent {
                                 Self::MAX_CONTEXT_LIMIT_RETRIES
                             ));
                         }
+                        next_call_reason = CallReason::ContextLimit;
                         continue;
                     }
                     return Err(e);
@@ -654,6 +665,7 @@ impl Agent {
                     api_start,
                     vec![("mode", "blocking".to_string())],
                 );
+                next_call_reason = CallReason::ContextLimit;
                 continue;
             }
 
@@ -713,6 +725,14 @@ impl Agent {
                 cache_read_input_tokens: usage_cache_read,
                 cache_creation_input_tokens: usage_cache_creation,
             };
+
+            // 会话级账本记账（#3）：内存聚合 + 节流批写；仅观测，fail-open。
+            let ledger_usage = self.last_usage.clone();
+            let ledger_source = CallSource {
+                origin: current_call_source().origin,
+                reason: call_reason,
+            };
+            self.record_call_ledger(ledger_source, api_start.elapsed(), &ledger_usage);
 
             self.recover_text_wrapped_tool_call(&mut text_content, &mut tool_calls);
 
@@ -802,12 +822,14 @@ impl Agent {
                     stop_reason.as_deref(),
                     &mut empty_post_tool_continuations,
                 )? {
+                    next_call_reason = CallReason::EmptyPostTool;
                     continue;
                 }
                 if self.maybe_continue_incomplete_response(
                     stop_reason.as_deref(),
                     &mut incomplete_continuations,
                 )? {
+                    next_call_reason = CallReason::Incomplete;
                     continue;
                 }
                 // Surface silent guardrail/refusal stops instead of returning

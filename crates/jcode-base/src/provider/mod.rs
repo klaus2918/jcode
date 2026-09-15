@@ -35,6 +35,7 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 #[cfg(test)]
 use jcode_provider_core::FailoverDecision;
+use jcode_provider_core::{CallSource, current_call_source};
 use registry::ProviderRegistry;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
@@ -624,6 +625,26 @@ impl MultiProvider {
         let (estimated_input_chars, estimated_input_tokens) =
             Self::estimate_request_input(messages, tools, mode);
 
+        // #2 调用账本：provider 边界统一记账（只读观测、fail-open）。
+        let call_ledger_start = std::time::Instant::now();
+        let call_ledger_id =
+            PROVIDER_CALL_LEDGER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let call_ledger_source = current_call_source();
+        emit_provider_call_ledger(
+            "started",
+            call_ledger_id,
+            call_ledger_source,
+            &self.model(),
+            &mode,
+            vec![
+                ("provider_active", Self::provider_label(active).to_string()),
+                ("input_chars", estimated_input_chars.to_string()),
+                ("input_tokens_estimate", estimated_input_tokens.to_string()),
+                ("message_count", messages.len().to_string()),
+                ("tool_count", tools.len().to_string()),
+            ],
+        );
+
         for candidate in sequence {
             let label = Self::provider_label(candidate);
             let key = Self::provider_key(candidate);
@@ -710,6 +731,20 @@ impl MultiProvider {
                 Ok(stream) => {
                     clear_provider_unavailable_for_account(key);
                     self.record_provider_activity(candidate);
+                    emit_provider_call_ledger(
+                        "opened",
+                        call_ledger_id,
+                        call_ledger_source,
+                        &self.model(),
+                        &mode,
+                        vec![
+                            ("provider_used", label.to_string()),
+                            (
+                                "elapsed_ms",
+                                call_ledger_start.elapsed().as_millis().to_string(),
+                            ),
+                        ],
+                    );
                     if candidate != active {
                         self.set_active_provider(candidate);
                         let from_label = Self::provider_label(active);
@@ -754,6 +789,21 @@ impl MultiProvider {
                                 )
                                 .await?
                         {
+                            emit_provider_call_ledger(
+                                "opened",
+                                call_ledger_id,
+                                call_ledger_source,
+                                &self.model(),
+                                &mode,
+                                vec![
+                                    ("provider_used", label.to_string()),
+                                    ("via", "same_provider_account_failover".to_string()),
+                                    (
+                                        "elapsed_ms",
+                                        call_ledger_start.elapsed().as_millis().to_string(),
+                                    ),
+                                ],
+                            );
                             return Ok(stream);
                         }
                         if candidate == active {
@@ -766,6 +816,20 @@ impl MultiProvider {
             }
         }
 
+        emit_provider_call_ledger(
+            "error",
+            call_ledger_id,
+            call_ledger_source,
+            &self.model(),
+            &mode,
+            vec![
+                (
+                    "elapsed_ms",
+                    call_ledger_start.elapsed().as_millis().to_string(),
+                ),
+                ("failures", notes.len().to_string()),
+            ],
+        );
         Err(self.no_provider_available_error(&notes))
     }
 
@@ -1757,6 +1821,56 @@ impl Default for MultiProvider {
     }
 }
 
+/// 调用账本序号（#2 记账事件用；进程内单调递增）。
+static PROVIDER_CALL_LEDGER_SEQ: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// #2 调用账本：provider 边界统一记账事件（变更 agent-model-call-optimization）。
+///
+/// 约定：
+/// - 只读观测、fail-open（日志系统失败不影响调用路径）；
+/// - 只增不改：新增事件 `PROVIDER_CALL_LEDGER`，不修改既有事件字段；
+/// - 来源两维度取自调用方通过 `jcode_provider_core::with_call_origin` /
+///   `with_call_reason` 声明的作用域；未声明时为 `unknown`（账本侧告警）；
+/// - 边界只知预估输入 tokens；逐调用的实际 tokens/耗时以调用方既有事件与
+///   #3 会话账本聚合为准。
+fn emit_provider_call_ledger(
+    phase: &str,
+    call_id: u64,
+    source: CallSource,
+    model: &str,
+    mode: &CompletionMode<'_>,
+    fields: Vec<(&'static str, String)>,
+) {
+    let mode_name = match mode {
+        CompletionMode::Unified { .. } => "unified",
+        CompletionMode::Split { .. } => "split",
+    };
+    emit_provider_call_ledger_named(phase, call_id, source, model, mode_name, fields);
+}
+
+/// 与 [`emit_provider_call_ledger`] 相同，但直接给出 mode 名称
+/// （用于 `native_compact` 等非 `CompletionMode` 调用路径）。
+fn emit_provider_call_ledger_named(
+    phase: &str,
+    call_id: u64,
+    source: CallSource,
+    model: &str,
+    mode_name: &str,
+    fields: Vec<(&'static str, String)>,
+) {
+    let mut owned: Vec<(&str, String)> = vec![
+        ("phase", phase.to_string()),
+        ("call_id", call_id.to_string()),
+        ("origin", source.origin.as_str().to_string()),
+        ("reason", source.reason.as_str().to_string()),
+        ("model", model.to_string()),
+        ("mode", mode_name.to_string()),
+    ];
+    owned.extend(fields);
+    crate::logging::event_info("PROVIDER_CALL_LEDGER", owned);
+}
+
 #[async_trait]
 impl Provider for MultiProvider {
     async fn complete(
@@ -2525,7 +2639,21 @@ impl Provider for MultiProvider {
         existing_summary_text: Option<&str>,
         existing_openai_encrypted_content: Option<&str>,
     ) -> Result<NativeCompactionResult> {
-        match self.active_provider() {
+        // #2 调用账本：native compaction 是独立于 complete* 的模型调用路径，
+        // 同样在边界记账（只读观测、fail-open）。
+        let call_ledger_start = std::time::Instant::now();
+        let call_ledger_id =
+            PROVIDER_CALL_LEDGER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let call_ledger_source = current_call_source();
+        emit_provider_call_ledger_named(
+            "started",
+            call_ledger_id,
+            call_ledger_source,
+            &self.model(),
+            "native_compact",
+            vec![("message_count", messages.len().to_string())],
+        );
+        let result = match self.active_provider() {
             ActiveProvider::Claude => {
                 if let Some(anthropic) = self.anthropic_provider() {
                     anthropic
@@ -2574,7 +2702,38 @@ impl Provider for MultiProvider {
                     Err(anyhow::anyhow!("OpenRouter provider unavailable"))
                 }
             }
+        };
+        match &result {
+            Ok(_) => emit_provider_call_ledger_named(
+                "opened",
+                call_ledger_id,
+                call_ledger_source,
+                &self.model(),
+                "native_compact",
+                vec![(
+                    "elapsed_ms",
+                    call_ledger_start.elapsed().as_millis().to_string(),
+                )],
+            ),
+            Err(error) => emit_provider_call_ledger_named(
+                "error",
+                call_ledger_id,
+                call_ledger_source,
+                &self.model(),
+                "native_compact",
+                vec![
+                    (
+                        "elapsed_ms",
+                        call_ledger_start.elapsed().as_millis().to_string(),
+                    ),
+                    (
+                        "error",
+                        error.to_string().chars().take(200).collect::<String>(),
+                    ),
+                ],
+            ),
         }
+        result
     }
 
     fn drain_startup_notices(&self) -> Vec<String> {

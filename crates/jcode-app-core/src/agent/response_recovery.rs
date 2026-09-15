@@ -179,6 +179,31 @@ impl Agent {
         }
     }
 
+    /// #9：续写门裁决。返回 `true` = 抑制本次续写（已记账）。
+    ///
+    /// 控制默认关闭时 `check_kind` 始终放行（只计数），故该调用是纯观测。
+    fn suppress_continuation(&mut self, kind: &str, detail: &str) -> bool {
+        use crate::call_control::{ContinuationVerdict, ControlAction, ControlName, control_event};
+
+        let verdict = self.continuation_gate.check_kind(kind, detail);
+        if verdict == ContinuationVerdict::Allow {
+            return false;
+        }
+        logging::warn(&format!(
+            "Continuation suppressed by model-call control (kind={kind} verdict={verdict:?} used={}): ending turn with current output",
+            self.continuation_gate.used()
+        ));
+        control_event(
+            ControlName::ContinuationBudget,
+            ControlAction::Hit,
+            format!(
+                "kind={kind} verdict={verdict:?} used={}",
+                self.continuation_gate.used()
+            ),
+        );
+        true
+    }
+
     /// Retry a whitespace-only final response that arrived right after tool
     /// results, by asking the model to produce the final answer. Shared by the
     /// non-streaming and streaming (mpsc) turn loops so their recovery
@@ -199,6 +224,11 @@ impl Agent {
             return Ok(false);
         }
         if *attempts >= Self::MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS {
+            return Ok(false);
+        }
+        // #9：单回合续写预算 + 相同续写去重（控制默认关闭 → 与现状一致）。
+        let fingerprint_detail = stop_reason.unwrap_or("");
+        if self.suppress_continuation("empty_post_tool", fingerprint_detail) {
             return Ok(false);
         }
         *attempts += 1;
@@ -247,6 +277,12 @@ impl Agent {
                 "Response ended with stop_reason='{}' after {} continuation attempts; returning partial output",
                 stop_reason, attempts
             ));
+            return Ok(false);
+        }
+
+        // #9：单回合续写预算（细节指纹含尝试序号 → 只受总预算约束，
+        // 不会把长输出需要的多次合法续写误判为「相同续写」）。
+        if self.suppress_continuation("incomplete", &format!("{}:{}", stop_reason, *attempts)) {
             return Ok(false);
         }
 

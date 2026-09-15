@@ -3,7 +3,7 @@
 pub(crate) mod model_names;
 
 use crate::todo::TodoItem;
-use crate::tui::info_widget::{AmbientWidgetData, GitInfo, MemoryInfo};
+use crate::tui::info_widget::{AmbientWidgetData, CallLedgerSummary, GitInfo, MemoryInfo};
 use crate::tui::session_picker::ResumeTarget;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::{Path, PathBuf};
@@ -33,6 +33,365 @@ type TodosCacheEntry = (
 type TodosCache = std::collections::HashMap<String, TodosCacheEntry>;
 static TODOS_CACHE: std::sync::LazyLock<Mutex<TodosCache>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// 调用账本摘要的节流缓存（#4）：信息面板每帧重建，而账本侧车文件是批量落盘的
+/// （≥5s 或 ≥32 条），所以读盘按 TTL 节流即可，不需要每帧 IO。
+type CallLedgerCacheEntry = (String, std::time::Instant, Option<CallLedgerSummary>);
+static CALL_LEDGER_CACHE: Mutex<Option<CallLedgerCacheEntry>> = Mutex::new(None);
+
+/// 账本摘要缓存 TTL 与展示的 Top 分桶数量。
+const CALL_LEDGER_CACHE_TTL: Duration = Duration::from_secs(3);
+const CALL_LEDGER_TOP_ROWS: usize = 2;
+
+/// 读取当前会话（含 swarm 子树归集）的调用账本摘要；按 session 与 TTL 缓存。
+///
+/// 仅本地会话可用：远端会话的账本由服务端进程持有，本地不读盘（返回 None）。
+pub(crate) fn cached_call_ledger_summary(session_id: &str) -> Option<CallLedgerSummary> {
+    if session_id.is_empty() {
+        return None;
+    }
+    let now = std::time::Instant::now();
+    if let Ok(guard) = CALL_LEDGER_CACHE.lock()
+        && let Some((cached_id, at, summary)) = guard.as_ref()
+        && cached_id == session_id
+        && now.saturating_duration_since(*at) < CALL_LEDGER_CACHE_TTL
+    {
+        return summary.clone();
+    }
+
+    let summary = CallLedgerSummary::from_ledger(
+        &crate::call_ledger::load_ledger_rollup(session_id),
+        CALL_LEDGER_TOP_ROWS,
+    );
+    if let Ok(mut guard) = CALL_LEDGER_CACHE.lock() {
+        *guard = Some((session_id.to_string(), now, summary.clone()));
+    }
+    summary
+}
+
+/// 预算条口径（#4）：上下文剩余率 = 1 - used/limit。
+///
+/// P1 阶段尚无「统一预算」（P2 #6–#9），先用真实上下文占用把 `budget_percent`
+/// 从恒 None 变成真实数据；P2 预算落地后由那时决定是否切换口径。
+pub(crate) fn context_headroom_percent(limit: u64, used: Option<u64>) -> Option<f32> {
+    let used = used?;
+    if limit == 0 {
+        return None;
+    }
+    let ratio = used.min(limit) as f32 / limit as f32;
+    Some((1.0 - ratio).clamp(0.0, 1.0))
+}
+
+// ---------------------------------------------------------------------------
+// #10 auto-poke 治理：连续 poke 计数 + 软阈值提醒 / 硬阈值停止
+// ---------------------------------------------------------------------------
+
+/// auto-poke 预算状态（进程内单 App；控制默认关闭 → 只计数、不介入）。
+#[derive(Debug, Default, Clone)]
+pub(crate) struct AutoPokeBudgetState {
+    /// 本轮连续自动 poke 次数。
+    pub consecutive: u32,
+    /// 软阈值提醒是否已发（每个计数周期只提醒一次）。
+    pub soft_reminded: bool,
+}
+
+static AUTO_POKE_BUDGET: std::sync::LazyLock<Mutex<AutoPokeBudgetState>> =
+    std::sync::LazyLock::new(|| Mutex::new(AutoPokeBudgetState::default()));
+
+/// #10 裁决。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoPokeVerdict {
+    /// 允许本次自动 poke；`soft_reminder=true` 表示本次应给出软阈值提醒。
+    Allow { soft_reminder: bool },
+    /// 达到硬阈值 → 停止自动推进（todos 保留，交由用户接管）。
+    Stop,
+}
+
+/// 纯逻辑：给定计数与配置给出裁决（便于单测；控制关闭时恒 `Allow{false}`）。
+pub(crate) fn auto_poke_verdict(
+    consecutive: u32,
+    soft_reminded: bool,
+    cfg: &crate::config::ModelCallControlConfig,
+) -> AutoPokeVerdict {
+    let control = crate::call_control::ControlName::AutoPokeStop;
+    if !crate::call_control::is_enabled(cfg, control) {
+        return AutoPokeVerdict::Allow {
+            soft_reminder: false,
+        };
+    }
+    // 预算口径复用「单回合续写上限」，避免两套参数打架。
+    let max = cfg.continuation_budget.max_per_turn.max(1);
+    if consecutive >= max {
+        return AutoPokeVerdict::Stop;
+    }
+    let soft = ((max as f32) * cfg.auto_poke_stop.soft_ratio.clamp(0.0, 1.0)).ceil() as u32;
+    if !soft_reminded && soft > 0 && consecutive >= soft {
+        return AutoPokeVerdict::Allow {
+            soft_reminder: true,
+        };
+    }
+    AutoPokeVerdict::Allow {
+        soft_reminder: false,
+    }
+}
+
+/// 记录一次「即将自动 poke」并给出裁决（控制关闭时只计数）。
+pub(crate) fn note_auto_poke_and_verdict() -> AutoPokeVerdict {
+    use crate::call_control::{
+        ControlAction, ControlName, control_config, control_event, is_enabled,
+    };
+
+    let cfg = control_config();
+    let enabled = is_enabled(&cfg, ControlName::AutoPokeStop);
+    let mut guard = AUTO_POKE_BUDGET
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.consecutive = guard.consecutive.saturating_add(1);
+    let verdict = auto_poke_verdict(guard.consecutive, guard.soft_reminded, &cfg);
+    if matches!(
+        verdict,
+        AutoPokeVerdict::Allow {
+            soft_reminder: true
+        }
+    ) {
+        guard.soft_reminded = true;
+    }
+    let consecutive = guard.consecutive;
+    drop(guard);
+    if enabled {
+        control_event(
+            ControlName::AutoPokeStop,
+            match verdict {
+                AutoPokeVerdict::Stop => ControlAction::Hit,
+                AutoPokeVerdict::Allow { .. } => ControlAction::Observe,
+            },
+            format!("consecutive={consecutive} verdict={verdict:?}"),
+        );
+    }
+    verdict
+}
+
+/// 用户重新接管（新输入 / 手动 poke）→ 复位计数。
+pub(crate) fn reset_auto_poke_budget() {
+    if let Ok(mut guard) = AUTO_POKE_BUDGET.lock() {
+        *guard = AutoPokeBudgetState::default();
+    }
+}
+
+/// #16 停用优先级：非用户触发的验证回路（gate digest）是否应先停。
+///
+/// 依据当前计数与配置判断「已经达到硬阈值」——达到则非用户触发的后续动作先停，
+/// 用户轮不受影响（方案 §P3「预算紧张时优先停非用户触发调用」）。
+pub(crate) fn auto_poke_budget_exhausted() -> bool {
+    let cfg = crate::call_control::control_config();
+    let consecutive = AUTO_POKE_BUDGET
+        .lock()
+        .map(|guard| guard.consecutive)
+        .unwrap_or(0);
+    matches!(
+        auto_poke_verdict(consecutive, true, &cfg),
+        AutoPokeVerdict::Stop
+    )
+}
+
+// ---------------------------------------------------------------------------
+// #15/#16 提醒去重（一次性领取模式）
+// ---------------------------------------------------------------------------
+
+/// 上下文提醒窗口：0 = 未达阈值；1 = 70%；2 = 80%；3 = 90%。
+pub(crate) fn context_warning_window(usage_percent: f64) -> u8 {
+    if usage_percent >= 90.0 {
+        3
+    } else if usage_percent >= 80.0 {
+        2
+    } else if usage_percent >= 70.0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// 内容指纹（FNV-1a 64），用于提醒/摘要去重。
+pub(crate) fn content_fingerprint(content: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in content.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// 已领取的提醒（session → (窗口 → 已发, gate digest 指纹集合)）。
+#[derive(Debug, Default)]
+pub(crate) struct ReminderDedupState {
+    /// 已发布过的最高上下文窗口（跨窗口后允许再提醒一次）。
+    pub context_window: u8,
+    /// 已投递的 gate digest 内容指纹（同内容不重复投递）。
+    pub gate_digests: std::collections::HashSet<u64>,
+}
+
+const MAX_REMINDER_DIGESTS: usize = 32;
+
+static REMINDER_DEDUP: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, ReminderDedupState>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// #15：领取一次上下文阈值提醒；`true` = 本窗口首次（应当提醒）。
+pub(crate) fn claim_context_warning_window(session_id: &str, window: u8) -> bool {
+    if window == 0 {
+        return false;
+    }
+    let mut state = match REMINDER_DEDUP.lock() {
+        Ok(guard) => guard,
+        Err(_) => return false,
+    };
+    let entry = state.entry(session_id.to_string()).or_default();
+    if entry.context_window >= window {
+        return false;
+    }
+    entry.context_window = window;
+    true
+}
+
+/// #16：领取一次 gate digest 投递；`true` = 该内容首次投递。
+pub(crate) fn claim_gate_digest(session_id: &str, digest_fingerprint: u64) -> bool {
+    let mut state = match REMINDER_DEDUP.lock() {
+        Ok(guard) => guard,
+        Err(_) => return false,
+    };
+    let entry = state.entry(session_id.to_string()).or_default();
+    if entry.gate_digests.contains(&digest_fingerprint) {
+        return false;
+    }
+    if entry.gate_digests.len() >= MAX_REMINDER_DIGESTS {
+        // 保护性限幅：清空后重新计数（宁可重复一次，不无界增长）。
+        entry.gate_digests.clear();
+    }
+    entry.gate_digests.insert(digest_fingerprint);
+    true
+}
+
+/// 复位提醒去重状态（会话切换 / 测试）。
+#[cfg(test)]
+pub(crate) fn reset_reminder_dedup(session_id: &str) {
+    if let Ok(mut state) = REMINDER_DEDUP.lock() {
+        state.remove(session_id);
+    }
+}
+
+#[cfg(test)]
+mod reminder_dedup_tests {
+    use super::*;
+
+    #[test]
+    fn context_window_matches_thresholds() {
+        assert_eq!(context_warning_window(0.0), 0);
+        assert_eq!(context_warning_window(69.9), 0);
+        assert_eq!(context_warning_window(70.0), 1);
+        assert_eq!(context_warning_window(85.0), 2);
+        assert_eq!(context_warning_window(95.0), 3);
+    }
+
+    #[test]
+    fn context_warning_claimed_once_per_window() {
+        let session = "session-window";
+        reset_reminder_dedup(session);
+        assert!(claim_context_warning_window(session, 1));
+        // 同一窗口不重复提醒（修复 80% 分支反复追加的问题）。
+        assert!(!claim_context_warning_window(session, 1));
+        assert!(claim_context_warning_window(session, 2));
+        assert!(!claim_context_warning_window(session, 2));
+        assert!(claim_context_warning_window(session, 3));
+        // 降级窗口不再提醒。
+        assert!(!claim_context_warning_window(session, 1));
+        reset_reminder_dedup(session);
+    }
+
+    #[test]
+    fn gate_digest_dedups_same_content() {
+        let session = "session-digest";
+        reset_reminder_dedup(session);
+        let first = content_fingerprint("digest body");
+        assert!(claim_gate_digest(session, first));
+        assert!(!claim_gate_digest(session, first));
+        assert!(claim_gate_digest(
+            session,
+            content_fingerprint("other body")
+        ));
+        reset_reminder_dedup(session);
+    }
+
+    #[test]
+    fn content_fingerprint_is_stable() {
+        assert_eq!(content_fingerprint("same"), content_fingerprint("same"));
+        assert_ne!(content_fingerprint("a"), content_fingerprint("b"));
+    }
+}
+
+#[cfg(test)]
+mod auto_poke_budget_tests {
+    use super::*;
+
+    fn budget_cfg(max_per_turn: u32, soft_ratio: f32) -> crate::config::ModelCallControlConfig {
+        let mut cfg = crate::config::ModelCallControlConfig::default();
+        cfg.auto_poke_stop.enabled = true;
+        cfg.auto_poke_stop.soft_ratio = soft_ratio;
+        cfg.continuation_budget.max_per_turn = max_per_turn;
+        cfg
+    }
+
+    #[test]
+    fn disabled_control_never_intervenes() {
+        let cfg = crate::config::ModelCallControlConfig::default();
+        for consecutive in [0, 1, 4, 50] {
+            assert_eq!(
+                auto_poke_verdict(consecutive, false, &cfg),
+                AutoPokeVerdict::Allow {
+                    soft_reminder: false
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn soft_threshold_reminds_once_then_hard_threshold_stops() {
+        let cfg = budget_cfg(5, 0.8); // soft = ceil(5*0.8) = 4
+        assert_eq!(
+            auto_poke_verdict(3, false, &cfg),
+            AutoPokeVerdict::Allow {
+                soft_reminder: false
+            }
+        );
+        assert_eq!(
+            auto_poke_verdict(4, false, &cfg),
+            AutoPokeVerdict::Allow {
+                soft_reminder: true
+            }
+        );
+        // 已提醒过 → 不重复提醒。
+        assert_eq!(
+            auto_poke_verdict(4, true, &cfg),
+            AutoPokeVerdict::Allow {
+                soft_reminder: false
+            }
+        );
+        assert_eq!(auto_poke_verdict(5, true, &cfg), AutoPokeVerdict::Stop);
+    }
+
+    #[test]
+    fn state_reset_clears_counters() {
+        reset_auto_poke_budget();
+        {
+            let mut guard = AUTO_POKE_BUDGET.lock().expect("lock");
+            guard.consecutive = 3;
+            guard.soft_reminded = true;
+        }
+        reset_auto_poke_budget();
+        let guard = AUTO_POKE_BUDGET.lock().expect("lock");
+        assert_eq!(guard.consecutive, 0);
+        assert!(!guard.soft_reminded);
+    }
+}
 
 /// Backdate `Instant::now()` by up to `amount`, saturating instead of
 /// panicking when the clock's epoch is too recent.

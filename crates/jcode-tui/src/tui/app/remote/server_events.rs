@@ -1001,6 +1001,24 @@ pub(in crate::tui::app) fn handle_server_event(
             let _ = app.acknowledge_pending_soft_interrupt(id);
             false
         }
+        ServerEvent::BackgroundSessionFinished {
+            session_id,
+            friendly_name,
+            duration_ms,
+        } => {
+            // 完成通知通道：后台会话完成后立即刷新看板的在线快照，并把完成
+            // 事件入队给通知层（统一去重与状态栏展示；跨进程兜底见
+            // `~/.jcode/finished_pids` 标记）。
+            crate::logging::info(&format!(
+                "BACKGROUND_SESSION: TUI received finish event for {} (duration_ms={})",
+                session_id, duration_ms
+            ));
+            if let Some(picker) = app.session_picker_overlay.as_ref() {
+                picker.borrow_mut().refresh_live_presence_now();
+            }
+            app.push_background_finish_notice(session_id, friendly_name, duration_ms);
+            true
+        }
         ServerEvent::Interrupted => {
             crate::logging::info(&format!(
                 "REMOTE_INTERRUPT_EVENT_RECEIVED kind=interrupted session={:?} current_message_id={:?} is_processing={} status={:?} streaming_text_bytes={} pending_soft_interrupts={} queued_messages={}",
@@ -1093,6 +1111,18 @@ pub(in crate::tui::app) fn handle_server_event(
             true
         }
         ServerEvent::Done { id } => {
+            // A close-session request that finished: report it and refresh the
+            // board so the row reflects the closed session immediately.
+            if let Some(removal) = app.resolve_session_close(id) {
+                // Closing also removes the row from the board: hide it and
+                // keep the transcript (restorable from the hidden view).
+                crate::storage::hide_session(&removal.session_id);
+                app.set_status_notice(format!("✓ {} closed", removal.display_name));
+                if let Some(picker) = app.session_picker_overlay.as_ref() {
+                    picker.borrow_mut().refresh_live_presence_now();
+                }
+                return true;
+            }
             let mut auto_poked = false;
             let mut completed_current_message = false;
             crate::logging::info(&format!(
@@ -1183,6 +1213,8 @@ pub(in crate::tui::app) fn handle_server_event(
                     "client_turn_completed",
                     std::time::Duration::from_secs(30),
                 );
+                // #7/#8：回合真正结束 = 显式空闲信号 → 解除 busy-requeue 冷却/等待。
+                super::queue_recovery::note_explicit_idle();
                 auto_poked = app.schedule_turn_end_followups();
                 if !auto_poked {
                     app.clear_visible_turn_started();
@@ -1207,10 +1239,16 @@ pub(in crate::tui::app) fn handle_server_event(
             completed_current_message || auto_poked
         }
         ServerEvent::Error {
+            id,
             message,
             retry_after_secs,
             ..
         } => {
+            // A close-session request that failed keeps its row; report why.
+            if let Some(removal) = app.resolve_session_close(id) {
+                app.set_status_notice(format!("✗ {}: {message}", removal.display_name));
+                return true;
+            }
             // The server rejects a Message request with this error while its
             // previous turn is still running. This typically happens when a
             // reload/reconnect raced the turn-end dispatch: the history

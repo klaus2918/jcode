@@ -1,6 +1,7 @@
 pub mod anthropic;
 pub mod attempt_tracker;
 pub mod auth_mode;
+pub mod call_source;
 pub mod capability;
 pub mod catalog_refresh;
 pub mod failover;
@@ -27,6 +28,9 @@ pub use anthropic::{
 pub use auth_mode::{
     AuthMode, AuthRoute, DualAuthProvider, pinned_mode_for, runtime_env_auth_route,
     runtime_env_pinned_mode,
+};
+pub use call_source::{
+    CallOrigin, CallReason, CallSource, current_call_source, with_call_origin, with_call_reason,
 };
 pub use capability::{
     CapabilitySource, CapabilityTrace, EMBEDDED_REGISTRY, ExplicitModelCapability, Modality,

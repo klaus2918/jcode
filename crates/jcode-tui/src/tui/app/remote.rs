@@ -117,6 +117,32 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.poll_model_picker_load();
     needs_redraw |= app.poll_session_picker_load();
     needs_redraw |= app.poll_session_picker_presence();
+    needs_redraw |= app.process_background_finish_notices();
+    if let Some(removal) = app.take_pending_session_removal() {
+        if removal.live {
+            match remote.close_session(&removal.session_id).await {
+                Ok(request_id) => {
+                    app.set_status_notice(format!("Closing {}…", removal.display_name));
+                    app.track_session_close(request_id, removal);
+                }
+                Err(error) => {
+                    app.set_status_notice(format!(
+                        "✗ {} could not be closed: {error}",
+                        removal.display_name
+                    ));
+                }
+            }
+        } else {
+            // Finished sessions need no stop request: hide the row and keep the
+            // transcript (the hidden view can restore it).
+            crate::storage::hide_session(&removal.session_id);
+            if let Some(picker) = app.session_picker_overlay.as_ref() {
+                picker.borrow_mut().refresh_live_presence_now();
+            }
+            app.set_status_notice(format!("✓ {} removed from the board", removal.display_name));
+        }
+        needs_redraw = true;
+    }
     needs_redraw |= app.onboarding_tick();
     needs_redraw |= app.refresh_keybindings_if_config_reloaded();
 
@@ -225,7 +251,10 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         return needs_redraw;
     }
 
-    if !app.is_processing && !app.queued_messages.is_empty() {
+    if !app.is_processing
+        && !app.queued_messages.is_empty()
+        && queue_recovery::queued_dispatch_wait().is_none()
+    {
         let queued_messages = std::mem::take(&mut app.queued_messages);
         let hidden_reminders = std::mem::take(&mut app.hidden_queued_system_messages);
         let (messages, reminder, display_system_messages) =
@@ -268,6 +297,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             if !combined.is_empty() {
                 app.queued_messages.insert(0, combined);
             }
+        } else {
+            // 队列已成功派发 → 复位 busy-requeue 控制状态（#7/#8）。
+            queue_recovery::note_queue_dispatched();
         }
         needs_redraw = true;
     }
@@ -1306,7 +1338,7 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
                 )));
             }
         }
-    } else if !app.queued_messages.is_empty() {
+    } else if !app.queued_messages.is_empty() && queue_recovery::queued_dispatch_wait().is_none() {
         let queued_messages = std::mem::take(&mut app.queued_messages);
         let hidden_reminders = std::mem::take(&mut app.hidden_queued_system_messages);
         let (messages, reminder, display_system_messages) =
@@ -1353,6 +1385,9 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
             if !combined.is_empty() {
                 app.queued_messages.insert(0, combined);
             }
+        } else {
+            // 队列已成功派发 → 复位 busy-requeue 控制状态（#7/#8）。
+            queue_recovery::note_queue_dispatched();
         }
     } else if !app.hidden_queued_system_messages.is_empty() {
         let reminders = std::mem::take(&mut app.hidden_queued_system_messages);

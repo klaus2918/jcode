@@ -7,11 +7,11 @@ pub use jcode_config_types::{
     AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
     CompactionMode, CrossProviderFailoverMode, DiffDisplayMode, DisplayConfig, FeatureConfig,
     GatewayConfig, HooksConfig, KeybindingsConfig, LatexRenderingMode, MarkdownSpacingMode,
-    NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderModelOverrides,
-    NamedProviderType, NativeScrollbarConfig, NetworkConfig, NotificationsConfig,
-    OverscrollStatusMode, PowerConfig, ProviderApiFormat, ProviderConfig, ProviderPrice,
-    ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SwarmSpawnMode,
-    SwarmStripLayout, TerminalConfig, WebSearchConfig, WebSearchEngine,
+    ModelCallControlConfig, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
+    NamedProviderModelOverrides, NamedProviderType, NativeScrollbarConfig, NetworkConfig,
+    NotificationsConfig, OverscrollStatusMode, PowerConfig, ProviderApiFormat, ProviderConfig,
+    ProviderPrice, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SwarmSpawnMode,
+    SwarmStripLayout, TerminalConfig, ToolDedupControl, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -1051,6 +1051,9 @@ pub struct Config {
 
     /// Feature toggles
     pub features: FeatureConfig,
+
+    /// 模型调用收敛控制（P2 #6）：开关矩阵 + 参数，默认保守（控制类默认关闭）。
+    pub model_call_control: ModelCallControlConfig,
 
     /// Web search tool configuration
     pub websearch: WebSearchConfig,

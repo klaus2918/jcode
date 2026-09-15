@@ -5,6 +5,7 @@ mod bash;
 mod batch;
 mod bg;
 mod communicate;
+mod context_remaining;
 mod debug_socket;
 mod edit;
 mod goal;
@@ -23,6 +24,7 @@ pub(crate) mod session_search_index;
 mod side_panel;
 mod skill;
 mod todo;
+pub(crate) mod turn_dedup;
 mod webfetch;
 mod websearch;
 mod write;
@@ -157,6 +159,12 @@ impl Registry {
             let mut timings = Vec::new();
             let mut m = HashMap::new();
             Self::insert_tool_timed(&mut m, &mut timings, "read", read::ReadTool::new);
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "context_remaining",
+                context_remaining::ContextRemainingTool::new,
+            );
             Self::insert_tool_timed(&mut m, &mut timings, "write", write::WriteTool::new);
             Self::insert_tool_timed(
                 &mut m,
@@ -582,6 +590,18 @@ impl Registry {
             Self::tool_lifecycle_fields("start", name, resolved_name, &input, &ctx),
         );
 
+        // #12 工具回合效率（默认仅观测）：同回合重复只读调用。
+        match crate::tool::turn_dedup::before_call(&ctx, resolved_name, &input) {
+            crate::tool::turn_dedup::DedupDecision::Cached(output) => {
+                crate::logging::event_info(
+                    "TOOL_LIFECYCLE",
+                    Self::tool_lifecycle_fields("dedup_hit", name, resolved_name, &input, &ctx),
+                );
+                return Ok(*output);
+            }
+            crate::tool::turn_dedup::DedupDecision::Proceed => {}
+        }
+
         let started_at = std::time::Instant::now();
         let result = tool.execute(input.clone(), ctx.clone()).await;
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -602,6 +622,19 @@ impl Registry {
 
         // Context overflow guard: check if this output would push us over the limit
         output = self.guard_context_overflow(name, output).await;
+
+        // #12：记录只读调用结果（控制启用时供同回合去重复用；观测模式只留指纹）。
+        crate::tool::turn_dedup::after_call(&ctx, resolved_name, &input, &output);
+
+        // #14：记录上下文快照（供 context_remaining 工具查询，替代试探式确认）。
+        {
+            let compaction = self.compaction.read().await;
+            context_remaining::record(
+                &ctx.session_id,
+                compaction.token_budget(),
+                compaction.effective_token_count(),
+            );
+        }
 
         let mut fields = Self::tool_lifecycle_fields("done", name, resolved_name, &input, &ctx);
         fields.push(("elapsed_ms".to_string(), latency_ms.to_string()));
