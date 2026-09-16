@@ -1297,6 +1297,7 @@ impl Server {
                 if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
                     sigterm.recv().await;
                     crate::logging::info("Server received SIGTERM, shutting down gracefully");
+                    background_session::clear_all_background_sessions();
                     let _ = crate::registry::unregister_server(&sigterm_server_name).await;
                     std::process::exit(0);
                 }
@@ -1793,6 +1794,7 @@ impl Server {
                                     "Server idle for {} minutes with no clients. Shutting down.",
                                     idle_duration / 60
                                 ));
+                                background_session::clear_all_background_sessions();
                                 let _ = crate::registry::unregister_server(&idle_server_name).await;
                                 std::process::exit(EXIT_IDLE_TIMEOUT);
                             }
@@ -1810,7 +1812,10 @@ impl Server {
 
         // 初始化后台会话跟踪器，监控切换后继续执行的 session
         let completion_rx = background_session::init_background_session_tracker();
-        background_session::spawn_background_session_monitor(self.sessions.clone());
+        background_session::spawn_background_session_monitor(
+            self.sessions.clone(),
+            self.swarm_state.members.clone(),
+        );
         tokio::spawn(async move {
             let mut rx = completion_rx;
             while let Some(event) = rx.recv().await {

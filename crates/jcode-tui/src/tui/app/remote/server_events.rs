@@ -1246,7 +1246,14 @@ pub(in crate::tui::app) fn handle_server_event(
         } => {
             // A close-session request that failed keeps its row; report why.
             if let Some(removal) = app.resolve_session_close(id) {
-                app.set_status_notice(format!("✗ {}: {message}", removal.display_name));
+                // Server-side refusals ("not hosted by this server", …) are
+                // still recoverable when a local jcode process owns the
+                // session: close that process directly; otherwise report the
+                // server's reason and keep the row.
+                match crate::tui::app::local::close_session_via_local_process(app, &removal) {
+                    Ok(notice) => app.set_status_notice(notice),
+                    Err(_) => app.set_status_notice(format!("✗ {}: {message}", removal.display_name)),
+                }
                 return true;
             }
             // The server rejects a Message request with this error while its

@@ -419,6 +419,157 @@ pub(super) struct PendingCatchupResume {
     pub show_brief: bool,
 }
 
+/// A background session that finished while detached (its client had switched
+/// away mid-turn and the server kept it running). Queued from
+/// `ServerEvent::BackgroundSessionFinished` and consumed by the completion
+/// notice layer, which announces each session at most once and reconciles
+/// against the file-based finish markers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BackgroundFinishNotice {
+    pub session_id: String,
+    pub friendly_name: Option<String>,
+    pub duration_ms: u64,
+}
+
+/// Interval for the marker fallback scan that catches background-session
+/// completions for which no server event was delivered. The event channel is
+/// the immediate path; this only reconciles misses.
+const BACKGROUND_FINISH_SCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+
+impl App {
+    /// Queue a background-session completion observed on the server event
+    /// channel. Rendering/announcement happens in the completion-notice layer.
+    pub(super) fn push_background_finish_notice(
+        &mut self,
+        session_id: String,
+        friendly_name: Option<String>,
+        duration_ms: u64,
+    ) {
+        self.background_finish_notices.push(BackgroundFinishNotice {
+            session_id,
+            friendly_name,
+            duration_ms,
+        });
+    }
+
+    /// Drain queued background-session completions and reconcile them with the
+    /// cross-process finish markers, announcing each session at most once.
+    ///
+    /// The event channel is the immediate source; the throttled marker scan is
+    /// the fallback for completions that arrived while no event was delivered.
+    /// The first scan seeds its baseline silently so pre-existing history is
+    /// never re-announced. Returns true when a notice was shown (redraw).
+    pub(super) fn process_background_finish_notices(&mut self) -> bool {
+        let mut announced = false;
+
+        // Immediate channel: completions reported by the server.
+        let queued: Vec<BackgroundFinishNotice> =
+            self.background_finish_notices.drain(..).collect();
+        for notice in queued {
+            if !self.announced_finish_ids.insert(notice.session_id.clone()) {
+                continue;
+            }
+            let name = notice
+                .friendly_name
+                .clone()
+                .unwrap_or_else(|| Self::finish_notice_name(&notice.session_id));
+            let text = if notice.duration_ms == 0 {
+                format!("✓ {name} finished")
+            } else {
+                format!(
+                    "✓ {name} finished (took {})",
+                    crate::tui::session_picker::format_short_duration(
+                        std::time::Duration::from_millis(notice.duration_ms)
+                    )
+                )
+            };
+            self.set_status_notice(text);
+            announced = true;
+        }
+
+        // Fallback channel: finish markers written by any process.
+        let due = self
+            .last_finish_scan_at
+            .is_none_or(|at| at.elapsed() >= BACKGROUND_FINISH_SCAN_INTERVAL);
+        if due {
+            self.last_finish_scan_at = Some(Instant::now());
+            let finishes = crate::storage::recent_finishes(512);
+            let present: std::collections::HashSet<String> =
+                finishes.iter().map(|(id, _)| id.clone()).collect();
+            if self.known_finish_ids.is_empty() && !present.is_empty() {
+                // Fresh process: treat existing markers as history, not news.
+                self.known_finish_ids = present;
+            } else {
+                for (session_id, _) in &finishes {
+                    if self.known_finish_ids.contains(session_id)
+                        || !self.announced_finish_ids.insert(session_id.clone())
+                    {
+                        continue;
+                    }
+                    self.set_status_notice(format!(
+                        "✓ {} finished",
+                        Self::finish_notice_name(session_id)
+                    ));
+                    announced = true;
+                }
+                self.known_finish_ids.extend(present);
+            }
+        }
+
+        announced
+    }
+
+    /// Display name for a completion notice when no friendly name is known.
+    fn finish_notice_name(session_id: &str) -> String {
+        crate::id::extract_session_name(session_id)
+            .map(str::to_string)
+            .unwrap_or_else(|| session_id[..8.min(session_id.len())].to_string())
+    }
+
+    /// Queue a confirmed Ctrl+X removal for the next tick.
+    pub(super) fn queue_session_removal(&mut self, removal: PendingSessionRemoval) {
+        self.pending_session_removal = Some(removal);
+    }
+
+    /// Take a queued removal so the mode-specific tick can handle it.
+    pub(super) fn take_pending_session_removal(&mut self) -> Option<PendingSessionRemoval> {
+        self.pending_session_removal.take()
+    }
+
+    /// Record the in-flight close request so the reply can be reported.
+    pub(super) fn track_session_close(&mut self, request_id: u64, removal: PendingSessionRemoval) {
+        self.pending_session_close = Some((request_id, removal));
+    }
+
+    /// Match a server reply against the in-flight close request; returns the
+    /// removal when the id belongs to it.
+    pub(super) fn resolve_session_close(
+        &mut self,
+        request_id: u64,
+    ) -> Option<PendingSessionRemoval> {
+        match &self.pending_session_close {
+            Some((id, _)) if *id == request_id => self
+                .pending_session_close
+                .take()
+                .map(|(_, removal)| removal),
+            _ => None,
+        }
+    }
+}
+
+/// A session the user confirmed removing from the board (Ctrl+X twice). The
+/// app tick either sends a close request to the server or explains why the
+/// session cannot be stopped from this client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PendingSessionRemoval {
+    pub session_id: String,
+    pub display_name: String,
+    /// Whether the session had a live process when removal was confirmed.
+    /// Live targets route through the close request; finished ones are only
+    /// hidden from the board.
+    pub live: bool,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct RemoteResumeActivity {
     pub session_id: String,
@@ -1540,6 +1691,24 @@ pub struct App {
     catchup_return_stack: Vec<String>,
     pending_catchup_resume: Option<PendingCatchupResume>,
     in_flight_catchup_resume: Option<PendingCatchupResume>,
+    /// Background-session completions observed on the server event channel,
+    /// waiting to be announced by the completion-notice layer (dedup + status
+    /// notice + fallback reconciliation).
+    background_finish_notices: Vec<BackgroundFinishNotice>,
+    /// Sessions whose background completion has already been announced (event
+    /// path or marker fallback), so each completion notifies at most once.
+    announced_finish_ids: std::collections::HashSet<String>,
+    /// Finish-marker ids observed by the fallback scan; the first scan seeds
+    /// this silently so pre-existing history is never re-announced.
+    known_finish_ids: std::collections::HashSet<String>,
+    /// Throttle for the marker fallback scan.
+    last_finish_scan_at: Option<Instant>,
+    /// Ctrl+X removal confirmed in the picker, waiting for the tick to send the
+    /// close request (or explain why it cannot be stopped from here).
+    pending_session_removal: Option<PendingSessionRemoval>,
+    /// In-flight close request: (request id, removal) so the `Done`/`Error`
+    /// reply can report the outcome on the status line.
+    pending_session_close: Option<(u64, PendingSessionRemoval)>,
     /// Login picker overlay (None = not visible)
     /// Account picker overlay (None = not visible)
     /// Usage overlay (None = not visible)

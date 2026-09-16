@@ -449,6 +449,64 @@ pub(super) async fn fanout_live_client_event(
     delivered
 }
 
+/// Broadcast an event to every connected client, each connection at most once,
+/// regardless of which session it is currently attached to.
+///
+/// Used for server-wide notices such as a background session finishing: the
+/// client that switched away is attached to a different session by then, so
+/// per-session fanout would reach nobody. Clients that predate the event
+/// variant skip it (see the TUI's stray-line handling).
+pub(super) async fn broadcast_all_client_events(
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    event: ServerEvent,
+) -> usize {
+    let targets: Vec<mpsc::UnboundedSender<ServerEvent>> = {
+        let members = swarm_members.read().await;
+        let mut seen = HashSet::new();
+        let mut txs = Vec::new();
+        for member in members.values() {
+            for (connection_id, tx) in &member.event_txs {
+                if tx.is_closed() {
+                    continue;
+                }
+                if seen.insert(connection_id.clone()) {
+                    txs.push(tx.clone());
+                }
+            }
+        }
+        txs
+    };
+
+    let mut delivered = 0;
+    for tx in targets {
+        if tx.send(event.clone()).is_ok() {
+            delivered += 1;
+        }
+    }
+    delivered
+}
+
+/// Ask any running turn of `session_id` to stop: fires the lock-free per-turn
+/// cancel signals (via the turn-cancel registry) plus the session's registered
+/// shutdown signal. Returns how many signals were fired. Used by the
+/// close-session path so a busy session can be wound down without holding its
+/// agent lock.
+pub(super) async fn fire_session_stop_signals(
+    session_id: &str,
+    shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
+) -> usize {
+    let mut fired = 0usize;
+    for signal in crate::turn_cancel_registry::active_turn_signals(session_id) {
+        signal.fire();
+        fired += 1;
+    }
+    if let Some(signal) = shutdown_signals.read().await.get(session_id).cloned() {
+        signal.fire();
+        fired += 1;
+    }
+    fired
+}
+
 pub(super) fn session_event_fanout_sender(
     session_id: String,
     swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,

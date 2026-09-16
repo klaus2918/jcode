@@ -765,6 +765,14 @@ fn test_filter_mode_cycles_through_requested_session_sources() {
     assert_eq!(picker.visible_sessions.len(), 6);
 
     picker.cycle_filter_mode();
+    assert_eq!(picker.filter_mode, SessionFilterMode::Board);
+    assert_eq!(
+        picker.visible_sessions.len(),
+        6,
+        "the board shows every session, grouped by run state"
+    );
+
+    picker.cycle_filter_mode();
     assert_eq!(picker.filter_mode, SessionFilterMode::CatchUp);
     assert_eq!(picker.visible_sessions.len(), 1);
     assert!(
@@ -830,6 +838,8 @@ fn test_filter_mode_cycles_through_requested_session_sources() {
             .all(SessionPicker::session_is_cursor)
     );
 
+    // Removal is permanent: the cycle skips the internal hidden mode, so
+    // there is no recovery view reachable from the keyboard.
     picker.cycle_filter_mode();
     assert_eq!(picker.filter_mode, SessionFilterMode::All);
     assert_eq!(picker.visible_sessions.len(), 6);
@@ -846,7 +856,7 @@ fn test_filter_mode_keyboard_shortcuts_cycle_both_directions() {
     picker
         .handle_overlay_key(KeyCode::Char('s'), KeyModifiers::empty())
         .unwrap();
-    assert_eq!(picker.filter_mode, SessionFilterMode::CatchUp);
+    assert_eq!(picker.filter_mode, SessionFilterMode::Board);
 
     picker
         .handle_overlay_key(KeyCode::Char('S'), KeyModifiers::empty())
@@ -861,12 +871,14 @@ fn live_presence(session_id: &str, streaming: bool) -> crate::session::SessionPr
         streaming,
         streaming_since: streaming
             .then(|| std::time::SystemTime::now() - std::time::Duration::from_secs(90)),
+        background: false,
+        background_since: None,
         internal: false,
     }
 }
 
 #[test]
-fn test_active_filter_shows_only_live_sessions_ready_before_working() {
+fn test_active_board_parts_sections_and_orders_rows() {
     let live_working = make_session("session_working", "alpha", false, SessionStatus::Active);
     let live_ready = make_session("session_ready", "beta", false, SessionStatus::Active);
     let dead = make_session("session_dead", "dead", false, SessionStatus::Closed);
@@ -882,8 +894,23 @@ fn test_active_filter_shows_only_live_sessions_ready_before_working() {
         .visible_session_iter()
         .map(|session| session.id.as_str())
         .collect();
-    // Only live sessions appear; the ready one is triaged above the working one.
-    assert_eq!(visible, vec!["session_ready", "session_working"]);
+    // Board order: Working section first, then Ready. The closed session has
+    // no finish marker, so it is not part of the board.
+    assert_eq!(visible, vec!["session_working", "session_ready"]);
+    assert!(matches!(
+        picker.items.first(),
+        Some(PickerItem::BoardHeader {
+            section: BoardSection::Working,
+            session_count: 1
+        })
+    ));
+    assert!(matches!(
+        picker.items.get(2),
+        Some(PickerItem::BoardHeader {
+            section: BoardSection::Ready,
+            session_count: 1
+        })
+    ));
 
     let ready = picker
         .visible_session_iter()
@@ -896,6 +923,366 @@ fn test_active_filter_shows_only_live_sessions_ready_before_working() {
     assert!(!picker.session_is_streaming(ready));
     assert!(picker.session_is_streaming(working));
     assert!(picker.session_streaming_duration(working).is_some());
+}
+
+fn background_presence(session_id: &str, background_secs: u64) -> crate::session::SessionPresence {
+    crate::session::SessionPresence {
+        session_id: session_id.to_string(),
+        pid: std::process::id(),
+        streaming: false,
+        streaming_since: None,
+        background: true,
+        background_since: Some(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(background_secs),
+        ),
+        internal: false,
+    }
+}
+
+fn finish_time_secs_ago(secs: u64) -> std::time::SystemTime {
+    std::time::SystemTime::now() - std::time::Duration::from_secs(secs)
+}
+
+#[test]
+fn test_active_board_renders_working_ready_and_finished_sections() {
+    let live_working = make_session("session_working", "alpha", false, SessionStatus::Active);
+    let live_ready = make_session("session_ready", "beta", false, SessionStatus::Active);
+    let recent_done = make_session("session_recent", "recent", false, SessionStatus::Closed);
+    let earlier_done = make_session("session_earlier", "earlier", false, SessionStatus::Closed);
+
+    let mut picker = SessionPicker::new(vec![live_working, live_ready, recent_done, earlier_done]);
+    picker.activate_active_filter();
+    picker.set_live_presence_for_test(vec![
+        live_presence("session_working", true),
+        live_presence("session_ready", false),
+    ]);
+    picker.set_finish_times_for_test(vec![
+        // 5 minutes ago -> "recently finished"; 30 hours ago -> "earlier".
+        ("session_recent".to_string(), finish_time_secs_ago(300)),
+        (
+            "session_earlier".to_string(),
+            finish_time_secs_ago(30 * 3_600),
+        ),
+    ]);
+
+    let sections: Vec<(BoardSection, usize)> = picker
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            PickerItem::BoardHeader {
+                section,
+                session_count,
+            } => Some((*section, *session_count)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sections,
+        vec![
+            (BoardSection::Working, 1),
+            (BoardSection::Ready, 1),
+            (BoardSection::RecentlyFinished, 1),
+            (BoardSection::Earlier, 1),
+        ]
+    );
+
+    let visible: Vec<&str> = picker
+        .visible_session_iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    assert_eq!(
+        visible,
+        vec![
+            "session_working",
+            "session_ready",
+            "session_recent",
+            "session_earlier"
+        ]
+    );
+
+    // Finished rows take their timestamp from the cross-process finish marker.
+    let recent = picker
+        .visible_session_iter()
+        .find(|session| session.id == "session_recent")
+        .cloned()
+        .expect("recent visible");
+    let recent_text = picker
+        .render_session_item_lines(&recent, false)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        recent_text.contains("finished") && recent_text.contains("ago"),
+        "expected finished badge from marker time, got: {recent_text}"
+    );
+}
+
+#[test]
+fn test_active_board_background_badge_and_empty_sections_omitted() {
+    let live_bg = make_session("session_bg", "bg", false, SessionStatus::Active);
+    let mut picker = SessionPicker::new(vec![live_bg]);
+    picker.activate_active_filter();
+    picker.set_live_presence_for_test(vec![background_presence("session_bg", 192)]);
+
+    // Only the Working section exists; Ready/Recently finished/Earlier render
+    // no header at all.
+    assert!(matches!(
+        picker.items.first(),
+        Some(PickerItem::BoardHeader {
+            section: BoardSection::Working,
+            session_count: 1
+        })
+    ));
+    assert_eq!(
+        picker
+            .items
+            .iter()
+            .filter(|item| matches!(item, PickerItem::BoardHeader { .. }))
+            .count(),
+        1
+    );
+
+    let bg = picker
+        .visible_session_iter()
+        .next()
+        .cloned()
+        .expect("background session visible");
+    let text = picker
+        .render_session_item_lines(&bg, false)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("background 3m"),
+        "expected background badge with duration, got: {text}"
+    );
+    assert!(picker.session_is_background(&bg));
+}
+
+#[test]
+fn test_board_footer_counts_and_pulse() {
+    let live_working = make_session("session_working", "alpha", false, SessionStatus::Active);
+    let live_ready = make_session("session_ready", "beta", false, SessionStatus::Active);
+    let mut picker = SessionPicker::new(vec![live_working, live_ready]);
+    picker.activate_active_filter();
+    picker.set_live_presence_for_test(vec![
+        live_presence("session_working", true),
+        live_presence("session_ready", false),
+    ]);
+
+    // Counts come from the presence snapshot; the first computation pulses.
+    let (working, ready, pulsing) = picker.board_counts_for_render();
+    assert_eq!((working, ready), (1, 1));
+    assert!(pulsing, "changed counts should pulse");
+    let (working, ready, pulsing) = picker.board_counts_for_render();
+    assert_eq!((working, ready), (1, 1));
+    assert!(pulsing, "pulse stays active inside its window");
+
+    // A background session counts as working; the ready count follows.
+    picker.set_live_presence_for_test(vec![background_presence("session_working", 60)]);
+    let (working, ready, pulsing) = picker.board_counts_for_render();
+    assert_eq!((working, ready), (1, 0));
+    assert!(pulsing, "count change restarts the pulse");
+}
+
+#[test]
+fn ctrl_x_twice_confirms_removal() {
+    let session = make_session("session_remove", "remove me", false, SessionStatus::Closed);
+    let mut picker = SessionPicker::new(vec![session]);
+
+    let first = picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(
+        matches!(first, OverlayAction::Continue),
+        "first press only arms"
+    );
+    assert!(picker.remove_arm_active());
+
+    let second = picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    match second {
+        OverlayAction::RemoveConfirmed { session_id } => assert_eq!(session_id, "session_remove"),
+        other => panic!("expected RemoveConfirmed, got {other:?}"),
+    }
+    assert!(!picker.remove_arm_active(), "confirmation disarms");
+}
+
+#[test]
+fn ctrl_x_arm_cancelled_by_other_key_or_esc() {
+    let session = make_session("session_remove", "remove me", false, SessionStatus::Closed);
+    let mut picker = SessionPicker::new(vec![session]);
+
+    picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(picker.remove_arm_active());
+    picker
+        .handle_overlay_key(KeyCode::Char('j'), KeyModifiers::empty())
+        .unwrap();
+    assert!(!picker.remove_arm_active(), "movement should disarm");
+
+    picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    let action = picker
+        .handle_overlay_key(KeyCode::Esc, KeyModifiers::empty())
+        .unwrap();
+    assert!(
+        matches!(action, OverlayAction::Continue),
+        "Esc cancels the arming instead of closing the panel"
+    );
+    assert!(!picker.remove_arm_active());
+}
+
+#[test]
+fn ctrl_x_arm_expires_after_window() {
+    let session = make_session("session_remove", "remove me", false, SessionStatus::Closed);
+    let mut picker = SessionPicker::new(vec![session]);
+
+    picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    // Age the arming past its window: the next Ctrl+X must be a fresh first
+    // press rather than a confirmation.
+    if let Some(pending) = picker.pending_remove.as_mut() {
+        pending.armed_at = std::time::Instant::now() - std::time::Duration::from_secs(5);
+    }
+    let action = picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(
+        matches!(action, OverlayAction::Continue),
+        "stale arming must not confirm"
+    );
+    assert!(picker.remove_arm_active(), "the press re-arms instead");
+}
+
+#[test]
+fn ctrl_x_refuses_the_current_session_with_a_reason() {
+    let mut self_session = make_session("session_self", "self", false, SessionStatus::Active);
+    let mut other = make_session("session_other", "other", false, SessionStatus::Closed);
+    self_session.last_message_time = Utc::now();
+    other.last_message_time = Utc::now() - ChronoDuration::minutes(1);
+    let mut picker = SessionPicker::new(vec![other, self_session]);
+    picker.set_current_session_id(Some("session_self".to_string()));
+
+    // The first press on the current row is refused: no destructive confirm
+    // state is armed, and the footer says why.
+    let action = picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(matches!(action, OverlayAction::Continue));
+    assert!(!picker.remove_arm_active(), "current session must not arm");
+    let footer = picker
+        .remove_block_footer()
+        .expect("refusal explains itself");
+    assert!(
+        footer.contains("Test session") && footer.contains("Ctrl+X"),
+        "footer should name the row and the key, got: {footer}"
+    );
+
+    // A second press stays refused instead of confirming.
+    let action = picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(matches!(action, OverlayAction::Continue));
+    assert!(!picker.remove_arm_active());
+
+    // Another row still arms normally, and arming clears the stale refusal.
+    picker
+        .handle_overlay_key(KeyCode::Char('j'), KeyModifiers::empty())
+        .unwrap();
+    let action = picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(matches!(action, OverlayAction::Continue));
+    assert!(picker.remove_arm_active(), "another row still arms");
+    assert!(
+        picker.remove_block_footer().is_none(),
+        "a fresh arming clears the stale refusal"
+    );
+}
+
+#[test]
+fn ctrl_x_on_a_board_header_is_a_noop() {
+    let live = make_session("session_live", "live", false, SessionStatus::Active);
+    let mut picker = SessionPicker::new(vec![live]);
+    picker.activate_active_filter();
+    picker.set_live_presence_for_test(vec![live_presence("session_live", false)]);
+    assert!(matches!(
+        picker.items.first(),
+        Some(PickerItem::BoardHeader { .. })
+    ));
+
+    // Land the selection on the section header itself (the default selection
+    // skips to the first session row, but j/k navigation can sit on a header).
+    picker.list_state.select(Some(0));
+    assert!(picker.selected_session().is_none());
+
+    // Section headers (and crash groups) hold no session: Ctrl+X must be a
+    // silent no-op, never an armed removal of the wrong row.
+    let action = picker
+        .handle_overlay_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(matches!(action, OverlayAction::Continue));
+    assert!(!picker.remove_arm_active());
+    assert!(picker.remove_block_footer().is_none());
+}
+
+#[test]
+fn test_removed_sessions_stay_removed_in_every_user_view() {
+    let visible = make_session("session_visible", "visible", false, SessionStatus::Closed);
+    let removed = make_session("session_removed", "removed", false, SessionStatus::Closed);
+
+    // Removal is storage-backed (the marker is the permanent record), so the
+    // test writes and cleans a real marker instead of injecting a snapshot:
+    // the periodic presence refresh re-reads storage and must keep the row gone.
+    crate::storage::unhide_session("session_removed");
+    crate::storage::hide_session("session_removed");
+
+    let mut picker = SessionPicker::new(vec![visible, removed]);
+
+    // Normal views filter removed sessions out entirely.
+    let ids: Vec<&str> = picker
+        .visible_session_iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["session_visible"],
+        "hidden rows must not reappear"
+    );
+
+    // Removal is permanent: the internal hidden mode still exists for
+    // storage-side filtering/tests, but the user cycle skips it.
+    assert_eq!(
+        SessionFilterMode::Cursor.next(),
+        SessionFilterMode::All,
+        "the s/S cycle must skip the hidden mode"
+    );
+    assert_eq!(
+        SessionFilterMode::All.previous(),
+        SessionFilterMode::Cursor,
+        "the backwards cycle must skip the hidden mode"
+    );
+
+    // Cycling all the way round never surfaces the removed row again.
+    for _ in 0..12 {
+        picker.cycle_filter_mode();
+        assert!(
+            picker
+                .visible_session_iter()
+                .all(|session| session.id != "session_removed"),
+            "removed rows must never come back (mode: {:?})",
+            picker.filter_mode
+        );
+    }
+
+    crate::storage::unhide_session("session_removed");
 }
 
 #[test]

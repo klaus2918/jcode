@@ -566,6 +566,87 @@ fn apply_or_defer_subscribe_selfdev(agent: &Arc<Mutex<Agent>>, session_id: &str)
     });
 }
 
+/// How long [`handle_close_session`] waits for an interrupted turn to wind
+/// down before reporting that the session is still finishing.
+const CLOSE_SESSION_WAIT: Duration = Duration::from_secs(8);
+
+/// Close a session hosted by this server (session-board Ctrl+X removal):
+/// ask any running turn to stop, wait briefly for it to wind down, then mark
+/// the session closed and drop it from the live roster.
+///
+/// The requester receives `Done` on success or `Error` with a human-readable
+/// reason on failure, so the board can keep the row and explain itself.
+pub(super) async fn handle_close_session(
+    id: u64,
+    target_session_id: &str,
+    requester_session_id: &str,
+    sessions: &SessionAgents,
+    shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    if target_session_id == requester_session_id {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: "Cannot close the session this client is attached to.".to_string(),
+            retry_after_secs: None,
+        });
+        return;
+    }
+
+    let target = sessions.read().await.get(target_session_id).cloned();
+    let Some(target) = target else {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: format!(
+                "'{target_session_id}' is not hosted by this server; close it from the window that owns it."
+            ),
+            retry_after_secs: None,
+        });
+        return;
+    };
+
+    // Stop any running turn, then wait (bounded) for the agent to go idle.
+    let fired = super::state::fire_session_stop_signals(target_session_id, shutdown_signals).await;
+    let deadline = Instant::now() + CLOSE_SESSION_WAIT;
+    let mut stopped = false;
+    while Instant::now() < deadline {
+        if target.try_lock().is_ok() {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if !stopped {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: format!(
+                "'{target_session_id}' is still finishing its turn (stop signals fired: {fired}); try again in a moment."
+            ),
+            retry_after_secs: Some(2),
+        });
+        return;
+    }
+
+    {
+        let mut agent = target.lock().await;
+        agent.mark_closed();
+    }
+    super::remove_session_entry(sessions, target_session_id).await;
+    super::background_session::unregister_background_session(target_session_id);
+    remove_session_interrupt_queue(soft_interrupt_queues, target_session_id).await;
+    remove_background_tool_signal(target_session_id);
+    {
+        let mut signals = shutdown_signals.write().await;
+        signals.remove(target_session_id);
+    }
+    crate::logging::info(&format!(
+        "SESSION_CLOSE: closed {} (stop_signals={})",
+        target_session_id, fired
+    ));
+    let _ = client_event_tx.send(ServerEvent::Done { id });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_subscribe(
     id: u64,
@@ -1211,6 +1292,12 @@ pub(super) async fn handle_resume_session(
             ("allow_takeover", allow_session_takeover.to_string()),
         ],
     );
+    // 恢复前台：客户端重新打开该会话后立即注销后台注册（含跨进程标记），
+    // 会话看板随即从「后台运行中」转为前台状态。
+    if super::background_session::is_background_session(&session_id) {
+        super::background_session::unregister_background_session(&session_id);
+    }
+
     let live_target_agent = claim_live_target_agent(
         &session_id,
         client_connection_id,

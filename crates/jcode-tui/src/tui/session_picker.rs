@@ -603,6 +603,14 @@ impl SessionPicker {
         self.rebuild_items();
     }
 
+    /// Open on the board: every session, grouped by run state (Working /
+    /// Ready / Recently finished / Earlier). This is the `/resume` default.
+    pub fn activate_board_filter(&mut self) {
+        self.filter_mode = SessionFilterMode::Board;
+        self.refresh_live_presence();
+        self.rebuild_items();
+    }
+
     /// Snapshot the active-pid registry + streaming markers into the picker.
     pub(super) fn refresh_live_presence(&mut self) {
         self.live_presence = crate::session::session_presence()
@@ -665,12 +673,17 @@ impl SessionPicker {
             return false;
         }
         let before = std::mem::take(&mut self.live_presence);
+        let before_hidden = std::mem::take(&mut self.hidden_ids);
         self.refresh_live_presence();
         let changed = before != self.live_presence;
-        if changed && self.filter_mode == SessionFilterMode::Active {
+        let hidden_changed = before_hidden != self.hidden_ids;
+        // Same reasoning as `refresh_live_presence_now`: a hidden-snapshot
+        // change (a removal from this or another window) must rebuild the list
+        // in every view, not only in the Active view.
+        if (changed && self.filter_mode == SessionFilterMode::Active) || hidden_changed {
             self.rebuild_items();
         }
-        changed
+        changed || hidden_changed
     }
 
     /// Force an immediate live-presence refresh, bypassing the throttle. Used
@@ -682,12 +695,17 @@ impl SessionPicker {
             return false;
         }
         let before = std::mem::take(&mut self.live_presence);
+        let before_hidden = std::mem::take(&mut self.hidden_ids);
         self.refresh_live_presence();
         let changed = before != self.live_presence;
-        if changed && self.filter_mode == SessionFilterMode::Active {
+        let hidden_changed = before_hidden != self.hidden_ids;
+        // A removal changes the hidden snapshot: rebuild in every view (the
+        // board included), not only in the Active view, so a removed row
+        // disappears the moment it is removed instead of lingering on screen.
+        if (changed && self.filter_mode == SessionFilterMode::Active) || hidden_changed {
             self.rebuild_items();
         }
-        changed
+        changed || hidden_changed
     }
 
     /// Whether the session has a live process right now.
@@ -753,6 +771,16 @@ impl SessionPicker {
         modifiers: KeyModifiers,
     ) -> Option<OverlayAction> {
         let ctrl_x = code == KeyCode::Char('x') && modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl_x {
+            // Diagnostic: proves the key reached the picker overlay and shows
+            // what it would act on (see verify-log #16/#17 field notes).
+            crate::logging::info(&format!(
+                "SESSION_PICKER: Ctrl+X received (armed={}, selected={:?}, mode={:?})",
+                self.pending_remove.is_some(),
+                self.selected_session().map(|session| session.id.clone()),
+                self.filter_mode
+            ));
+        }
         let armed = self.pending_remove.as_ref().map(|pending| {
             (
                 pending.session_id.clone(),
@@ -763,6 +791,9 @@ impl SessionPicker {
         if let Some((session_id, expired)) = armed {
             if ctrl_x && !expired {
                 self.pending_remove = None;
+                crate::logging::info(&format!(
+                    "SESSION_PICKER: Ctrl+X confirmed for {session_id}"
+                ));
                 return Some(OverlayAction::RemoveConfirmed { session_id });
             }
             if !ctrl_x && code == KeyCode::Esc {

@@ -19,7 +19,8 @@ use super::client_lightweight_control::{
     LightweightControlContext, handle_lightweight_control_request, parse_swarm_spawn_mode,
 };
 use super::client_session::{
-    handle_clear_session, handle_reload, handle_resume_session, handle_subscribe,
+    handle_clear_session, handle_close_session, handle_reload, handle_resume_session,
+    handle_subscribe,
 };
 use super::client_state::{
     handle_get_compacted_history, handle_get_history, handle_get_model_catalog, handle_get_state,
@@ -1169,6 +1170,19 @@ pub(super) async fn handle_client(
 
             Request::BackgroundTool { id } => {
                 move_tool_to_background(id, &session_control, &client_event_tx);
+            }
+
+            Request::CloseSession { id, session_id } => {
+                handle_close_session(
+                    id,
+                    &session_id,
+                    &client_session_id,
+                    &sessions,
+                    &shutdown_signals,
+                    &soft_interrupt_queues,
+                    &client_event_tx,
+                )
+                .await;
             }
 
             Request::Clear { id } => {

@@ -5,9 +5,21 @@
 //! lives in the storage crate because it only needs [`jcode_dir`] and is a
 //! low-level concern shared by session management, dictation, and crash
 //! recovery, none of which should pull the full `session` module into scope.
+//!
+//! Run-state model derived from these markers (drives the session board):
+//! - **Working**: live session with an active streaming marker
+//!   ([`mark_streaming`] / [`StreamingGuard`]).
+//! - **Ready**: live session that is neither streaming nor backgrounded.
+//! - **Background**: live session flagged in `~/.jcode/background_pids`
+//!   ([`mark_background`]); the server keeps its agent alive after the client
+//!   switched away while a turn was still running.
+//! - **Finished**: session no longer live; `~/.jcode/finished_pids` records
+//!   when it ended ([`session_finish_time`] / [`recent_finishes`]) so presence
+//!   UIs can show "finished 5m ago" even from another process.
 
 use crate::jcode_dir;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 /// Directory holding one file per active session ID (`~/.jcode/active_pids`).
 pub fn active_pids_dir() -> Option<PathBuf> {
@@ -29,6 +41,23 @@ pub fn streaming_pids_dir() -> Option<std::path::PathBuf> {
 /// ones are flagged here and filtered out of user-facing counts (issue #508).
 pub fn internal_pids_dir() -> Option<std::path::PathBuf> {
     jcode_dir().ok().map(|d| d.join("internal_pids"))
+}
+
+/// Directory holding per-session "background" markers. A marker exists while
+/// the server holds the session's agent alive after the client switched away
+/// mid-turn. The file content is the owning process PID (same convention as
+/// the streaming markers) and its mtime is when the session was moved to the
+/// background.
+pub fn background_pids_dir() -> Option<PathBuf> {
+    jcode_dir().ok().map(|d| d.join("background_pids"))
+}
+
+/// Directory holding per-session "recently finished" markers. A marker is
+/// written when a session's active-PID record goes away (closed, crashed, or
+/// removed) and contains the wall-clock epoch milliseconds of that moment.
+/// Presence UIs use it to render "finished 5m ago" across processes.
+pub fn finished_pids_dir() -> Option<PathBuf> {
+    jcode_dir().ok().map(|d| d.join("finished_pids"))
 }
 
 /// Flag (or unflag) `session_id` as an internal session for presence UIs.
@@ -55,6 +84,8 @@ pub fn register_active_pid(session_id: &str, pid: u32) {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join(session_id), pid.to_string());
     }
+    // A session that just became live is no longer "recently finished".
+    clear_finished(session_id);
 }
 
 /// Remove the active-PID record for `session_id`, if present.
@@ -65,6 +96,10 @@ pub fn unregister_active_pid(session_id: &str) {
     // A closed session is never streaming, and its internal flag is moot.
     unmark_streaming(session_id);
     set_session_internal(session_id, false);
+    // It is also no longer backgrounded; remember when it ended so presence
+    // UIs (in any process) can show a recent finish.
+    unmark_background(session_id);
+    mark_finished(session_id);
 }
 
 /// Mark a session as actively streaming a model response.
@@ -80,6 +115,134 @@ pub fn unmark_streaming(session_id: &str) {
     if let Some(dir) = streaming_pids_dir() {
         let _ = std::fs::remove_file(dir.join(session_id));
     }
+}
+
+/// Mark `session_id` as a background session: the server keeps its agent
+/// alive after the client switched away mid-turn. Cleared by
+/// [`unmark_background`] (foreground return) or [`unregister_active_pid`]
+/// (session closed).
+pub fn mark_background(session_id: &str) {
+    if let Some(dir) = background_pids_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(session_id), std::process::id().to_string());
+    }
+}
+
+/// Clear the background marker for `session_id`.
+pub fn unmark_background(session_id: &str) {
+    if let Some(dir) = background_pids_dir() {
+        let _ = std::fs::remove_file(dir.join(session_id));
+    }
+}
+
+/// Whether `session_id` currently has a background marker.
+pub fn session_is_background(session_id: &str) -> bool {
+    background_pids_dir().is_some_and(|dir| dir.join(session_id).exists())
+}
+
+/// How long a finish marker stays eligible for "recently finished" UIs before
+/// [`prune_finished_markers`] may drop it.
+const FINISHED_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Upper bound on retained finish markers; older entries beyond this are
+/// pruned even when they are still inside [`FINISHED_RETENTION`].
+const FINISHED_DIR_MAX_ENTRIES: usize = 512;
+
+/// Record that `session_id` just finished (closed, crashed, or removed) and
+/// store the wall-clock time so other processes can render "finished 5m ago"
+/// without an event channel. Best-effort, like the other markers here.
+pub fn mark_finished(session_id: &str) {
+    let Some(dir) = finished_pids_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let now_ms = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let _ = std::fs::write(dir.join(session_id), now_ms.to_string());
+    prune_finished_markers(FINISHED_RETENTION, FINISHED_DIR_MAX_ENTRIES);
+}
+
+/// Forget the finish marker for `session_id` (it became live again).
+pub fn clear_finished(session_id: &str) {
+    if let Some(dir) = finished_pids_dir() {
+        let _ = std::fs::remove_file(dir.join(session_id));
+    }
+}
+
+/// When `session_id` finished, if a finish marker is still on disk.
+pub fn session_finish_time(session_id: &str) -> Option<SystemTime> {
+    let dir = finished_pids_dir()?;
+    read_finish_marker(&dir.join(session_id))
+}
+
+/// Recently finished sessions, newest first, at most `limit` entries.
+pub fn recent_finishes(limit: usize) -> Vec<(String, SystemTime)> {
+    let Some(dir) = finished_pids_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut finishes: Vec<(String, SystemTime)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let time = read_finish_marker(&entry.path())?;
+            Some((entry.file_name().to_string_lossy().to_string(), time))
+        })
+        .collect();
+    finishes.sort_by_key(|finish| std::cmp::Reverse(finish.1));
+    finishes.truncate(limit);
+    finishes
+}
+
+/// Drop finish markers older than `retention`, then keep only the newest
+/// `max_entries`. Returns how many markers were removed. Entries whose
+/// content cannot be parsed count as expired.
+pub fn prune_finished_markers(retention: Duration, max_entries: usize) -> usize {
+    let Some(dir) = finished_pids_dir() else {
+        return 0;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let now = SystemTime::now();
+    let mut kept: Vec<(String, SystemTime)> = Vec::new();
+    let mut removed = 0usize;
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let path = entry.path();
+        let session_id = entry.file_name().to_string_lossy().to_string();
+        match read_finish_marker(&path) {
+            Some(finished_at)
+                if now
+                    .duration_since(finished_at)
+                    .map(|age| age <= retention)
+                    .unwrap_or(true) =>
+            {
+                kept.push((session_id, finished_at));
+            }
+            _ => {
+                let _ = std::fs::remove_file(&path);
+                removed += 1;
+            }
+        }
+    }
+    if kept.len() > max_entries {
+        kept.sort_by_key(|finish| std::cmp::Reverse(finish.1));
+        for (session_id, _) in kept.into_iter().skip(max_entries) {
+            let _ = std::fs::remove_file(dir.join(&session_id));
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Parse the epoch-milliseconds timestamp stored in a finish marker.
+fn read_finish_marker(path: &Path) -> Option<SystemTime> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let millis: u64 = raw.trim().parse().ok()?;
+    Some(std::time::UNIX_EPOCH + Duration::from_millis(millis))
 }
 
 /// RAII guard that marks a session as streaming for its lifetime and clears the
@@ -105,6 +268,15 @@ impl Drop for StreamingGuard {
 }
 
 /// Find the active session ID currently owned by the given process ID.
+/// PID of the process that currently owns `session_id`, when the active-pid
+/// registry has an entry for it. Used by the board's Ctrl+X removal flow to
+/// close a running session that lives in another process.
+pub fn session_owner_pid(session_id: &str) -> Option<u32> {
+    let dir = active_pids_dir()?;
+    let raw = std::fs::read_to_string(dir.join(session_id)).ok()?;
+    raw.trim().parse::<u32>().ok()
+}
+
 pub fn find_active_session_id_by_pid(pid: u32) -> Option<String> {
     let dir = active_pids_dir()?;
     for entry in std::fs::read_dir(dir).ok()? {
@@ -142,7 +314,30 @@ fn process_is_running(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn process_is_running(pid: u32) -> bool {
+    // Uses the Win32 process APIs (mirrors `jcode-base::platform::is_process_running`)
+    // so dead PIDs are actually detected instead of being treated as live.
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        ok != 0 && exit_code == STILL_ACTIVE as u32
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn process_is_running(pid: u32) -> bool {
     // Best-effort fallback for platforms where this low-level storage crate does
     // not have a process API. The active PID file is still useful, and stale
@@ -174,6 +369,12 @@ pub struct SessionPresence {
     /// When the current streaming turn started (streaming marker mtime), if
     /// the session is streaming. Lets presence UIs show "working for 2m".
     pub streaming_since: Option<std::time::SystemTime>,
+    /// Whether the session is flagged as a background session (the server
+    /// keeps its agent alive after the client switched away mid-turn).
+    pub background: bool,
+    /// When the session was moved to the background (background marker
+    /// mtime), if [`Self::background`]. Lets the board show "background · 3m".
+    pub background_since: Option<std::time::SystemTime>,
     /// Whether this is an internal session (debug/test or a spawned child
     /// such as a swarm worker) that user-facing presence UIs should hide.
     pub internal: bool,
@@ -192,6 +393,7 @@ pub fn session_presence() -> Vec<SessionPresence> {
     };
 
     let streaming_dir = streaming_pids_dir();
+    let background_dir = background_pids_dir();
     let internal_dir = internal_pids_dir();
     let mut sessions = Vec::new();
 
@@ -224,6 +426,25 @@ pub fn session_presence() -> Vec<SessionPresence> {
             None
         };
 
+        // Background marker written by the process that holds the agent alive
+        // after the client switched away; stale markers (dead owner) are
+        // treated as absent, mirroring the streaming marker handling.
+        let background_marker_path = background_dir.as_ref().map(|dir| dir.join(&session_id));
+        let background = background_marker_path.as_ref().is_some_and(|marker| {
+            std::fs::read_to_string(marker)
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u32>().ok())
+                .is_some_and(process_is_running)
+        });
+        let background_since = if background {
+            background_marker_path
+                .as_ref()
+                .and_then(|marker| std::fs::metadata(marker).ok())
+                .and_then(|meta| meta.modified().ok())
+        } else {
+            None
+        };
+
         sessions.push(SessionPresence {
             internal: internal_dir
                 .as_ref()
@@ -232,6 +453,8 @@ pub fn session_presence() -> Vec<SessionPresence> {
             pid,
             streaming,
             streaming_since,
+            background,
+            background_since,
         });
     }
 
@@ -270,10 +493,10 @@ pub fn user_session_counts() -> SessionCounts {
 mod tests {
     use super::*;
 
-    /// Serialize tests that mutate `JCODE_HOME`.
+    /// Serialize tests that mutate `JCODE_HOME` (shared across the crate so
+    /// parallel modules cannot clobber each other's sandbox).
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::test_env_lock::lock_test_env()
     }
 
     #[test]
@@ -387,6 +610,112 @@ mod tests {
         set_session_internal("session_worker", true);
         unregister_active_pid("session_worker");
         assert!(!session_is_internal("session_worker"));
+
+        jcode_core::env::remove_var("JCODE_HOME");
+    }
+
+    #[test]
+    fn background_marker_roundtrip_and_presence_flag() {
+        let _guard = lock_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+        let live = std::process::id();
+        register_active_pid("session_bg", live);
+        assert!(!session_is_background("session_bg"));
+        assert!(!session_presence().iter().any(|s| s.background));
+
+        mark_background("session_bg");
+        assert!(session_is_background("session_bg"));
+        let sessions = session_presence();
+        let row = sessions
+            .iter()
+            .find(|s| s.session_id == "session_bg")
+            .expect("live session should be present");
+        assert!(row.background);
+        assert!(row.background_since.is_some());
+
+        unmark_background("session_bg");
+        assert!(!session_is_background("session_bg"));
+
+        // Closing the session clears any leftover background marker.
+        mark_background("session_bg");
+        unregister_active_pid("session_bg");
+        assert!(!session_is_background("session_bg"));
+
+        jcode_core::env::remove_var("JCODE_HOME");
+    }
+
+    #[test]
+    fn finished_markers_record_and_clear_around_lifecycle() {
+        let _guard = lock_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+        let live = std::process::id();
+        register_active_pid("session_fin", live);
+        assert!(session_finish_time("session_fin").is_none());
+
+        unregister_active_pid("session_fin");
+        let finished_at = session_finish_time("session_fin").expect("finish marker");
+        assert!(finished_at <= std::time::SystemTime::now());
+
+        // Resuming the session clears the marker again.
+        register_active_pid("session_fin", live);
+        assert!(session_finish_time("session_fin").is_none());
+
+        jcode_core::env::remove_var("JCODE_HOME");
+    }
+
+    #[test]
+    fn recent_finishes_lists_newest_first_and_honours_limit() {
+        let _guard = lock_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+        let dir = finished_pids_dir().expect("finished dir");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        for (id, millis) in [("old", 1_000u64), ("mid", 2_000), ("new", 3_000)] {
+            std::fs::write(dir.join(id), millis.to_string()).expect("write marker");
+        }
+
+        let recent = recent_finishes(2);
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].0, "new");
+        assert_eq!(recent[1].0, "mid");
+
+        jcode_core::env::remove_var("JCODE_HOME");
+    }
+
+    #[test]
+    fn prune_finished_markers_drops_expired_and_over_cap_entries() {
+        let _guard = lock_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+        let dir = finished_pids_dir().expect("finished dir");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_millis() as u64;
+        std::fs::write(dir.join("fresh"), now_ms.to_string()).expect("write");
+        std::fs::write(dir.join("stale"), 0u64.to_string()).expect("write");
+        std::fs::write(dir.join("corrupt"), "not-a-time").expect("write");
+
+        let removed = prune_finished_markers(std::time::Duration::from_secs(3_600), 512);
+        assert_eq!(removed, 2, "stale + corrupt marker should be pruned");
+        assert!(dir.join("fresh").exists());
+
+        // With a tighter cap the oldest remaining entries are dropped too.
+        std::fs::remove_file(dir.join("fresh")).expect("remove");
+        for (id, age_ms) in [("a", 3_000u64), ("b", 2_000), ("c", 1_000)] {
+            std::fs::write(dir.join(id), (now_ms - age_ms).to_string()).expect("write");
+        }
+        let removed = prune_finished_markers(std::time::Duration::from_secs(3_600), 2);
+        assert_eq!(removed, 1, "oldest entry should be dropped by the cap");
+        assert!(!dir.join("a").exists());
+        assert!(dir.join("c").exists());
 
         jcode_core::env::remove_var("JCODE_HOME");
     }

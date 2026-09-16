@@ -603,6 +603,7 @@ impl Request {
             Request::SetFeature { id, .. } => *id,
             Request::SetCompactionMode { id, .. } => *id,
             Request::RenameSession { id, .. } => *id,
+            Request::CloseSession { id, .. } => *id,
             Request::Split { id } => *id,
             Request::Transfer { id } => *id,
             Request::Compact { id } => *id,

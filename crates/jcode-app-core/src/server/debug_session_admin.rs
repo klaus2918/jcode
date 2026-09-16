@@ -218,5 +218,20 @@ pub(super) async fn maybe_handle_session_admin_command(
         return Ok(Some(format!("Session '{}' destroyed", target_id)));
     }
 
+    if cmd == "background_sessions" {
+        let snapshot: Vec<serde_json::Value> =
+            super::background_session::list_background_sessions()
+                .into_iter()
+                .map(|info| {
+                    serde_json::json!({
+                        "session_id": info.session_id,
+                        "friendly_name": info.friendly_name,
+                        "background_secs": info.moved_to_background_at.elapsed().as_secs(),
+                    })
+                })
+                .collect();
+        return Ok(Some(serde_json::to_string_pretty(&snapshot)?));
+    }
+
     Ok(None)
 }

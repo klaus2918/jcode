@@ -159,16 +159,28 @@ impl SessionPicker {
         session: &SessionInfo,
         filter_mode: SessionFilterMode,
     ) -> bool {
+        // Removed sessions never reappear in normal views; the dedicated
+        // hidden view is the only recovery entry.
+        if filter_mode != SessionFilterMode::Hidden && self.hidden_ids.contains(&session.id) {
+            return false;
+        }
         match filter_mode {
-            SessionFilterMode::All => true,
+            SessionFilterMode::All | SessionFilterMode::Board => true,
             SessionFilterMode::CatchUp => session.needs_catchup,
             SessionFilterMode::Saved => session.saved,
-            SessionFilterMode::Active => self.session_is_live(session),
+            SessionFilterMode::Active => {
+                // The board view also surfaces recently finished sessions so
+                // the user can see what just completed.
+                self.session_is_live(session) || self.finish_times.contains_key(&session.id)
+            }
             SessionFilterMode::ClaudeCode => Self::session_is_claude_code(session),
             SessionFilterMode::Codex => Self::session_is_codex(session),
             SessionFilterMode::Pi => Self::session_is_pi(session),
             SessionFilterMode::OpenCode => Self::session_is_open_code(session),
             SessionFilterMode::Cursor => Self::session_is_cursor(session),
+            // Hidden view: only removed sessions (the guard above lets them
+            // through untouched for this mode).
+            SessionFilterMode::Hidden => self.hidden_ids.contains(&session.id),
             SessionFilterMode::ExternalClis => {
                 Self::session_is_codex(session)
                     || Self::session_is_claude_code(session)
@@ -193,8 +205,19 @@ impl SessionPicker {
         self.item_to_session.clear();
 
         if filter_mode != SessionFilterMode::All {
-            for session_ref in filtered_refs {
-                self.push_visible_session(session_ref);
+            if matches!(
+                filter_mode,
+                SessionFilterMode::Active | SessionFilterMode::Board
+            ) {
+                // Board view: group rows into run-state sections instead of a
+                // flat list (see `rebuild_board_items`). `Active` is the
+                // live-only board; `Board` (the `/resume` default) also keeps
+                // plain history rows, which land in the "Earlier" section.
+                self.rebuild_board_items(&filtered_refs);
+            } else {
+                for session_ref in filtered_refs {
+                    self.push_visible_session(session_ref);
+                }
             }
 
             self.hidden_test_count =
@@ -352,6 +375,114 @@ impl SessionPicker {
         self.list_state.select(selected);
         self.scroll_offset = 0;
         self.auto_scroll_preview = true;
+    }
+
+    /// Build the `/active` board sections: Working (live sessions streaming or
+    /// running in the background), Ready (live and idle), Recently finished
+    /// (ended inside the recent window) and Earlier (older retained finishes).
+    ///
+    /// Working rows sort by when their current run started (earliest first, so
+    /// the longest-running work is easiest to spot); finished rows sort by
+    /// finish time, newest first. Empty sections render no header.
+    fn rebuild_board_items(&mut self, filtered_refs: &[SessionRef]) {
+        use jcode_tui_session_picker::{BoardSection, PickerItem};
+
+        let mut working: Vec<(std::time::SystemTime, SessionRef)> = Vec::new();
+        let mut ready: Vec<SessionRef> = Vec::new();
+        let mut recent: Vec<(std::time::SystemTime, SessionRef)> = Vec::new();
+        let mut earlier: Vec<(std::time::SystemTime, SessionRef)> = Vec::new();
+        // Sessions with neither a live process nor a finish marker (plain
+        // history). Only the default board keeps them; `/active` pre-filters
+        // them out before the builder runs.
+        let mut history: Vec<SessionRef> = Vec::new();
+
+        for session_ref in filtered_refs.iter().copied() {
+            let Some(session) = self.session_by_ref(session_ref) else {
+                continue;
+            };
+            if self.session_is_live(session) {
+                if self.session_is_streaming(session) || self.session_is_background(session) {
+                    let started = self
+                        .live_presence
+                        .get(&session.id)
+                        .and_then(|presence| {
+                            if presence.background {
+                                presence.background_since
+                            } else {
+                                presence.streaming_since
+                            }
+                        })
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    working.push((started, session_ref));
+                } else {
+                    ready.push(session_ref);
+                }
+                continue;
+            }
+            let Some(finished_at) = self.finish_times.get(&session.id).copied() else {
+                // Neither live nor carrying a finish marker: plain history. The
+                // board is the default view, so these must stay visible; they
+                // join the "Earlier" section behind the finished rows.
+                history.push(session_ref);
+                continue;
+            };
+            if self.session_finished_recently(session) {
+                recent.push((finished_at, session_ref));
+            } else {
+                earlier.push((finished_at, session_ref));
+            }
+        }
+
+        working.sort_by(|a, b| a.0.cmp(&b.0));
+        recent.sort_by(|a, b| b.0.cmp(&a.0));
+        earlier.sort_by(|a, b| b.0.cmp(&a.0));
+        history.sort_by(|a, b| {
+            let activity = |session_ref: &SessionRef| {
+                self.session_by_ref(*session_ref)
+                    .map(|session| session.last_active_at.unwrap_or(session.last_message_time))
+                    .unwrap_or_default()
+            };
+            activity(b).cmp(&activity(a))
+        });
+
+        let earlier_refs: Vec<SessionRef> = earlier
+            .into_iter()
+            .map(|(_, session_ref)| session_ref)
+            .chain(history)
+            .collect();
+
+        let sections: [(BoardSection, Vec<SessionRef>); 4] = [
+            (
+                BoardSection::Working,
+                working
+                    .into_iter()
+                    .map(|(_, session_ref)| session_ref)
+                    .collect(),
+            ),
+            (BoardSection::Ready, ready),
+            (
+                BoardSection::RecentlyFinished,
+                recent
+                    .into_iter()
+                    .map(|(_, session_ref)| session_ref)
+                    .collect(),
+            ),
+            (BoardSection::Earlier, earlier_refs),
+        ];
+
+        for (section, refs) in sections {
+            if refs.is_empty() {
+                continue;
+            }
+            self.items.push(PickerItem::BoardHeader {
+                section,
+                session_count: refs.len(),
+            });
+            self.item_to_session.push(None);
+            for session_ref in refs {
+                self.push_visible_session(session_ref);
+            }
+        }
     }
 
     pub(super) fn find_item_index_for_session_id(&self, session_id: &str) -> Option<usize> {

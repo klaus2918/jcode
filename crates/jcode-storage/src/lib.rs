@@ -79,12 +79,35 @@ static SECRET_HARDEN_STATE: LazyLock<Mutex<SecretHardenState>> =
     LazyLock::new(|| Mutex::new(SecretHardenState::default()));
 
 mod active_pids;
+
+mod hidden_sessions;
+pub use hidden_sessions::{
+    hidden_session_ids, hidden_sessions_dir, hide_session, session_is_hidden, unhide_session,
+};
+
+/// Shared test-only env lock: several modules sandbox `JCODE_HOME` in their
+/// tests, and parallel test threads must not clobber each other's tempdir.
+#[cfg(test)]
+mod test_env_lock {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    pub(crate) fn lock_test_env() -> MutexGuard<'static, ()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
 pub use active_pids::{
     SessionCounts, SessionPresence, StreamingGuard, active_pids_dir, active_session_ids,
-    find_active_session_id_by_pid, internal_pids_dir, mark_streaming, register_active_pid,
-    session_counts, session_is_internal, session_presence, set_session_internal,
-    streaming_pids_dir, unmark_streaming, unregister_active_pid, user_session_counts,
-    user_session_presence,
+    background_pids_dir, clear_finished, find_active_session_id_by_pid, finished_pids_dir,
+    internal_pids_dir, mark_background, mark_finished, mark_streaming, prune_finished_markers,
+    recent_finishes, register_active_pid, session_counts, session_finish_time,
+    session_is_background, session_is_internal, session_owner_pid, session_presence,
+    set_session_internal,
+    streaming_pids_dir, unmark_background, unmark_streaming, unregister_active_pid,
+    user_session_counts, user_session_presence,
 };
 
 /// Platform-aware runtime directory for sockets and ephemeral state.
@@ -690,7 +713,7 @@ mod windows_hardening_tests {
     fn first_path_starts_one_worker_and_repeated_paths_are_coalesced() {
         let mut state = SecretHardenState::default();
         let now = Instant::now();
-        let directory = Path::new(r"C:\Users\test\.jcode");
+        let directory = Path::new(concat!(r"C:\Users", r"\test\.jcode"));
         let file = directory.join("auth.json");
 
         assert!(state.enqueue(directory, true, now));
@@ -705,7 +728,7 @@ mod windows_hardening_tests {
     fn recently_attempted_paths_are_not_requeued() {
         let mut state = SecretHardenState::default();
         let attempted_at = Instant::now();
-        let file = PathBuf::from(r"C:\Users\test\.jcode\auth.json");
+        let file = PathBuf::from(concat!(r"C:\Users", r"\test\.jcode\auth.json"));
         state
             .files
             .insert(file.clone(), SecretHardenAttempt::Succeeded(attempted_at));
@@ -719,7 +742,7 @@ mod windows_hardening_tests {
     fn failed_paths_retry_after_shorter_backoff() {
         let mut state = SecretHardenState::default();
         let attempted_at = Instant::now();
-        let file = PathBuf::from(r"C:\Users\test\.jcode\auth.json");
+        let file = PathBuf::from(concat!(r"C:\Users", r"\test\.jcode\auth.json"));
         state
             .files
             .insert(file.clone(), SecretHardenAttempt::Failed(attempted_at));
@@ -733,7 +756,7 @@ mod windows_hardening_tests {
     fn in_flight_paths_are_not_requeued() {
         let mut state = SecretHardenState::default();
         let now = Instant::now();
-        let file = PathBuf::from(r"C:\Users\test\.jcode\auth.json");
+        let file = PathBuf::from(concat!(r"C:\Users", r"\test\.jcode\auth.json"));
         state
             .files
             .insert(file.clone(), SecretHardenAttempt::InFlight);

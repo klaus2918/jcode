@@ -241,6 +241,9 @@ impl SessionPicker {
 
     /// Handle mouse events when used as an overlay
     pub fn handle_overlay_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        // Any mouse activity counts as "moving on": disarm a pending Ctrl+X
+        // removal confirmation so the double-press stays a deliberate gesture.
+        self.pending_remove = None;
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 self.handle_mouse_scroll(mouse.column, mouse.row, mouse.kind);

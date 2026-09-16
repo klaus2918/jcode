@@ -126,10 +126,16 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
                     app.track_session_close(request_id, removal);
                 }
                 Err(error) => {
-                    app.set_status_notice(format!(
-                        "✗ {} could not be closed: {error}",
-                        removal.display_name
-                    ));
+                    // The connected server may refuse or not reach the owner;
+                    // when a local jcode process owns the session, close that
+                    // process directly instead of giving up.
+                    match super::local::close_session_via_local_process(app, &removal) {
+                        Ok(notice) => app.set_status_notice(notice),
+                        Err(_) => app.set_status_notice(format!(
+                            "✗ {} could not be closed: {error}",
+                            removal.display_name
+                        )),
+                    }
                 }
             }
         } else {

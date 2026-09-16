@@ -25,6 +25,7 @@ fn test_writer() -> Result<(Arc<Mutex<WriteHalf>>, crate::transport::Stream)> {
 
 include!("resume/multiple_live_attach.rs");
 include!("resume/busy_existing_attach.rs");
+include!("resume/background_attach.rs");
 include!("resume/reconnect_takeover_with_history.rs");
 include!("resume/attach_without_local_history.rs");
 include!("resume/different_client_attach.rs");

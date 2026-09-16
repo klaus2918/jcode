@@ -650,6 +650,19 @@ impl RemoteConnection {
         self.send_request(request).await
     }
 
+    /// Ask the server to close (stop + retire) a session it hosts. Returns the
+    /// request id so the caller can match the eventual `Done`/`Error` reply.
+    pub async fn close_session(&mut self, session_id: &str) -> Result<u64> {
+        let id = self.next_request_id;
+        let request = Request::CloseSession {
+            id,
+            session_id: session_id.to_string(),
+        };
+        self.next_request_id += 1;
+        self.send_request(request).await?;
+        Ok(id)
+    }
+
     /// Request a wider compacted-history window for the active session.
     pub async fn get_compacted_history(&mut self, visible_messages: usize) -> Result<u64> {
         let id = self.next_request_id;

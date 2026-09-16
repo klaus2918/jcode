@@ -2155,6 +2155,8 @@ impl App {
         };
         picker.set_current_dir(current_dir);
         picker.set_current_session_id(Some(super::commands::active_session_id(self)));
+        // `/resume` opens on the board: run-state sections (incl. history).
+        picker.activate_board_filter();
         self.session_picker_overlay = Some(RefCell::new(picker));
         self.session_picker_mode = SessionPickerMode::Resume;
         self.set_status_notice(status);
@@ -2758,6 +2760,36 @@ impl App {
         };
         match action {
             OverlayAction::Continue => {}
+            OverlayAction::RemoveConfirmed { session_id } => {
+                let display_name = self
+                    .session_picker_overlay
+                    .as_ref()
+                    .and_then(|picker| {
+                        picker
+                            .borrow()
+                            .selected_session()
+                            .map(|session| session.title.clone())
+                    })
+                    .unwrap_or_else(|| Self::finish_notice_name(&session_id));
+
+                // Removal is permanent: there is no recovery view, so the
+                // gesture always removes. Live targets route through the close
+                // request; finished ones are hidden directly by the
+                // mode-specific tick.
+                let live = self
+                    .session_picker_overlay
+                    .as_ref()
+                    .is_some_and(|picker| picker.borrow().session_is_live_by_id(&session_id));
+                crate::logging::info(&format!(
+                    "SESSION_REMOVE: queued removal for {session_id} (live={live}, is_remote={})",
+                    self.is_remote
+                ));
+                self.queue_session_removal(super::PendingSessionRemoval {
+                    session_id,
+                    display_name,
+                    live,
+                });
+            }
             OverlayAction::Close => {
                 self.session_picker_overlay = None;
                 if self.session_picker_mode == SessionPickerMode::Onboarding {

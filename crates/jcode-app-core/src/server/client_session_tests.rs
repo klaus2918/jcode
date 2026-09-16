@@ -1,8 +1,8 @@
 use super::{
     apply_or_defer_subscribe_working_dir, claim_live_target_agent, effective_subscribe_working_dir,
-    handle_clear_session, handle_reload, handle_resume_session, handle_subscribe,
-    mark_remote_reload_started, remove_detached_source_if_unclaimed, rename_shutdown_signal,
-    rename_swarm_member_session, restored_session_was_interrupted,
+    handle_clear_session, handle_close_session, handle_reload, handle_resume_session,
+    handle_subscribe, mark_remote_reload_started, remove_detached_source_if_unclaimed,
+    rename_shutdown_signal, rename_swarm_member_session, restored_session_was_interrupted,
     session_was_interrupted_by_reload, subscribe_should_mark_ready,
     subscribe_working_dir_replacement,
 };
@@ -208,6 +208,104 @@ async fn collect_events_until_done(
         }
     }
     events
+}
+
+#[tokio::test]
+async fn close_session_stops_hosted_session_and_reports_refusals() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let target_session_id = "session_close_target";
+    let target = Arc::new(Mutex::new(build_test_agent_with_id(
+        provider.clone(),
+        registry.clone(),
+        target_session_id,
+        Vec::new(),
+    )));
+    let sessions = Arc::new(RwLock::new(HashMap::from([(
+        target_session_id.to_string(),
+        Arc::clone(&target),
+    )])));
+    let shutdown_signals = Arc::new(RwLock::new(HashMap::<String, InterruptSignal>::new()));
+    let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+    let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
+
+    // Closing the session this client is attached to is refused.
+    handle_close_session(
+        1,
+        target_session_id,
+        target_session_id,
+        &sessions,
+        &shutdown_signals,
+        &soft_interrupt_queues,
+        &client_event_tx,
+    )
+    .await;
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), client_event_rx.recv())
+        .await
+        .expect("event")
+        .expect("event");
+    assert!(
+        matches!(event, ServerEvent::Error { id, ref message, .. } if id == 1 && message.contains("attached to")),
+        "self-close must be rejected, got {event:?}"
+    );
+
+    // Sessions this server does not host report where they actually live.
+    handle_close_session(
+        2,
+        "session_not_here",
+        "session_requester",
+        &sessions,
+        &shutdown_signals,
+        &soft_interrupt_queues,
+        &client_event_tx,
+    )
+    .await;
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), client_event_rx.recv())
+        .await
+        .expect("event")
+        .expect("event");
+    assert!(
+        matches!(event, ServerEvent::Error { id, ref message, .. } if id == 2 && message.contains("not hosted")),
+        "unknown target must be reported, got {event:?}"
+    );
+
+    // An idle hosted session closes: Done reply, roster entry gone, and the
+    // cross-process finish marker lands for the board.
+    handle_close_session(
+        3,
+        target_session_id,
+        "session_requester",
+        &sessions,
+        &shutdown_signals,
+        &soft_interrupt_queues,
+        &client_event_tx,
+    )
+    .await;
+    let events = collect_events_until_done(&mut client_event_rx, 3).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ServerEvent::Done { id } if *id == 3)),
+        "close must reply Done: {events:?}"
+    );
+    assert!(
+        !sessions.read().await.contains_key(target_session_id),
+        "closed session must leave the live roster"
+    );
+    assert!(
+        crate::storage::session_finish_time(target_session_id).is_some(),
+        "closing must leave a finish marker for the board"
+    );
+
+    match prev_home {
+        Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
 }
 
 #[tokio::test]

@@ -376,6 +376,49 @@ fn test_interrupted_event_roundtrip() -> Result<()> {
 }
 
 #[test]
+fn test_background_session_finished_event_roundtrip() -> Result<()> {
+    let event = ServerEvent::BackgroundSessionFinished {
+        session_id: "session_fox_1234".to_string(),
+        friendly_name: Some("优化查询".to_string()),
+        duration_ms: 12_345,
+    };
+    let json = encode_event(&event);
+    assert!(json.contains("\"type\":\"background_session_finished\""));
+    let decoded = parse_event_json(json.trim())?;
+    let ServerEvent::BackgroundSessionFinished {
+        session_id,
+        friendly_name,
+        duration_ms,
+    } = decoded
+    else {
+        return Err(anyhow!("wrong event type"));
+    };
+    assert_eq!(session_id, "session_fox_1234");
+    assert_eq!(friendly_name.as_deref(), Some("优化查询"));
+    assert_eq!(duration_ms, 12_345);
+    Ok(())
+}
+
+#[test]
+fn test_background_session_finished_event_decodes_without_friendly_name() -> Result<()> {
+    // Older/newer producers may omit the friendly name; the field is optional
+    // so the event still decodes cleanly.
+    let json = r#"{"type":"background_session_finished","session_id":"ses_a","duration_ms":900}"#;
+    let decoded = parse_event_json(json)?;
+    let ServerEvent::BackgroundSessionFinished {
+        friendly_name,
+        duration_ms,
+        ..
+    } = decoded
+    else {
+        return Err(anyhow!("wrong event type"));
+    };
+    assert!(friendly_name.is_none());
+    assert_eq!(duration_ms, 900);
+    Ok(())
+}
+
+#[test]
 fn test_history_event_decodes_without_compaction_mode_for_older_servers() -> Result<()> {
     let json = r#"{
             "type":"history",

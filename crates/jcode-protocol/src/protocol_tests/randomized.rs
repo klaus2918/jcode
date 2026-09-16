@@ -119,3 +119,20 @@ fn test_resume_session_roundtrip_preserves_client_sync_flags() -> Result<()> {
     assert!(allow_session_takeover);
     Ok(())
 }
+
+#[test]
+fn test_close_session_request_roundtrip() -> Result<()> {
+    let req = Request::CloseSession {
+        id: 91,
+        session_id: "session_fox_close".to_string(),
+    };
+    let json = serde_json::to_string(&req)?;
+    assert!(json.contains("\"type\":\"close_session\""));
+    let decoded = parse_request_json(&json)?;
+    let Request::CloseSession { id, session_id } = decoded else {
+        return Err(anyhow!("expected CloseSession"));
+    };
+    assert_eq!(id, 91);
+    assert_eq!(session_id, "session_fox_close");
+    Ok(())
+}

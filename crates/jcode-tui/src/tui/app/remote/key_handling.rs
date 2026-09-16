@@ -189,6 +189,14 @@ pub(in crate::tui::app) async fn handle_remote_key_event(
     event: KeyEvent,
     remote: &mut RemoteConnection,
 ) -> Result<()> {
+    // Same removal-flow guard as the local key path: a held Ctrl+X must never
+    // arm or confirm a removal, remote/client mode included.
+    if crate::tui::session_picker::should_drop_held_remove_chord(
+        app.session_picker_overlay.is_some(),
+        &event,
+    ) {
+        return Ok(());
+    }
     handle_remote_key_internal(
         app,
         event.code,

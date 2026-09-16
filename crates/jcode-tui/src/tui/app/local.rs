@@ -108,6 +108,47 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw |= app.poll_model_picker_load();
     needs_redraw |= app.poll_session_picker_load();
     needs_redraw |= app.poll_session_picker_presence();
+    needs_redraw |= app.process_background_finish_notices();
+    if let Some(removal) = app.take_pending_session_removal() {
+        if removal.live {
+            // Local (embedded) mode has no server connection for other
+            // sessions: they run in their own processes. Close the owning
+            // process, then drop the row for good.
+            match crate::storage::session_owner_pid(&removal.session_id) {
+                Some(pid) if pid != std::process::id() => match stop_session_process(pid) {
+                    Ok(()) => {
+                        remove_session_from_board(app, &removal);
+                        app.set_status_notice(format!(
+                            "✓ {} closed (pid {pid})",
+                            removal.display_name
+                        ));
+                    }
+                    Err(error) => app.set_status_notice(format!(
+                        "✗ {} could not be closed: {error}",
+                        removal.display_name
+                    )),
+                },
+                Some(_) => app.set_status_notice(format!(
+                    "✗ {} is this process; it cannot close itself",
+                    removal.display_name
+                )),
+                // The owning process finished while the confirmation was in
+                // flight: the row is stale, so removing it is still correct.
+                None => {
+                    remove_session_from_board(app, &removal);
+                    app.set_status_notice(format!(
+                        "✓ {} removed from the board",
+                        removal.display_name
+                    ));
+                }
+            }
+        } else {
+            // Finished sessions are removed permanently (no recovery view).
+            remove_session_from_board(app, &removal);
+            app.set_status_notice(format!("✓ {} removed from the board", removal.display_name));
+        }
+        needs_redraw = true;
+    }
     needs_redraw |= app.onboarding_tick();
     needs_redraw |= app.poll_compaction_completion();
     needs_redraw |= super::commands::poll_local_transfer_prepare(app);
@@ -137,6 +178,70 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     }
 
     needs_redraw
+}
+
+/// Permanently remove a session row: write the removal marker (the permanent
+/// record) and refresh the board so the row disappears at once.
+pub(super) fn remove_session_from_board(app: &mut App, removal: &super::PendingSessionRemoval) {
+    crate::storage::hide_session(&removal.session_id);
+    if let Some(picker) = app.session_picker_overlay.as_ref() {
+        picker.borrow_mut().refresh_live_presence_now();
+    }
+}
+
+/// Ask the process that owns a running session to stop: `SIGTERM` on Unix,
+/// tree-aware `taskkill /T /F` on Windows (the same approach `jcode-base` uses
+/// for detached children). The error text reaches the status bar, so a refused
+/// or impossible stop keeps its row and explains itself.
+fn stop_session_process(pid: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        /// `CREATE_NO_WINDOW`: keep the helper from flashing a console window.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let status = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!("taskkill exited with {status}")))
+        }
+    }
+}
+
+/// Last-resort close for a session the server cannot stop: when the owning
+/// process is a local jcode process (shared-server mode refuses sessions it
+/// does not host), terminate it directly and drop the row for good. Returns
+/// the status-bar notice on success, or the reason on failure.
+pub(super) fn close_session_via_local_process(
+    app: &mut App,
+    removal: &super::PendingSessionRemoval,
+) -> Result<String, String> {
+    let Some(pid) = crate::storage::session_owner_pid(&removal.session_id) else {
+        return Err("no local process owns this session".to_string());
+    };
+    if pid == std::process::id() {
+        return Err("it is this process".to_string());
+    }
+    match stop_session_process(pid) {
+        Ok(()) => {
+            remove_session_from_board(app, removal);
+            Ok(format!("✓ {} closed (pid {pid})", removal.display_name))
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 pub(super) fn handle_terminal_event(

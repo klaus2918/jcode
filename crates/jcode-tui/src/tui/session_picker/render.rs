@@ -203,8 +203,21 @@ impl SessionPicker {
         let canary_marker = if session.is_canary { " 🔬" } else { "" };
         let debug_marker = if session.is_debug { " 🧪" } else { "" };
         let saved_marker = if session.saved { " 📌" } else { "" };
-        let selection_marker = if is_marked { "● " } else { "○ " };
-        let selection_style = if is_marked {
+        let removal_armed = self.pending_remove.as_ref().is_some_and(|pending| {
+            pending.session_id == session.id && pending.armed_at.elapsed() <= REMOVE_ARM_WINDOW
+        });
+        let selection_marker = if removal_armed {
+            "✕ "
+        } else if is_marked {
+            "● "
+        } else {
+            "○ "
+        };
+        let selection_style = if removal_armed {
+            Style::default()
+                .fg(rgb(255, 120, 100))
+                .add_modifier(Modifier::BOLD)
+        } else if is_marked {
             Style::default()
                 .fg(rgb(140, 220, 160))
                 .add_modifier(Modifier::BOLD)
@@ -221,6 +234,15 @@ impl SessionPicker {
         let live_badge = if self.session_is_live(session) {
             if session.source == SessionSource::ClaudeCode {
                 Some(("●", rgb(120, 210, 255), "live Claude".to_string()))
+            } else if self.session_is_background(session) {
+                // A background session is still working; from the board's point
+                // of view the useful label is how long the server has been
+                // carrying it since the client switched away.
+                let label = match self.session_background_duration(session) {
+                    Some(elapsed) => format!("background {}", format_short_duration(elapsed)),
+                    None => "background".to_string(),
+                };
+                Some(("⇢", rgb(255, 150, 80), label))
             } else if self.session_is_streaming(session) {
                 let label = match self.session_streaming_duration(session) {
                     Some(elapsed) => format!("working {}", format_short_duration(elapsed)),
@@ -242,10 +264,25 @@ impl SessionPicker {
             Some(badge) => badge,
             None => match &session.status {
                 SessionStatus::Active => ("▶", rgb(100, 200, 100), "active".to_string()),
-                SessionStatus::Closed => ("✓", dim, format!("closed {}", time_ago)),
-                SessionStatus::Crashed { .. } => {
-                    ("💥", rgb(220, 100, 100), format!("crashed {}", time_ago))
-                }
+                SessionStatus::Closed => match self.session_finish_time_chrono(session) {
+                    // Prefer the cross-process finish marker: it is the
+                    // authoritative "when did this end" time and is visible
+                    // from any process.
+                    Some(finished_at) => (
+                        "✓",
+                        dim,
+                        format!("finished {}", format_time_ago(finished_at)),
+                    ),
+                    None => ("✓", dim, format!("closed {}", time_ago)),
+                },
+                SessionStatus::Crashed { .. } => match self.session_finish_time_chrono(session) {
+                    Some(finished_at) => (
+                        "💥",
+                        rgb(220, 100, 100),
+                        format!("crashed {}", format_time_ago(finished_at)),
+                    ),
+                    None => ("💥", rgb(220, 100, 100), format!("crashed {}", time_ago)),
+                },
                 SessionStatus::Reloaded => ("🔄", user_clr, format!("reloaded {}", time_ago)),
                 SessionStatus::Compacted => {
                     ("📦", rgb(255, 193, 7), format!("compacted {}", time_ago))
@@ -299,6 +336,14 @@ impl SessionPicker {
                 "  [BATCH]",
                 Style::default()
                     .fg(batch_restore)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if removal_armed {
+            line1_spans.push(Span::styled(
+                "  ⚠ Ctrl+X again to remove · Esc cancels",
+                Style::default()
+                    .fg(rgb(255, 150, 80))
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -464,7 +509,7 @@ impl SessionPicker {
         {
             vec![
                 ListItem::new(Line::from(vec![Span::styled(
-                    "  No other active sessions",
+                    "  No sessions running or recently finished",
                     Style::default()
                         .fg(rgb(220, 220, 220))
                         .add_modifier(Modifier::BOLD),
@@ -537,6 +582,34 @@ impl SessionPicker {
                             ]);
                             ListItem::new(vec![line1])
                         }
+                        PickerItem::BoardHeader {
+                            section,
+                            session_count,
+                        } => {
+                            let section_color: Color = match section {
+                                BoardSection::Working => rgb(255, 193, 7),
+                                BoardSection::Ready => rgb(100, 220, 130),
+                                BoardSection::RecentlyFinished => rgb(140, 200, 140),
+                                BoardSection::Earlier => dim,
+                            };
+                            let line1 = Line::from(vec![
+                                Span::styled(
+                                    format!("{} ", section.icon()),
+                                    Style::default().fg(section_color),
+                                ),
+                                Span::styled(
+                                    section.label(),
+                                    Style::default()
+                                        .fg(section_color)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("  {}", session_count),
+                                    Style::default().fg(dim),
+                                ),
+                            ]);
+                            ListItem::new(vec![line1])
+                        }
                         PickerItem::Session => self
                             .item_to_session
                             .get(idx)
@@ -569,7 +642,14 @@ impl SessionPicker {
             let (working, ready) =
                 self.visible_session_iter()
                     .fold((0usize, 0usize), |(working, ready), session| {
-                        if self.session_is_streaming(session) {
+                        // Board rows include finished sessions; keep the
+                        // working/ready split scoped to live sessions so
+                        // finished rows are not counted as ready for input.
+                        if !self.session_is_live(session) {
+                            (working, ready)
+                        } else if self.session_is_streaming(session)
+                            || self.session_is_background(session)
+                        {
                             (working + 1, ready)
                         } else {
                             (working, ready + 1)
@@ -654,6 +734,37 @@ impl SessionPicker {
             help = format!(" T take over live Claude ·{}", help);
         }
 
+        // While a Ctrl+X removal confirmation is armed, the footer teaches the
+        // exact next key (and how to back out) instead of the usual hints.
+        if self.remove_arm_active() {
+            help = " Ctrl+X again to remove this session · Esc cancels ".to_string();
+        } else if let Some(refused) = self.remove_block_footer() {
+            // A refused Ctrl+X (the row is the session we're in) explains
+            // itself so the key never looks dead.
+            help = refused;
+        }
+
+        // Footer count badge for the board view: overall live working/ready
+        // counts with a brief emphasis pulse whenever the numbers change.
+        let mut footer_spans: Vec<Span> = Vec::new();
+        if self.loading_message.is_none()
+            && self.filter_mode == jcode_tui_session_picker::SessionFilterMode::Active
+        {
+            let (working, ready, pulsing) = self.board_counts_for_render();
+            footer_spans.push(Span::styled(
+                format!(" {} working · {} ready ", working, ready),
+                if pulsing {
+                    Style::default()
+                        .fg(rgb(255, 220, 120))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(rgb(120, 120, 120))
+                },
+            ));
+            footer_spans.push(Span::styled("· ", Style::default().fg(rgb(80, 80, 80))));
+        }
+        footer_spans.push(Span::styled(help, Style::default().fg(rgb(80, 80, 80))));
+
         let border_dim: Color = rgb(70, 70, 70);
         let border_focus: Color = rgb(130, 130, 160);
         let border_color = if self.focus == PaneFocus::Sessions {
@@ -679,10 +790,7 @@ impl SessionPicker {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .title(Line::from(title_parts))
-                    .title_bottom(Line::from(Span::styled(
-                        help,
-                        Style::default().fg(rgb(80, 80, 80)),
-                    )))
+                    .title_bottom(Line::from(footer_spans))
                     .border_style(Style::default().fg(border_color)),
             )
             .highlight_style(if self.onboarding_start_new_highlighted() {

@@ -44,6 +44,8 @@ include!("tests/issue_497_copy_ctrl_c.rs");
 include!("tests/issue_314_streaming_batch_no_duplicates.rs");
 include!("tests/spinner_slash_commands.rs");
 include!("tests/skill_invocation_multi_word.rs");
+include!("tests/session_picker_ctrl_x_guard.rs");
+include!("tests/session_picker_removal_p2.rs");
 #[test]
 fn kv_cache_signature_prefix_match_allows_appended_messages() {
     let baseline_messages = vec![

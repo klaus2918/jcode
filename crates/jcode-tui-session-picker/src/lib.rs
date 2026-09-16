@@ -42,11 +42,19 @@ pub enum SessionFilterMode {
     /// annotated with whether each is still streaming a response or is ready
     /// for input. Backs the opt-in "active sessions manager" view.
     Active,
+    /// The default board: every session, grouped by run state (Working /
+    /// Ready / Recently finished / Earlier) instead of by server or source.
+    /// This is what `/resume` opens on.
+    Board,
     ClaudeCode,
     Codex,
     Pi,
     OpenCode,
     Cursor,
+    /// Sessions removed from the board (Ctrl+X twice). Removal is permanent:
+    /// this mode is kept for storage-backed filtering and tests only, and is
+    /// deliberately absent from the user-facing `s`/`S` cycle.
+    Hidden,
     /// External CLI transcripts (Codex and/or Claude Code) shown together.
     /// Used by the first-run onboarding "continue where you left off" picker so
     /// it surfaces every external CLI the user is logged into, not just one.
@@ -56,7 +64,8 @@ pub enum SessionFilterMode {
 impl SessionFilterMode {
     pub fn next(self) -> Self {
         match self {
-            Self::All => Self::CatchUp,
+            Self::All => Self::Board,
+            Self::Board => Self::CatchUp,
             Self::CatchUp => Self::Saved,
             Self::Saved => Self::Active,
             Self::Active => Self::ClaudeCode,
@@ -65,6 +74,7 @@ impl SessionFilterMode {
             Self::Pi => Self::OpenCode,
             Self::OpenCode => Self::Cursor,
             Self::Cursor => Self::All,
+            Self::Hidden => Self::All,
             // ExternalClis is an onboarding-only composite filter, not part of
             // the user-facing cycle; treat it as a no-op anchor.
             Self::ExternalClis => Self::All,
@@ -74,7 +84,9 @@ impl SessionFilterMode {
     pub fn previous(self) -> Self {
         match self {
             Self::All => Self::Cursor,
-            Self::CatchUp => Self::All,
+            Self::Hidden => Self::Cursor,
+            Self::CatchUp => Self::Board,
+            Self::Board => Self::All,
             Self::Saved => Self::CatchUp,
             Self::Active => Self::Saved,
             Self::ClaudeCode => Self::Active,
@@ -89,6 +101,7 @@ impl SessionFilterMode {
     pub fn label(self) -> Option<&'static str> {
         match self {
             Self::All => None,
+            Self::Board => Some("▦ 看板"),
             Self::CatchUp => Some("⏭ catch up"),
             Self::Saved => Some("📌 saved"),
             Self::Active => Some("⚡ active"),
@@ -97,6 +110,7 @@ impl SessionFilterMode {
             Self::Pi => Some("π Pi"),
             Self::OpenCode => Some("◌ OpenCode"),
             Self::Cursor => Some("▮ Cursor"),
+            Self::Hidden => Some("🙈 hidden"),
             Self::ExternalClis => Some("🧠 Codex + 🧵 Claude Code + π Pi + ◌ OpenCode + ▮ Cursor"),
         }
     }
@@ -166,6 +180,44 @@ pub struct PreviewMessage {
     pub timestamp: Option<DateTime<Utc>>,
 }
 
+/// Run-state section of the session board (`/active` view): the board groups
+/// rows by what is happening now instead of by server/origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardSection {
+    /// Live sessions actively working (streaming a response or running in the
+    /// background after the client switched away mid-turn).
+    Working,
+    /// Live sessions waiting for input.
+    Ready,
+    /// Sessions that finished within the recent window.
+    RecentlyFinished,
+    /// Sessions that finished earlier (still inside the finish-marker
+    /// retention window).
+    Earlier,
+}
+
+impl BoardSection {
+    /// Section heading shown above its rows.
+    pub fn label(self) -> &'static str {
+        match self {
+            BoardSection::Working => "运行中",
+            BoardSection::Ready => "待机",
+            BoardSection::RecentlyFinished => "最近完成",
+            BoardSection::Earlier => "更早",
+        }
+    }
+
+    /// Leading glyph for the section heading.
+    pub fn icon(self) -> &'static str {
+        match self {
+            BoardSection::Working => "▶",
+            BoardSection::Ready => "○",
+            BoardSection::RecentlyFinished => "✓",
+            BoardSection::Earlier => "·",
+        }
+    }
+}
+
 /// An item in the picker list, either a server/header row or a session row.
 #[derive(Clone)]
 pub enum PickerItem {
@@ -180,6 +232,11 @@ pub enum PickerItem {
         session_count: usize,
     },
     SavedHeader {
+        session_count: usize,
+    },
+    /// Board section heading (`/active` view only).
+    BoardHeader {
+        section: BoardSection,
         session_count: usize,
     },
 }

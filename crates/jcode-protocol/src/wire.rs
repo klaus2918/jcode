@@ -544,6 +544,12 @@ pub enum Request {
     #[serde(rename = "comm_list_models")]
     CommListModels { id: u64, session_id: String },
 
+    /// Close a session that this server hosts: interrupt any running turn,
+    /// wait briefly for it to wind down, then mark it closed and drop it from
+    /// the live roster. Used by the session board's Ctrl+X removal.
+    #[serde(rename = "close_session")]
+    CloseSession { id: u64, session_id: String },
+
     /// Stop/destroy an agent session (coordinator only)
     #[serde(rename = "comm_stop")]
     CommStop {
@@ -948,6 +954,23 @@ pub enum ServerEvent {
     /// so it does not blend into streaming model output.
     #[serde(rename = "interrupted")]
     Interrupted,
+
+    /// A background session's turn finished while no client was attached to it
+    /// (the user switched away mid-turn and the server kept it running).
+    ///
+    /// Broadcast to every connected client so session boards and completion
+    /// notices update immediately; `~/.jcode/finished_pids` markers remain the
+    /// cross-process fallback. Older clients skip unknown event variants.
+    #[serde(rename = "background_session_finished")]
+    BackgroundSessionFinished {
+        /// Session that finished.
+        session_id: String,
+        /// Friendly name when known (swarm label or session name).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        friendly_name: Option<String>,
+        /// How long the session ran in the background, in milliseconds.
+        duration_ms: u64,
+    },
 
     /// The provider ended the turn without any visible assistant output,
     /// typically a model-side guardrail/refusal stop (e.g. Anthropic
