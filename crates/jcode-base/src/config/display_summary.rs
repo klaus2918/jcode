@@ -65,6 +65,7 @@ impl Config {
 - Message timestamps: {}
 - Persist memory injections: {}
 - KV cache miss notices: {}
+- Require plan confirmation: {}
 
 **Tools:**
 - Profile: {}
@@ -196,6 +197,7 @@ impl Config {
             self.features.message_timestamps,
             self.features.persist_memory_injections,
             self.features.kv_cache_miss_notices,
+            self.features.require_plan_confirmation,
             if self.tools.profile.trim().is_empty() {
                 "full"
             } else {

@@ -21,6 +21,7 @@ use crate::provider::openai_request::{
     openai_encrypted_content_fallback_summary, openai_encrypted_content_is_sendable,
 };
 use anyhow::Result;
+use jcode_provider_core::{CallReason, with_call_reason};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -1721,8 +1722,9 @@ async fn generate_compaction_artifact(
         }
     }
 
-    if let Ok(native) = provider
-        .native_compact(
+    if let Ok(native) = with_call_reason(
+        CallReason::Compaction,
+        provider.native_compact(
             &messages,
             existing_summary
                 .as_ref()
@@ -1730,8 +1732,9 @@ async fn generate_compaction_artifact(
             existing_summary
                 .as_ref()
                 .and_then(|summary| summary.openai_encrypted_content.as_deref()),
-        )
-        .await
+        ),
+    )
+    .await
     {
         if let Some(encrypted_content) = native.openai_encrypted_content.as_ref()
             && !openai_encrypted_content_is_sendable(encrypted_content)
@@ -1755,12 +1758,14 @@ async fn generate_compaction_artifact(
     let prompt = build_compaction_prompt(&messages, existing_summary.as_ref(), max_prompt_chars);
 
     // Generate summary using simple completion
-    let summary = provider
-        .complete_simple(
+    let summary = with_call_reason(
+        CallReason::Compaction,
+        provider.complete_simple(
             &prompt,
             "You are a helpful assistant that summarizes conversations.",
-        )
-        .await?;
+        ),
+    )
+    .await?;
 
     Ok(CompactionResult {
         summary_text: summary,

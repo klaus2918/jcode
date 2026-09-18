@@ -16,6 +16,7 @@ mod memory;
 mod multiedit;
 mod open;
 mod patch;
+pub(crate) mod plan_gate;
 mod read;
 pub mod selfdev;
 pub(crate) mod serde_coerce;
@@ -539,6 +540,17 @@ impl Registry {
                 return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
             }
         }
+        // Plan-confirmation gate (agent-plan-confirm-discipline): a user-driven
+        // request must be confirmed before mutating tools run. Read-only tools
+        // bypass; sessions that never registered (swarm/ambient/tests) are exempt.
+        if let Some(blocked) = crate::tool::plan_gate::check(&ctx.session_id, resolved_name) {
+            let mut fields =
+                Self::tool_lifecycle_fields("plan_gate_blocked", name, resolved_name, &input, &ctx);
+            fields.push(("block_reason".to_string(), "plan_not_confirmed".to_string()));
+            crate::logging::event_warn("TOOL_LIFECYCLE", fields);
+            return Err(anyhow::anyhow!(blocked));
+        }
+
         let tool = match tools.get(resolved_name) {
             Some(tool) => tool.clone(),
             None => {

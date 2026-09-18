@@ -543,6 +543,28 @@ fn auto_poke_environment_override_uses_standard_boolean_values() {
 }
 
 #[test]
+fn require_plan_confirmation_defaults_on_and_parses_false() {
+    assert!(Config::default().features.require_plan_confirmation);
+
+    let cfg: Config = toml::from_str("[features]\nrequire_plan_confirmation = false\n")
+        .expect("features.require_plan_confirmation should parse");
+    assert!(!cfg.features.require_plan_confirmation);
+}
+
+#[test]
+fn require_plan_confirmation_environment_override_uses_standard_boolean_values() {
+    let _guard = crate::storage::lock_test_env();
+    let previous = std::env::var_os("JCODE_REQUIRE_PLAN_CONFIRMATION");
+    crate::env::set_var("JCODE_REQUIRE_PLAN_CONFIRMATION", "off");
+
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+    assert!(!cfg.features.require_plan_confirmation);
+
+    restore_env_var("JCODE_REQUIRE_PLAN_CONFIRMATION", previous);
+}
+
+#[test]
 fn latex_rendering_defaults_to_image_and_parses_all_modes() {
     assert_eq!(
         Config::default().display.latex_rendering,

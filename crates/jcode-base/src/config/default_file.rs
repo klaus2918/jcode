@@ -254,6 +254,12 @@ persist_memory_injections = false
 # (avoidable) reason: system prompt, tool set, or message prefix changed. These
 # should essentially never happen and indicate a prefix-cache bug.
 kv_cache_miss_notices = true
+# Plan confirmation (op-style plan -> confirm -> execute): mutating tools
+# (write/edit/bash/bg/swarm/selfdev/...) are refused until the user explicitly
+# confirms the current request ("确认/继续/可以执行") or authorizes it directly
+# ("直接改，不用确认"). Set false to restore the original autonomous behavior.
+# Env: JCODE_REQUIRE_PLAN_CONFIRMATION.
+require_plan_confirmation = true
 
 [websearch]
 # Preferred websearch engine: "duckduckgo", "bing", or "searxng".

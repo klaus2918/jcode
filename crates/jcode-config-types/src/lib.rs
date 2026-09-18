@@ -1471,6 +1471,15 @@ pub struct FeatureConfig {
     /// that something in the harness silently invalidated the prefix cache
     /// (default: true).
     pub kv_cache_miss_notices: bool,
+    /// Require explicit user confirmation of the plan before mutating tools
+    /// (write/edit/bash/bg/swarm/selfdev/...) run for a user request. Implements
+    /// the op-style "plan -> confirm -> execute" discipline: every user request
+    /// starts unconfirmed; a confirmation message ("确认/继续/可以执行"...) or an
+    /// explicit authorization in the request ("直接改，不用确认") unlocks it.
+    /// Read-only tools are never blocked. Set false to restore the original
+    /// autonomous behavior (default: true).
+    /// Env: `JCODE_REQUIRE_PLAN_CONFIRMATION`.
+    pub require_plan_confirmation: bool,
 }
 
 impl Default for FeatureConfig {
@@ -1482,6 +1491,7 @@ impl Default for FeatureConfig {
             message_timestamps: true,
             persist_memory_injections: false,
             kv_cache_miss_notices: true,
+            require_plan_confirmation: true,
         }
     }
 }

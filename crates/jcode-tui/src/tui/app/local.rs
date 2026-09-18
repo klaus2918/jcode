@@ -216,7 +216,9 @@ fn stop_session_process(pid: u32) -> std::io::Result<()> {
         if status.success() {
             Ok(())
         } else {
-            Err(std::io::Error::other(format!("taskkill exited with {status}")))
+            Err(std::io::Error::other(format!(
+                "taskkill exited with {status}"
+            )))
         }
     }
 }

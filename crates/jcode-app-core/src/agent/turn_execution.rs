@@ -629,6 +629,9 @@ impl Agent {
         self.provider_session_id = session.provider_session_id.clone();
         self.session = session;
         crate::tool::clear_session_tool_policy(&previous_session_id);
+        // Plan-confirmation gate state is per active session; the replaced
+        // session starts from a clean (unconfirmed) state when it comes back.
+        crate::tool::plan_gate::forget(&previous_session_id);
         crate::tool::set_session_tool_policy(
             &self.session.id,
             self.allowed_tools.clone(),
@@ -835,6 +838,9 @@ impl Agent {
                     println!("{}\n", skill.description);
                     self.active_skill = Some(invocation.name.to_string());
                     if let Some(prompt) = invocation.prompt {
+                        // Plan-confirmation gate: an interactive REPL prompt
+                        // starts a user request (auto-pokes are filtered inside).
+                        crate::tool::plan_gate::begin_user_request(&self.session.id, prompt);
                         if let Err(e) = self.run_once(prompt).await {
                             eprintln!("\nError: {}\n", e);
                         }
@@ -856,6 +862,9 @@ impl Agent {
                 }
             }
 
+            // Plan-confirmation gate: each REPL line is an interactive user
+            // request; explicit confirmations in it unlock the current one.
+            crate::tool::plan_gate::begin_user_request(&self.session.id, input);
             if let Err(e) = self.run_once(input).await {
                 eprintln!("\nError: {}\n", e);
             }

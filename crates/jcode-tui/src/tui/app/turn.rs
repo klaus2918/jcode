@@ -1,5 +1,6 @@
 use super::*;
 use crate::message::ToolDefinition;
+use jcode_provider_core::{CallReason, with_call_reason};
 
 impl App {
     pub(super) fn append_current_turn_system_reminder(
@@ -34,6 +35,10 @@ impl App {
         let mut redraw_interval = super::run_shell::redraw_timer(redraw_period);
         let mut status_spinner_interval = super::run_shell::status_spinner_interval();
         let mut status_spinner_renderer = super::run_shell::StatusSpinnerRenderer::default();
+
+        // 调用归因（agent-model-call-optimization #1）：本轮迭代即将发起的模型调用
+        // 原因（发起方维度由外层作用域声明，见 `with_call_origin`）。
+        let mut next_call_reason = CallReason::Initial;
 
         'turn_loop: loop {
             // Mark the turn as in-flight work: from here until the turn ends,
@@ -114,12 +119,19 @@ impl App {
             self.begin_kv_cache_request(&request_messages, &tools, &static_part, &dynamic_part);
 
             // Make API call non-blocking - poll it in select! so we can handle input while waiting
-            let mut api_future = std::pin::pin!(provider.complete_split(
-                &request_messages,
-                &tools,
-                &static_part,
-                &dynamic_part,
-                session_id_clone.as_deref()
+            // 调用归因（#1）：本次调用原因；后续迭代默认按「工具结果后的续轮」
+            // 记账，网络重试等 `continue 'turn_loop` 分支会覆盖。
+            let call_reason = next_call_reason;
+            next_call_reason = CallReason::ToolResults;
+            let mut api_future = std::pin::pin!(with_call_reason(
+                call_reason,
+                provider.complete_split(
+                    &request_messages,
+                    &tools,
+                    &static_part,
+                    &dynamic_part,
+                    session_id_clone.as_deref()
+                )
             ));
 
             let mut stream = loop {
@@ -217,6 +229,7 @@ impl App {
                                     self.push_display_message(DisplayMessage::system(
                                         "Network connectivity looks restored; retrying request.".to_string(),
                                     ));
+                                    next_call_reason = CallReason::Retry;
                                     continue 'turn_loop;
                                 }
                                 return Err(err);
@@ -770,6 +783,7 @@ impl App {
                                             self.push_display_message(DisplayMessage::system(
                                                 "Network connectivity looks restored; retrying request.".to_string(),
                                             ));
+                                            next_call_reason = CallReason::Retry;
                                             continue 'turn_loop;
                                         }
                                         return Err(anyhow::anyhow!("Stream error: {}", message));
@@ -1045,6 +1059,7 @@ impl App {
                                     self.push_display_message(DisplayMessage::system(
                                         "Network connectivity looks restored; retrying request.".to_string(),
                                     ));
+                                    next_call_reason = CallReason::Retry;
                                     continue 'turn_loop;
                                 }
                                 return Err(e);
@@ -1069,6 +1084,7 @@ impl App {
                                     self.push_display_message(DisplayMessage::system(
                                         "Network connectivity looks restored; retrying request.".to_string(),
                                     ));
+                                    next_call_reason = CallReason::Retry;
                                     continue 'turn_loop;
                                 }
                                 break;

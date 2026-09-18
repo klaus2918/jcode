@@ -1228,6 +1228,85 @@ async fn lightweight_comm_request_skips_full_session_initialization() {
     );
 }
 
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn accepted_client_message_starts_an_unconfirmed_plan_gate_epoch() {
+    let _guard = crate::storage::lock_test_env();
+    let _runtime = IsolatedRuntimeDir::new();
+    let session_id = "session_plan_gate_registration";
+    crate::tool::plan_gate::forget(session_id);
+
+    let provider: Arc<dyn Provider> = Arc::new(CompleteImmediatelyProvider);
+    let registry = Registry::new(Arc::clone(&provider)).await;
+    let mut session = crate::session::Session::create_with_id(session_id.to_string(), None, None);
+    session.model = Some("complete-immediately".to_string());
+    let agent = Arc::new(Mutex::new(Agent::new_with_session(
+        provider, registry, session, None,
+    )));
+
+    let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
+    let (processing_done_tx, mut processing_done_rx) = mpsc::unbounded_channel();
+    let mut client_is_processing = false;
+    let mut processing_message_id = None;
+    let mut processing_session_id = None;
+    let mut processing_task = None;
+    let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+    let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
+    let event_history = Arc::new(RwLock::new(std::collections::VecDeque::new()));
+    let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (swarm_event_tx, _) = broadcast::channel(8);
+
+    assert!(
+        crate::tool::plan_gate::check(session_id, "write").is_none(),
+        "sessions are exempt until a client message registers them"
+    );
+
+    start_processing_message(
+        ProcessingMessage {
+            id: 91,
+            content: "帮我重构登录模块".to_string(),
+            images: Vec::new(),
+            system_reminder: None,
+        },
+        session_id,
+        &mut ProcessingState {
+            client_is_processing: &mut client_is_processing,
+            message_id: &mut processing_message_id,
+            session_id: &mut processing_session_id,
+            task: &mut processing_task,
+        },
+        &agent,
+        &client_event_tx,
+        &processing_done_tx,
+        &SwarmStatusRefs {
+            members: &swarm_members,
+            swarms_by_id: &swarms_by_id,
+            event_history: &event_history,
+            event_counter: &event_counter,
+            event_tx: &swarm_event_tx,
+        },
+    )
+    .await;
+
+    assert!(
+        crate::tool::plan_gate::check(session_id, "write").is_some(),
+        "an accepted client message must start an unconfirmed epoch"
+    );
+
+    let (done_id, result, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), processing_done_rx.recv())
+            .await
+            .expect("processing task should finish")
+            .expect("processing task should report completion");
+    assert_eq!(done_id, 91);
+    result.expect("turn completes");
+    if let Some(handle) = processing_task.take() {
+        handle.await.expect("processing task join");
+    }
+    let _ = client_event_rx.try_recv();
+    crate::tool::plan_gate::forget(session_id);
+}
+
 fn decode_request_or_event(line: &str) -> ServerEvent {
     serde_json::from_str(line.trim()).expect("decode server event")
 }

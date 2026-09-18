@@ -609,6 +609,7 @@ impl Tool for TodoTool {
             (|| {
                 let stored_goals = load_goals(&ctx.session_id).unwrap_or_default();
                 let stored_plan = load_plan(&ctx.session_id).unwrap_or_default();
+                let plan_written = params.plan.is_some();
                 let goals = merge_goals(&stored_goals, params.goals);
                 let plan = merge_plan(&stored_plan, params.plan);
                 if !newly_completed_groups_have_sufficient_ownership(&previous, &todos, &goals) {
@@ -623,6 +624,16 @@ impl Tool for TodoTool {
                 }
                 let (observations, nudges) =
                     record_reframe_observations(&plan, &goals, &todos, &previous);
+                // Plan-confirmation gate: recording a plan is not user
+                // confirmation. While the current request is unconfirmed, remind
+                // the agent that writing the plan into todos does not unlock
+                // mutating tools.
+                let mut continuations = nudges;
+                if plan_written
+                    && let Some(hint) = crate::tool::plan_gate::plan_write_hint(&ctx.session_id)
+                {
+                    continuations.push(hint.to_string());
+                }
                 // Best-effort: a failure to persist the observation log must not
                 // fail the todo write itself. The cost is a missing reminder.
                 if let Err(err) = append_gate_observations(&ctx.session_id, &observations) {
@@ -655,7 +666,7 @@ impl Tool for TodoTool {
                     goals,
                     concise_plan_change,
                     concise_goal_changes,
-                    nudges,
+                    continuations,
                 )
             })()
         } else {

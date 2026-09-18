@@ -1153,6 +1153,9 @@ pub(super) async fn handle_client(
                 images,
                 urgent,
             } => {
+                // Plan-confirmation gate: a mid-turn user message can confirm
+                // the in-flight request, but never starts a new epoch.
+                crate::tool::plan_gate::note_user_message(&client_session_id, &content);
                 queue_soft_interrupt(
                     id,
                     content,
@@ -2860,6 +2863,18 @@ async fn start_processing_message(
         });
         return;
     }
+
+    // Plan-confirmation gate (agent-plan-confirm-discipline): an accepted
+    // client message is a user-driven request and starts a new unconfirmed
+    // epoch. This is the real user-message dispatch point; automated paths
+    // (swarm, comms, background tasks, reload recovery) go through
+    // `process_message_streaming_mpsc` directly and never register here.
+    // Synthetic auto-poke continuations are skipped inside.
+    crate::tool::plan_gate::begin_user_request_with_media(
+        client_session_id,
+        &content,
+        !images.is_empty(),
+    );
 
     *state.client_is_processing = true;
     *state.message_id = Some(id);

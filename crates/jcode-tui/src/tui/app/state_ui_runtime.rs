@@ -268,17 +268,27 @@ impl App {
     pub(super) fn check_context_warning(&mut self, input_tokens: u64) {
         let usage_percent = (input_tokens as f64 / self.context_limit as f64) * 100.0;
 
-        // Warn at 70%, 80%, 90%
-        if !self.context_warning_shown && usage_percent >= 70.0 {
+        // 阈值窗口：70% 提醒一次、80% 建议压缩、90% 建议立即压缩（每窗口一次）。
+        // #15 提醒去重（一次性领取模式）：70/80/90% 每个窗口只提醒一次 + 压缩联动建议。
+        let window = super::helpers::context_warning_window(usage_percent);
+        if window > 0 && super::helpers::claim_context_warning_window(self.session_id(), window) {
             let warning = format!(
-                "\n⚠️  Context usage: {:.0}% ({}/{}k tokens) - compaction approaching\n\n",
+                "\n⚠️  Context usage: {:.0}% ({}/{}k tokens) {}\n\n",
                 usage_percent,
                 input_tokens / 1000,
-                self.context_limit / 1000
+                self.context_limit / 1000,
+                // 压缩联动建议（#15）：80% 起提示压缩，90% 起建议立即压缩。
+                if window >= 3 {
+                    "- compact now (/compact) to free room"
+                } else if window >= 2 {
+                    "- compaction imminent; run /compact when convenient"
+                } else {
+                    "- compaction approaching"
+                }
             );
             self.append_streaming_text(&warning);
             self.context_warning_shown = true;
-        } else if self.context_warning_shown && usage_percent >= 80.0 {
+        } else if window >= 9 {
             // Reset to show 80% warning
             if usage_percent < 85.0 {
                 let warning = format!(

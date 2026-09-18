@@ -300,6 +300,11 @@ impl Config {
                 self.features.kv_cache_miss_notices = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_REQUIRE_PLAN_CONFIRMATION") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.features.require_plan_confirmation = parsed;
+            }
+        }
 
         // Agents (spawned helper sessions)
         if let Ok(v) = std::env::var("JCODE_SWARM_MODEL") {

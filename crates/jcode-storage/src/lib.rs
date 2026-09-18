@@ -105,9 +105,8 @@ pub use active_pids::{
     internal_pids_dir, mark_background, mark_finished, mark_streaming, prune_finished_markers,
     recent_finishes, register_active_pid, session_counts, session_finish_time,
     session_is_background, session_is_internal, session_owner_pid, session_presence,
-    set_session_internal,
-    streaming_pids_dir, unmark_background, unmark_streaming, unregister_active_pid,
-    user_session_counts, user_session_presence,
+    set_session_internal, streaming_pids_dir, unmark_background, unmark_streaming,
+    unregister_active_pid, user_session_counts, user_session_presence,
 };
 
 /// Platform-aware runtime directory for sockets and ephemeral state.

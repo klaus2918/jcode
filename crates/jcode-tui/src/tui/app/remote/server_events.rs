@@ -1252,7 +1252,9 @@ pub(in crate::tui::app) fn handle_server_event(
                 // server's reason and keep the row.
                 match crate::tui::app::local::close_session_via_local_process(app, &removal) {
                     Ok(notice) => app.set_status_notice(notice),
-                    Err(_) => app.set_status_notice(format!("✗ {}: {message}", removal.display_name)),
+                    Err(_) => {
+                        app.set_status_notice(format!("✗ {}: {message}", removal.display_name))
+                    }
                 }
                 return true;
             }

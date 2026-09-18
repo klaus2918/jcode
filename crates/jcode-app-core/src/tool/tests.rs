@@ -320,6 +320,61 @@ async fn registry_execute_enforces_session_tool_policy_after_alias_resolution() 
     );
 }
 
+#[tokio::test]
+async fn registry_execute_enforces_plan_confirmation_gate() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let temp_dir = std::env::temp_dir();
+
+    // A user-driven request starts unconfirmed: mutating tools are refused
+    // before the tool itself ever runs.
+    let session_id = "test-plan-gate-registry";
+    plan_gate::begin_user_request(session_id, "帮我重构登录模块");
+
+    let gated_ctx = ToolContext {
+        session_id: session_id.to_string(),
+        message_id: "test".to_string(),
+        tool_call_id: "test".to_string(),
+        working_dir: Some(temp_dir.clone()),
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+
+    let blocked = registry
+        .execute("write", serde_json::json!({}), gated_ctx)
+        .await
+        .expect_err("unconfirmed request must block mutating tools");
+    assert!(
+        blocked.to_string().contains("计划确认门禁"),
+        "gate refusal should carry actionable guidance, got: {blocked}"
+    );
+
+    // Read-only tools pass the gate even while unconfirmed (empty params still
+    // fail validation inside the tool itself, which proves we reached it).
+    let read_ctx = ToolContext {
+        session_id: session_id.to_string(),
+        message_id: "test".to_string(),
+        tool_call_id: "test".to_string(),
+        working_dir: Some(temp_dir),
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    match registry
+        .execute("read", serde_json::json!({}), read_ctx)
+        .await
+    {
+        Ok(_) => {}
+        Err(error) => assert!(
+            !error.to_string().contains("计划确认门禁"),
+            "read-only tool must never be gated: {error}"
+        ),
+    }
+
+    plan_gate::forget(session_id);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn registry_execute_pre_tool_hook_blocks_and_allows() {
