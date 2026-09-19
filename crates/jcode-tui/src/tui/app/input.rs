@@ -1825,6 +1825,10 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
             super::commands::toggle_auto_poke_hotkey_local(app);
             true
         }
+        KeyCode::Char('g') => {
+            super::commands::toggle_plan_gate_hotkey_local(app);
+            true
+        }
         KeyCode::Char('v') => {
             paste_from_clipboard(app);
             true

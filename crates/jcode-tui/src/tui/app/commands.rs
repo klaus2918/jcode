@@ -330,6 +330,31 @@ pub(super) fn toggle_auto_poke_hotkey_local(app: &mut App) {
     }
 }
 
+pub(super) fn toggle_plan_gate_hotkey_local(app: &mut App) {
+    use crate::config::Config;
+    let current = crate::config::config().features.require_plan_confirmation;
+    let new_val = !current;
+    match Config::set_require_plan_confirmation(new_val) {
+        Ok(()) => {
+            crate::config::invalidate_config_cache();
+            let state = if new_val { "ON" } else { "OFF" };
+            app.set_status_notice(format!("Plan gate: {}", state));
+            app.push_display_message(DisplayMessage::system(format!(
+                "Plan gate {}.\nAgent will {}.",
+                state,
+                if new_val {
+                    "present a plan and wait for your confirmation before write operations"
+                } else {
+                    "execute autonomously without waiting for confirmation"
+                }
+            )));
+        }
+        Err(e) => {
+            app.set_status_notice(format!("Plan gate toggle failed: {}", e));
+        }
+    }
+}
+
 pub(super) fn transfer_pause_message() -> String {
     "Transfer requested. Please pause after the current step, update the todo list if needed, and stop so work can continue in the transferred session."
         .to_string()
@@ -3341,6 +3366,74 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
             "Usage: /config (show), /config init (create), /config edit (open in editor)"
                 .to_string(),
         ));
+        return true;
+    }
+
+    // ── /mode: runtime feature toggles ──────────────────────────────────
+    if trimmed == "/mode" {
+        use crate::config::config;
+        let cfg = config();
+        let gate = if cfg.features.require_plan_confirmation {
+            "ON"
+        } else {
+            "OFF"
+        };
+        app.push_display_message(DisplayMessage {
+            role: "system".to_string(),
+            content: format!(
+                "Current modes:\n  plan-gate: {} (use `/mode plan-gate` to toggle)",
+                gate
+            ),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        });
+        return true;
+    }
+
+    if trimmed == "/mode plan-gate" || trimmed == "/mode plan_gate" {
+        use crate::config::Config;
+        let current = crate::config::config().features.require_plan_confirmation;
+        let new_val = !current;
+        match Config::set_require_plan_confirmation(new_val) {
+            Ok(()) => {
+                crate::config::invalidate_config_cache();
+                let state = if new_val { "ON" } else { "OFF" };
+                app.set_status_notice(format!("Plan gate: {}", state));
+                app.push_display_message(DisplayMessage {
+                    role: "system".to_string(),
+                    content: format!(
+                        "Plan gate {}.\nAgent will {} before executing write operations.",
+                        state,
+                        if new_val {
+                            "now present a plan and wait for your confirmation"
+                        } else {
+                            "execute autonomously without waiting for confirmation"
+                        }
+                    ),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: None,
+                    tool_data: None,
+                });
+            }
+            Err(e) => {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to toggle plan gate: {}",
+                    e
+                )));
+            }
+        }
+        return true;
+    }
+
+    if trimmed.starts_with("/mode ") {
+        let mode_name = trimmed.strip_prefix("/mode ").unwrap_or(trimmed);
+        app.push_display_message(DisplayMessage::error(format!(
+            "Unknown mode: '{}'. Available: plan-gate\nUsage: /mode (show), /mode plan-gate (toggle)",
+            mode_name
+        )));
         return true;
     }
 

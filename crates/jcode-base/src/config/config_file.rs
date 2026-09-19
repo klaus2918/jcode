@@ -219,6 +219,18 @@ impl Config {
         Ok(())
     }
 
+    /// Toggle the plan-confirmation gate and persist the new value.
+    pub fn set_require_plan_confirmation(enabled: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.features.require_plan_confirmation = enabled;
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved features.require_plan_confirmation to config: {}",
+            enabled
+        ));
+        Ok(())
+    }
+
     /// Update the persisted pinned-todos preference.
     pub fn set_pin_todos(pin: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load();
