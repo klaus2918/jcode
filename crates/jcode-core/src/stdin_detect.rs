@@ -364,21 +364,88 @@ mod macos {
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Console::GetConsoleProcessList;
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessId, OpenProcess, WaitForSingleObject,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
-    pub fn check(_pid: u32) -> StdinState {
-        // Windows: use NtQueryInformationThread to check thread state
-        // A process blocked on ReadFile/ReadConsole on stdin will have
-        // its thread in a Wait state with a wait reason of UserRequest
-        //
-        // For now, use the simpler approach: check if the process has
-        // a console handle and its thread is in a wait state via
-        // WaitForSingleObject with zero timeout on the process handle
+    /// Windows 进程退出码：仍在运行（对应 WaitForSingleObject 返回 WAIT_TIMEOUT）。
+    const STILL_ACTIVE: u32 = 259;
 
-        // TODO: implement with windows-sys crate
-        // - OpenProcess(PROCESS_QUERY_INFORMATION, pid)
-        // - NtQuerySystemInformation for thread states
-        // - Check for KWAIT_REASON::WrUserRequest on stdin handle
-        StdinState::Unknown
+    /// 打开目标进程并返回句柄，失败返回 None。
+    fn open_process(pid: u32) -> Option<HANDLE> {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            Some(handle)
+        }
+    }
+
+    /// 检查进程是否仍在运行。
+    fn is_process_alive(handle: HANDLE) -> bool {
+        unsafe {
+            // WaitForSingleObject(0) 即非阻塞检查；进程退出时会返回 WAIT_OBJECT_0
+            let result = WaitForSingleObject(handle, 0);
+            if result == WAIT_OBJECT_0 {
+                return false; // 进程已退出
+            }
+            // WAIT_TIMEOUT 表示进程仍在运行
+            let mut exit_code = 0u32;
+            if GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code != STILL_ACTIVE {
+                return false;
+            }
+            true
+        }
+    }
+
+    /// 检查目标进程是否是与调用者共享控制台的子进程（非自身）。
+    fn is_shared_console_child(handle: HANDLE) -> bool {
+        unsafe {
+            let self_pid = GetCurrentProcessId();
+            let target_pid = GetProcessId(handle);
+            if target_pid == 0 || target_pid == self_pid {
+                return false;
+            }
+            // 获取调用者控制台中的所有进程
+            let mut console_pids = [0u32; 128];
+            let count = GetConsoleProcessList(console_pids.as_mut_ptr(), 128);
+            if count == 0 {
+                return false;
+            }
+            for i in 0..count as usize {
+                if console_pids[i] == target_pid {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+
+    pub fn check(pid: u32) -> StdinState {
+        let Some(handle) = open_process(pid) else {
+            return StdinState::Unknown;
+        };
+
+        let result = if is_process_alive(handle) {
+            if is_shared_console_child(handle) {
+                StdinState::Reading
+            } else {
+                StdinState::NotReading
+            }
+        } else {
+            StdinState::NotReading
+        };
+
+        unsafe {
+            CloseHandle(handle);
+        }
+
+        result
     }
 }
 
