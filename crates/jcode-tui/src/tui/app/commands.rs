@@ -337,20 +337,19 @@ pub(super) fn toggle_plan_gate_hotkey_local(app: &mut App) {
     match Config::set_require_plan_confirmation(new_val) {
         Ok(()) => {
             crate::config::invalidate_config_cache();
-            let state = if new_val { "ON" } else { "OFF" };
-            app.set_status_notice(format!("Plan gate: {}", state));
+            let (mode, desc) = if new_val {
+                ("work", "plan → confirm → execute")
+            } else {
+                ("yolo", "autonomous execution")
+            };
+            app.set_status_notice(format!("Mode: {}", mode));
             app.push_display_message(DisplayMessage::system(format!(
-                "Plan gate {}.\nAgent will {}.",
-                state,
-                if new_val {
-                    "present a plan and wait for your confirmation before write operations"
-                } else {
-                    "execute autonomously without waiting for confirmation"
-                }
+                "Switched to **{}** mode. ({})",
+                mode, desc
             )));
         }
         Err(e) => {
-            app.set_status_notice(format!("Plan gate toggle failed: {}", e));
+            app.set_status_notice(format!("Mode toggle failed: {}", e));
         }
     }
 }
@@ -3369,58 +3368,35 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    // ── /mode: runtime feature toggles ──────────────────────────────────
-    if trimmed == "/mode" {
-        use crate::config::config;
-        let cfg = config();
-        let gate = if cfg.features.require_plan_confirmation {
-            "ON"
-        } else {
-            "OFF"
-        };
-        app.push_display_message(DisplayMessage {
-            role: "system".to_string(),
-            content: format!(
-                "Current modes:\n  plan-gate: {} (use `/mode plan-gate` to toggle)",
-                gate
-            ),
-            tool_calls: vec![],
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        });
-        return true;
-    }
-
-    if trimmed == "/mode plan-gate" || trimmed == "/mode plan_gate" {
+    // ── /mode: runtime work / yolo toggle ───────────────────────────────
+    if trimmed == "/mode" || trimmed == "/mode work" || trimmed == "/mode yolo" {
         use crate::config::Config;
         let current = crate::config::config().features.require_plan_confirmation;
-        let new_val = !current;
+        // /mode → toggle; /mode work → force on; /mode yolo → force off
+        let new_val = if trimmed == "/mode work" {
+            true
+        } else if trimmed == "/mode yolo" {
+            false
+        } else {
+            !current // toggle
+        };
         match Config::set_require_plan_confirmation(new_val) {
             Ok(()) => {
                 crate::config::invalidate_config_cache();
-                let state = if new_val { "ON" } else { "OFF" };
-                app.set_status_notice(format!("Plan gate: {}", state));
-                app.push_display_message(DisplayMessage {
-                    role: "system".to_string(),
-                    content: format!(
-                        "Plan gate {}.\nAgent will {} before executing write operations.",
-                        state,
-                        if new_val {
-                            "now present a plan and wait for your confirmation"
-                        } else {
-                            "execute autonomously without waiting for confirmation"
-                        }
-                    ),
-                    tool_calls: vec![],
-                    duration_secs: None,
-                    title: None,
-                    tool_data: None,
-                });
+                let (mode, desc) = if new_val {
+                    ("work", "Agent will plan first and wait for your confirmation before write operations.")
+                } else {
+                    ("yolo", "Agent executes autonomously without waiting for confirmation.")
+                };
+                app.set_status_notice(format!("Mode: {}", mode));
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Switched to **{}** mode.\n{}\n\nUse `/mode` to toggle, `/mode work` or `/mode yolo` to set explicitly.\nShortcut: Alt+Y",
+                    mode, desc
+                )));
             }
             Err(e) => {
                 app.push_display_message(DisplayMessage::error(format!(
-                    "Failed to toggle plan gate: {}",
+                    "Failed to switch mode: {}",
                     e
                 )));
             }
@@ -3431,7 +3407,7 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed.starts_with("/mode ") {
         let mode_name = trimmed.strip_prefix("/mode ").unwrap_or(trimmed);
         app.push_display_message(DisplayMessage::error(format!(
-            "Unknown mode: '{}'. Available: plan-gate\nUsage: /mode (show), /mode plan-gate (toggle)",
+            "Unknown mode: '{}'. Available: work, yolo\nUsage: /mode (toggle), /mode work, /mode yolo",
             mode_name
         )));
         return true;

@@ -1825,10 +1825,7 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
             super::commands::toggle_auto_poke_hotkey_local(app);
             true
         }
-        KeyCode::Char('g') => {
-            super::commands::toggle_plan_gate_hotkey_local(app);
-            true
-        }
+
         KeyCode::Char('v') => {
             paste_from_clipboard(app);
             true
@@ -1961,6 +1958,10 @@ pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Char('a') if app.input.is_empty() => {
             app.copy_chat_viewport_context_to_clipboard();
+            true
+        }
+        KeyCode::Char('y') => {
+            super::commands::toggle_plan_gate_hotkey_local(app);
             true
         }
         _ => false,
