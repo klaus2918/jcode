@@ -1960,10 +1960,7 @@ pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
             app.copy_chat_viewport_context_to_clipboard();
             true
         }
-        KeyCode::Char('y') => {
-            super::commands::toggle_plan_gate_hotkey_local(app);
-            true
-        }
+
         _ => false,
     }
 }

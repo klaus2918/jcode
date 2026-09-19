@@ -158,7 +158,6 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/subscription", "Show jcode subscription status"),
     RegisteredCommand::public("/subscribe", "Why and how to subscribe to jcode"),
     RegisteredCommand::public("/config", "Show or edit configuration"),
-    RegisteredCommand::public("/mode", "Toggle work/yolo mode (Alt+Y shortcut)"),
     RegisteredCommand::public("/log", "Mark the current location in the jcode logs"),
     RegisteredCommand::public(
         "/diff",
@@ -1460,7 +1459,6 @@ impl App {
                 | "/thinking"
                 | "/thinking-display"
                 | "/config"
-                | "/mode"
                 | "/save"
                 | "/rename"
                 | "/cache"

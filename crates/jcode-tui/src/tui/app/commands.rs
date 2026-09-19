@@ -330,30 +330,6 @@ pub(super) fn toggle_auto_poke_hotkey_local(app: &mut App) {
     }
 }
 
-pub(super) fn toggle_plan_gate_hotkey_local(app: &mut App) {
-    use crate::config::Config;
-    let current = crate::config::config().features.require_plan_confirmation;
-    let new_val = !current;
-    match Config::set_require_plan_confirmation(new_val) {
-        Ok(()) => {
-            crate::config::invalidate_config_cache();
-            let (mode, desc) = if new_val {
-                ("work", "plan → confirm → execute")
-            } else {
-                ("yolo", "autonomous execution")
-            };
-            app.set_status_notice(format!("Mode: {}", mode));
-            app.push_display_message(DisplayMessage::system(format!(
-                "Switched to **{}** mode. ({})",
-                mode, desc
-            )));
-        }
-        Err(e) => {
-            app.set_status_notice(format!("Mode toggle failed: {}", e));
-        }
-    }
-}
-
 pub(super) fn transfer_pause_message() -> String {
     "Transfer requested. Please pause after the current step, update the todo list if needed, and stop so work can continue in the transferred session."
         .to_string()
@@ -3368,50 +3344,7 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    // ── /mode: runtime work / yolo toggle ───────────────────────────────
-    if trimmed == "/mode" || trimmed == "/mode work" || trimmed == "/mode yolo" {
-        use crate::config::Config;
-        let current = crate::config::config().features.require_plan_confirmation;
-        // /mode → toggle; /mode work → force on; /mode yolo → force off
-        let new_val = if trimmed == "/mode work" {
-            true
-        } else if trimmed == "/mode yolo" {
-            false
-        } else {
-            !current // toggle
-        };
-        match Config::set_require_plan_confirmation(new_val) {
-            Ok(()) => {
-                crate::config::invalidate_config_cache();
-                let (mode, desc) = if new_val {
-                    ("work", "Agent will plan first and wait for your confirmation before write operations.")
-                } else {
-                    ("yolo", "Agent executes autonomously without waiting for confirmation.")
-                };
-                app.set_status_notice(format!("Mode: {}", mode));
-                app.push_display_message(DisplayMessage::system(format!(
-                    "Switched to **{}** mode.\n{}\n\nUse `/mode` to toggle, `/mode work` or `/mode yolo` to set explicitly.\nShortcut: Alt+Y",
-                    mode, desc
-                )));
-            }
-            Err(e) => {
-                app.push_display_message(DisplayMessage::error(format!(
-                    "Failed to switch mode: {}",
-                    e
-                )));
-            }
-        }
-        return true;
-    }
 
-    if trimmed.starts_with("/mode ") {
-        let mode_name = trimmed.strip_prefix("/mode ").unwrap_or(trimmed);
-        app.push_display_message(DisplayMessage::error(format!(
-            "Unknown mode: '{}'. Available: work, yolo\nUsage: /mode (toggle), /mode work, /mode yolo",
-            mode_name
-        )));
-        return true;
-    }
 
     false
 }
